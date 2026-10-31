@@ -6,6 +6,8 @@
     "dev": "vite dev --config apps/web/vite.config.ts",
     "build": "vite build --config apps/web/vite.config.ts",
     "test": "vitest run --config vitest.config.ts",
+    "test:db": "node database/tests/static-policy.test.mjs",
+    "test:all": "npm run test && npm run test:db",
     "typecheck": "tsc -p tsconfig.json"
   }
 }
