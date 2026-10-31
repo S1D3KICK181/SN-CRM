@@ -1,0 +1,155 @@
+# Frozen Root SHA-256 Integrity Manifest
+
+- **Purpose:** Freeze the legacy Lovable root source trees (`src`, `server`, `drizzle`, `supabase`) to establish an immutable integrity baseline, ensuring zero accidental modifications or regressions during monorepo reconciliation.
+- **Canonical Root:** `C:\Users\HP\Mohammed\CRM`
+- **Accepted Baseline Commit:** `53a7fee`
+- **Hash Algorithm:** SHA-256 (lowercase hex, 64 characters)
+- **Generation Method:** Direct binary file read from disk (`crypto.createHash('sha256')`)
+- **Ordering:** Deterministic ordinal sort by repository-relative path (case-sensitive ASCII/code-point order, forward slashes)
+- **Scope:** All regular files under frozen root directories `src/`, `server/`, `drizzle/`, and `supabase/`
+
+## File Counts Summary
+
+| Directory | File Count |
+| :--- | :--- |
+| `src` | 98 |
+| `server` | 11 |
+| `drizzle` | 7 |
+| `supabase` | 2 |
+| **Total** | **118** |
+
+## SHA-256 Manifest Entries
+
+```text
+ea9276afd94e84f2cc8149053386703534d50380a39484949ffe02139fe7921d  drizzle/migrations/0000_sn_crm_tables.sql
+e1798a006426e7c8ba3ea6b056a9100b75a3e3a52e9de10b6a6787157f81ce2b  drizzle/migrations/0001_sn_crm_rls.sql
+7aba6f8f57b34923218add3112ba666d06a80d328945415a66d1b887478e86b3  drizzle/migrations/0002_practice_backend_foundation.sql
+9fa62ce237cf772f1fc0f95837a4facd8fd5ff1fe06868f5d30a525d295a29f4  drizzle/migrations/meta/0000_snapshot.json
+dc643934946e94ccd2177dc2840ab7dd52d9029c2d0c5d3eb376770fecabac63  drizzle/migrations/meta/0001_snapshot.json
+c5be0fd0b58820feb80f5893ae426814ca31b5c428865fc59bd539da21eb4e7c  drizzle/migrations/meta/_journal.json
+834fff8005e00606dfdff9ff71393309dc72160c108fdad72418986573cf9448  drizzle/schema.ts
+899df0b76eb728ed27cd65d6e9bcbc9d1850eafc69adcaf7f04392fcda8285bb  server/assignment-transition.ts
+120ce6087ac09145cb7e37ca6d32f36dcbe9d5c7825c2694d9083a689049c165  server/config.ts
+cdb1bf476aca9664c9c7cdb0ee23156b642e86c23d6678544d9ffee3e8ce92ab  server/dashboard.ts
+679283b84d97d6d21604c494e25e40444b519fc83a9afee2b3d6f1079386a219  server/errors.ts
+ca1a4fb525bdb81319aeb35ea34f823cf015b27fc1b074dbe7bd2174f946d17e  server/http.ts
+e788e4086cf409a7c0f14a333ca30c7f073b9050009c712489a49dc20bb7cb71  server/index.ts
+440c3e10d2cd97ad07fd3e7c70de9922ec5ca2bc43979fdef02922de91afde52  server/kernel.ts
+4f68accbe06ea99d37183e9afa16231fc6e70cbd02632f1eaefddfe8a7375b19  server/operations.ts
+64f9a932ea697056d4c56093e439423e7dfc8cdd3863be16503cde5e6ce9f400  server/repositories/demo-dashboard.ts
+5f73da756560a24c301d82fec80502d328ed2abfca1eb845d7b9fe7c3cc58ffb  server/repositories/supabase-dashboard.ts
+9e0c51498cc7cf3cb48417db28932b5506029d61e076304d878727c38882fc79  server/supabase.ts
+7dabc8ae956cc692f1f796f39f2a36308c49268484b3269f91ffea307481dc60  src/components/app-shell.tsx
+6b6a09f77badc73392a5da2519f40175fb95f5be125c1eed8138852c7d0598fb  src/components/crm-ui.tsx
+123cbe7fe4afd3afcdb2e959c5fdf68259be19fbecce5afc6ab3c618e84700ff  src/components/dashboard/management-dashboard.tsx
+0903efcd7b746eef0a10c954a541b0dfa7aa1172f3c380a1a88f4e19a317fda3  src/components/ui/accordion.tsx
+ee4d7f3341a1e5592787b7dac8e924bd226189492819f6704d8a7faf8fe64d20  src/components/ui/alert-dialog.tsx
+e7f4c2e6f78c59270905b4152b7d3ef4d5c6b9e3b2d370daa7b301aa7cbd27b3  src/components/ui/alert.tsx
+d72c73d629e37995a0a71647d851d68d6fdcd7ec120797f36ab83a8ee89f2cab  src/components/ui/aspect-ratio.tsx
+0326c9041c5a0b1ba31ff29822c51950b6aeac485cd0985e7df714741a54e7f4  src/components/ui/avatar.tsx
+6519775252fe729f21c60b92c7c9feefd1fe7d0a8c2cf16d6f1c2fa7e153fe75  src/components/ui/badge.tsx
+d5224e87344b3ac0f8b002e5dda6a71ff8fee296db8a5fbe6b034d06bd5c2ae1  src/components/ui/breadcrumb.tsx
+d5489d4ed86bb7ab116287c26f54f8bae338bf02593f74ff2c9936ba0f776331  src/components/ui/button.tsx
+e883f2245873fdf360764f77fc8f391426bef5776c6397537012c46970ebd6ee  src/components/ui/calendar.tsx
+f13878a0078a5ef9f3e92af29259fc1e93ea56ea80cb992e0c4dea4e35396459  src/components/ui/card.tsx
+568e00e8edbfab8af67ee902ca9ef5ceb6d5ed6f3045e7f9b3c15b4f7ef9e974  src/components/ui/carousel.tsx
+81b1f692f9334ba3030213ff37eeaf2dd762b644e5d96e51ada7072109f07430  src/components/ui/chart.tsx
+c44d02535d5c9c92807576804407dd63d01e7189dbde526e925b53885e645fd4  src/components/ui/checkbox.tsx
+5f0a45d8f6ca72d37ed10bf0a85306158b67d7cbc386319186ce013ead9bc0a6  src/components/ui/collapsible.tsx
+ba8c0f8b23044ce9a5066e66d7ab7be3a3c79bfc4a0ab7dfae6ffafe439145a3  src/components/ui/command.tsx
+b299f50a0a7840b136db5670f2b2e7eec6fc62b3c06bc2ad0015800959cc381b  src/components/ui/context-menu.tsx
+e3a6de153fb15597ea95be9c4549211a297c060267787915599e3d680d476bd9  src/components/ui/dialog.tsx
+478c487f66245641d5fa0f0d1c53a07d68bd60c4b3c497ec4c41ce08b482e14b  src/components/ui/drawer.tsx
+a6b87c89f5a806225b7f3a81f13a6577289c67e5787c2a56b5a22bd1edea02ce  src/components/ui/dropdown-menu.tsx
+1ed53d4ab564a64708938643de590f2bef3718b0b2a309c1019c57e9c1fde23f  src/components/ui/form.tsx
+69dc172ece56ac77bf3a044a1cd60ed601b0041945d16b5da4c6cc4f42116988  src/components/ui/hover-card.tsx
+45b7c4fd518616f76dd611b9da13bc60bece1352e050878bf943e1cc6a4ed678  src/components/ui/input-otp.tsx
+92debb7d6d2d96d9e607a42d5ce8f37b2d63384ae5dd9ffbbf5f047b680ffb85  src/components/ui/input.tsx
+9f72e2ecf16206593aa9e3c4fbc14cd8e81aa8488d57d92d4a950b30935a9fa9  src/components/ui/label.tsx
+5bd157c3a446ea1e451867e63724b2e87ad6bba6251c8b5f1b267d1df7bd4e0e  src/components/ui/menubar.tsx
+755aecc77b7911ab61159c9fbb9b25254009eb4c32c95b1430b6b5b7d37ed8f0  src/components/ui/navigation-menu.tsx
+cbe8559c578ee2d34c7daef5ee75dc3afeb795851e294b111dec375ba44a9a2d  src/components/ui/pagination.tsx
+861c18577ea5988c6f5ca00d1c677200319fd427cf8b424e59a5cca6ff24f830  src/components/ui/popover.tsx
+418f612946a520d1380b7a0d058185bb6a6d09846846dd6d6904a0016152dd4a  src/components/ui/progress.tsx
+8c55aa0496b00a27fc4f609ca8b43a7e82c6802f6bf613998438b7632899fa96  src/components/ui/radio-group.tsx
+f0399fec7bc334f06433b41b6ebf34255942ce4916b99173898893fa7fcc8281  src/components/ui/resizable.tsx
+b607f562455152a079d70a22538c95072b0267e0d59a1a1cf16a905a2e373a6f  src/components/ui/scroll-area.tsx
+6d4deee18cf7ced0354eb719300833a83caf46400de6ee9c3d1942fa4c579ad4  src/components/ui/select.tsx
+bf5838b692e5f74fde7083280b99492dd402bce6966e912e79f5e23f14bc98eb  src/components/ui/separator.tsx
+a82f9341962e766ee925a2fe883b0a9ab5d5dd8475c402ac8e491ee37dc95fde  src/components/ui/sheet.tsx
+9f44f4523271f965adec608ae1c3b8a2f350f2f45ba1401a2c7ee33bc5eda238  src/components/ui/sidebar.tsx
+f4c42257d73925b0b856a3500e2cbdd918fe6744fcd6be87ef28bb88e7eb7366  src/components/ui/skeleton.tsx
+d307cf3ff05b54be4a04389ef4379f9e8b4dc49720197937991ce843a8d4b5ec  src/components/ui/slider.tsx
+3ad40f66c339e799b1a57c00e10b4627294c7d580d99d8a48ae0d8d4c13cf931  src/components/ui/sonner.tsx
+c3c298df4ffb56695e4a8f0ff3e37eee08437dec542a677153ec16bed0820107  src/components/ui/switch.tsx
+1e945e564c2cc5ca3ef33019ba7da7a8b94cbc73feb3cbc2b7b33c36ea648d92  src/components/ui/table.tsx
+e9b454d2f987c83b36cc8870bba47d9355db4e8f5c733b310dbc1119a7d27654  src/components/ui/tabs.tsx
+35617a2cf053e52c9e56983bde82d556861d38e462f9e578876c8e99a0432687  src/components/ui/textarea.tsx
+d59cd3937c967a3e221fdfcfe4ea5cd57eb97cbe37e1ac98126664c9c7db49c1  src/components/ui/toggle-group.tsx
+62e6e21993f1ab633b9f830cbbf0c181f3d161bae3a7792dbf2d842d42a2f09c  src/components/ui/toggle.tsx
+9682690fc3755d0f4b8684f2d7b1f77945876d41a45b723d0761b26804ad5010  src/components/ui/tooltip.tsx
+12d40bb2b06658361414e192aabf937bca22fa726d16f3f3ee976e29966a4b7e  src/hooks/use-crm-user.ts
+21eff740f9e5c965c7f0782925a7e8f67ddfcdf0f58b6613550f99c3e1c454e9  src/hooks/use-mobile.tsx
+24d0dbdf8dc0fd49b391a948bd04e1db43b97a1d851acc391dd3d1b13b9797fd  src/integrations/supabase/auth-attacher.ts
+ae40b141ce933b52252e00bfacd3e69fa7a8e6ef88a2c92809780bf7d1bb76cc  src/integrations/supabase/auth-middleware.ts
+56ec7f9ac40ccdf96d8aba4f7fe33a586590ac63420b81e6cd5dc1e4777ee28e  src/integrations/supabase/client.server.ts
+c7cbbf30db9fd052e8d767e07c9bb9d0048aa5c8e49db60e5d104350489c6549  src/integrations/supabase/client.ts
+18430aa4c7faff5b44c572a8a4dfa6482daa52acbea09f384b872f087e58e738  src/integrations/supabase/cron-auth.ts
+e868773da682af0a9cd7be1a332328600c6b828a49840a5e08200266c3864733  src/integrations/supabase/local-demo.ts
+5b00130146b77ecd8ed49f118c640d3e75aa7c5e76695f3b9e3f7f8833719f0a  src/integrations/supabase/previewAuthStorage.ts
+cee6a15908db2c9868f68bb5964f85ca0087eac798d023c7b9be06ab2f71778b  src/integrations/supabase/types.ts
+41b7f02c807b9fcf1a12999511fec6eac281c6a2d774795e35cf01190fbebffd  src/lib/admin-fns.ts
+20fd6048b6f21127cd0f1d6a243ba9d2258adfbae4241d9210919d81a25a558d  src/lib/crm.ts
+d6fa7756cbc4c399f4e891b174c2dce8160e2354972c2ae68413dfd1db843088  src/lib/error-capture.ts
+635915886f5d44a18b6add2a53959dbe2e8ba1bb3f7e597fc714650e74157bb6  src/lib/error-page.ts
+7a03f4fcfb4db09f078fc15780c57a4edbe19e2c438051ccb9c8dd256540d0d9  src/lib/format.ts
+0a2e8b5f3ffd2dd682ab78be1a9b0998b73284a6525080e4960f85827cd608d3  src/lib/lovable-error-reporting.ts
+7b9d87c09002c259316f0d10dfdc35ee8b8c9cd3685028eb337a67fc0088a747  src/lib/practice-api/client.ts
+23baa1a3aad25ad88e48b9c0f9051c898f15f8e50ff8666d902b6718646f5e36  src/lib/practice-api/contract.ts
+d1f1e0d62cb8d8d1e04c26e14de842d8a151f75812d81b046c65b5d1fe8e4b27  src/lib/utils.ts
+d2fd745a4c335daca10dac04cdef0fdf206df1b7b34f8caa112df05954c14ea3  src/routeTree.gen.ts
+72b68964d3f55ba4f7dcf2a04aad9d97d7c61fabad13aec1d298f1e39ee59fcc  src/router.tsx
+5c8187dbe79dac7a3c494f2600585508f5d15e75f04f21ea364d0de14de10575  src/routes/README.md
+1a6c76454607a21e4635ab5254f11097c511de1d67eaed6d6e3a5b765176f6d9  src/routes/__root.tsx
+fd0a493b2cc58612acb33287daec15304970982ae33306caac02ba023d6b02d3  src/routes/_authenticated/advisory.tsx
+ccef4ff3f147a34fd65497ee2ccab34c1955cd97ac7d1f8f801ff311f967a8b8  src/routes/_authenticated/assignments.$assignmentId.tsx
+eb446eb2ea5aac9368ceadd6cce0c041e373814e083d34324457f852944abd21  src/routes/_authenticated/assignments.tsx
+6f234bcd2823d2b3e77d9e8b2dca890e7d607285a91141f6326968981910334d  src/routes/_authenticated/billing.tsx
+fcce21beb99c1bd5be5eda49ba9cc9307a431b98c4ff0ca6e9879801e442a9f7  src/routes/_authenticated/clients.$clientId.tsx
+62f9f5411f9e1140d892f4b0fce1a320528e245a72dd6e12f5689d0a402d53df  src/routes/_authenticated/clients.tsx
+19a4d06022d33c6d7e79634408188334dcff8bf9e0aa628fc81dedec5cc90c56  src/routes/_authenticated/communication.tsx
+d034dd89b0a3723d1c23dc00f1a78a83576f0db43c6c51eddd90aeef392e97f0  src/routes/_authenticated/documents.tsx
+8c92a30f3ed7b8f18e709d12876e4e281f913d21f634e7d1a76770646a37f2b5  src/routes/_authenticated/index.tsx
+316c18a8974febd49c27c8f550913a6775a397670247477abb4da6f84b2d89c3  src/routes/_authenticated/internal-audit.tsx
+17df09351ac54e40c280497ffed4fa0ae8b11dcd5cdf3919687bfb924cec0fc9  src/routes/_authenticated/my-tasks.tsx
+4f942ff5ac7f5ccdddf818780c876c9d1afa6456442a7cd9d7db3e8472a4d44b  src/routes/_authenticated/receipts.tsx
+2bd5bf22249add62c4bb9078f272955c72f08ee163c461deb2418a3f50202b8e  src/routes/_authenticated/reports.tsx
+1890b8e0c5a2ca76152e3c0a435c2c45583878262cab69a97e51bae1f53ef039  src/routes/_authenticated/route.tsx
+3fe6b3825f249009b96d6c19a0050447794fc0e5fdabcf82b0608b8493a56459  src/routes/_authenticated/services.tsx
+caeb2f2e201cbca4959966d2a00497cfcd319f976d146ab4c65b28203af39e91  src/routes/_authenticated/settings.tsx
+aaf1cadc632a7d97674a99c4190821b69ae53352344db37cbc0a011b0c848888  src/routes/_authenticated/tax-money.tsx
+936420ee86222b562e056059d38a58e5cba17f5e4525a03d7b672b5cacdb68de  src/routes/_authenticated/team.tsx
+07b5406ab3b45fd6799c70105955bacc5ee17454c4e471bd72443bff2ce8ccdc  src/routes/auth.tsx
+f39b8c85647c0dcc170cd339d74a3606efaf4529dfd9fde7fab5f1fddf70e451  src/routes/reset-password.tsx
+f0ee683067afee145f81a63a3af76b3d3767e2a1f61f0e82582f8da184ad3ef6  src/server.ts
+f3f07f1f6afe27708dd41bb992e3c7c470892d44a75c32eebe57abb6327ff28f  src/start.ts
+fe6a6dd58c88c3827bdbdf6dcd5ccb029dacbeeeba8b9e5de26c18f39cbc4a40  src/styles.css
+c817058668430273e00a43620a835f562b8cfe1234ee361c057958c06470cee3  src/test/app-routing.test.tsx
+74660f78b71895971f358643cd6083838d4a9331c107850e323568cd46521e89  src/test/practice-server.test.ts
+049fd55d8c3bf8742482f5684ecf15407eadd752bad5e86907032112dc05a558  src/test/setup.ts
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  supabase/.temp/cli-latest
+f197a32e3b08c53f6857a8a813685c676785293a28cae1eb9789922f1bc5dc8b  supabase/config.toml
+```
+
+## Verification Procedure
+
+To independently verify this manifest against the working tree on disk:
+
+1. Recompute SHA-256 hashes for all regular files across `drizzle/`, `server/`, `src/`, and `supabase/` directly from disk.
+2. Confirm each calculated 64-character lowercase SHA-256 digest and forward-slash relative path matches the manifest entries exactly.
+3. Verify that directory counts are exactly 98 (`src`), 11 (`server`), 7 (`drizzle`), and 2 (`supabase`), totaling 118 files.
+4. Verify that Git working tree status for the frozen directories is completely clean:
+   ```bash
+   git status --short -- src server drizzle supabase
+   git diff -- src server drizzle supabase
+   ```
