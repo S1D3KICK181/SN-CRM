@@ -9,5 +9,8 @@
     "test:db": "node database/tests/static-policy.test.mjs",
     "test:all": "npm run test && npm run test:db",
     "typecheck": "tsc -p tsconfig.json"
+  },
+  "devDependencies": {
+    "supabase": "2.122.0"
   }
 }
