@@ -1,0 +1,1333 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SN Practice CRM — Product Presentation</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --canvas: #eef2f8;
+        --paper: #ffffff;
+        --ink: #17213b;
+        --muted: #64708a;
+        --line: #dfe5ef;
+        --indigo: #5b50d6;
+        --indigo-soft: #f0efff;
+        --gold: #c69436;
+        --gold-soft: #fbf3e2;
+        --green: #21845c;
+        --amber: #9a6819;
+        --red: #b44845;
+        --shadow: 0 24px 80px rgba(29, 42, 73, 0.16);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        min-height: 100%;
+      }
+      body {
+        overflow: hidden;
+        background: #dfe5ef;
+        color: var(--ink);
+        font-family:
+          "DM Sans",
+          Inter,
+          ui-sans-serif,
+          system-ui,
+          -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          sans-serif;
+        -webkit-font-smoothing: antialiased;
+      }
+
+      button {
+        font: inherit;
+      }
+      .deck {
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        padding: 18px 18px 58px;
+      }
+      .slide {
+        display: none;
+        position: relative;
+        width: min(calc(100vw - 36px), calc((100vh - 86px) * 16 / 9));
+        aspect-ratio: 16 / 9;
+        overflow: hidden;
+        border: 1px solid rgba(23, 33, 59, 0.08);
+        border-radius: 24px;
+        background: var(--canvas);
+        box-shadow: var(--shadow);
+        padding: clamp(34px, 4.2vw, 68px);
+      }
+      .slide.active {
+        display: block;
+        animation: enter 260ms cubic-bezier(0.16, 1, 0.3, 1);
+      }
+      .slide::after {
+        content: attr(data-number);
+        position: absolute;
+        right: 34px;
+        bottom: 24px;
+        color: #8c96aa;
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.12em;
+      }
+      @keyframes enter {
+        from {
+          opacity: 0.25;
+          transform: translateY(8px) scale(0.995);
+        }
+      }
+
+      .eyebrow {
+        margin: 0 0 14px;
+        color: var(--indigo);
+        font-size: 12px;
+        font-weight: 800;
+        letter-spacing: 0.13em;
+        text-transform: uppercase;
+      }
+      h1,
+      h2,
+      h3,
+      p {
+        margin-top: 0;
+      }
+      h1 {
+        max-width: 850px;
+        margin-bottom: 24px;
+        font-size: clamp(46px, 5.5vw, 82px);
+        line-height: 0.98;
+        letter-spacing: -0.055em;
+      }
+      h2 {
+        max-width: 920px;
+        margin-bottom: 28px;
+        font-size: clamp(32px, 4vw, 58px);
+        line-height: 1.02;
+        letter-spacing: -0.045em;
+      }
+      h3 {
+        margin-bottom: 8px;
+        font-size: 16px;
+        letter-spacing: -0.02em;
+      }
+      p {
+        color: var(--muted);
+        font-size: clamp(14px, 1.35vw, 20px);
+        line-height: 1.55;
+      }
+      .lede {
+        max-width: 780px;
+        font-size: clamp(18px, 1.8vw, 27px);
+        line-height: 1.45;
+      }
+      .muted {
+        color: var(--muted);
+      }
+      .gold {
+        color: var(--gold);
+      }
+      .indigo {
+        color: var(--indigo);
+      }
+      .small {
+        font-size: 13px;
+        line-height: 1.45;
+      }
+
+      .brand {
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        margin-bottom: 28px;
+        font-size: 13px;
+        font-weight: 800;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+      .brand-mark {
+        display: grid;
+        width: 32px;
+        height: 32px;
+        place-items: center;
+        border-radius: 10px;
+        background: var(--ink);
+        color: white;
+      }
+      .hero-ring {
+        position: absolute;
+        right: -80px;
+        bottom: -140px;
+        width: 570px;
+        height: 570px;
+        border: 88px solid rgba(91, 80, 214, 0.12);
+        border-radius: 50%;
+      }
+      .hero-ring::after {
+        content: "";
+        position: absolute;
+        inset: 68px;
+        border: 34px solid rgba(198, 148, 54, 0.18);
+        border-radius: 50%;
+      }
+
+      .grid-2 {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 22px;
+      }
+      .grid-3 {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 16px;
+      }
+      .grid-4 {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 14px;
+      }
+      .card {
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        background: var(--paper);
+        padding: 20px;
+        box-shadow: 0 12px 32px -28px rgba(23, 33, 59, 0.6);
+      }
+      .card p:last-child {
+        margin-bottom: 0;
+      }
+      .icon {
+        display: grid;
+        width: 36px;
+        height: 36px;
+        place-items: center;
+        margin-bottom: 18px;
+        border-radius: 11px;
+        background: var(--indigo-soft);
+        color: var(--indigo);
+        font-size: 17px;
+        font-weight: 800;
+      }
+      .metric {
+        font-size: clamp(25px, 3vw, 42px);
+        font-weight: 750;
+        line-height: 1;
+        letter-spacing: -0.04em;
+        font-variant-numeric: tabular-nums;
+      }
+      .metric-label {
+        margin-bottom: 15px;
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 650;
+      }
+      .metric-sub {
+        margin-top: 11px;
+        color: var(--green);
+        font-size: 11px;
+        font-weight: 750;
+      }
+
+      .role {
+        display: grid;
+        grid-template-columns: 54px 1fr;
+        gap: 15px;
+        align-items: start;
+      }
+      .role + .role {
+        margin-top: 16px;
+      }
+      .role-code {
+        display: grid;
+        width: 48px;
+        height: 48px;
+        place-items: center;
+        border-radius: 15px;
+        background: var(--ink);
+        color: #fff;
+        font-size: 12px;
+        font-weight: 800;
+      }
+      .role p {
+        margin: 2px 0 0;
+        font-size: 14px;
+      }
+
+      .flow {
+        display: flex;
+        align-items: stretch;
+        gap: 8px;
+        margin-top: 52px;
+      }
+      .flow-step {
+        position: relative;
+        display: flex;
+        flex: 1;
+        min-width: 0;
+        flex-direction: column;
+        justify-content: space-between;
+        min-height: 150px;
+        border: 1px solid var(--line);
+        border-radius: 17px;
+        background: var(--paper);
+        padding: 16px;
+      }
+      .flow-step:not(:last-child)::after {
+        content: "›";
+        position: absolute;
+        z-index: 2;
+        right: -14px;
+        top: 54px;
+        display: grid;
+        width: 20px;
+        height: 28px;
+        place-items: center;
+        color: var(--indigo);
+        font-size: 24px;
+        font-weight: 800;
+      }
+      .step-no {
+        color: var(--indigo);
+        font-size: 11px;
+        font-weight: 800;
+      }
+      .flow-step strong {
+        font-size: 13px;
+        line-height: 1.25;
+      }
+      .flow-step span:last-child {
+        color: var(--muted);
+        font-size: 11px;
+        line-height: 1.35;
+      }
+
+      .dashboard-shot {
+        position: absolute;
+        left: 54px;
+        right: 54px;
+        bottom: -6px;
+        height: 54%;
+        overflow: hidden;
+        border: 1px solid var(--line);
+        border-radius: 18px 18px 0 0;
+        background: white;
+        box-shadow: 0 -16px 54px rgba(38, 50, 82, 0.12);
+      }
+      .dashboard-shot img {
+        display: block;
+        width: 100%;
+        height: auto;
+      }
+      .dashboard-callout {
+        position: absolute;
+        z-index: 2;
+        right: 76px;
+        top: 104px;
+        width: 270px;
+        border: 1px solid #e7ddc7;
+        border-radius: 17px;
+        background: var(--gold-soft);
+        padding: 18px;
+      }
+      .dashboard-callout p {
+        margin: 6px 0 0;
+        color: #7b5a20;
+        font-size: 13px;
+      }
+
+      .feature-list {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+      }
+      .feature-list li {
+        display: grid;
+        grid-template-columns: 22px 1fr;
+        gap: 12px;
+        color: var(--ink);
+        font-size: clamp(14px, 1.25vw, 18px);
+        line-height: 1.45;
+      }
+      .feature-list li + li {
+        margin-top: 15px;
+      }
+      .check {
+        display: grid;
+        width: 20px;
+        height: 20px;
+        place-items: center;
+        margin-top: 2px;
+        border-radius: 50%;
+        background: var(--indigo-soft);
+        color: var(--indigo);
+        font-size: 11px;
+        font-weight: 900;
+      }
+
+      .client-panel {
+        min-height: 350px;
+        padding: 0;
+        overflow: hidden;
+      }
+      .client-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        border-bottom: 1px solid var(--line);
+        padding: 18px 20px;
+      }
+      .client-id {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+      .avatar {
+        display: grid;
+        width: 42px;
+        height: 42px;
+        place-items: center;
+        border-radius: 13px;
+        background: var(--ink);
+        color: white;
+        font-size: 12px;
+        font-weight: 800;
+      }
+      .tabs {
+        display: flex;
+        gap: 6px;
+        padding: 14px 18px;
+      }
+      .tab {
+        border-radius: 9px;
+        padding: 7px 9px;
+        color: var(--muted);
+        font-size: 10px;
+        font-weight: 700;
+      }
+      .tab.active {
+        background: var(--indigo-soft);
+        color: var(--indigo);
+      }
+      .client-body {
+        display: grid;
+        grid-template-columns: 1.2fr 0.8fr;
+        gap: 12px;
+        padding: 0 18px 18px;
+      }
+      .mini {
+        min-height: 170px;
+        border: 1px solid var(--line);
+        border-radius: 13px;
+        padding: 14px;
+      }
+      .mini-row {
+        display: flex;
+        justify-content: space-between;
+        padding: 9px 0;
+        border-bottom: 1px solid #eef1f6;
+        font-size: 11px;
+      }
+
+      .state-line {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        margin: 28px 0 34px;
+      }
+      .state {
+        flex: 1;
+        border-radius: 14px;
+        background: white;
+        padding: 14px 10px;
+        text-align: center;
+        color: var(--muted);
+        font-size: 11px;
+        font-weight: 750;
+      }
+      .state.active {
+        background: var(--indigo);
+        color: white;
+      }
+      .connector {
+        width: 12px;
+        height: 2px;
+        background: var(--line);
+      }
+
+      .ledger {
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        background: white;
+        overflow: hidden;
+      }
+      .ledger-row {
+        display: grid;
+        grid-template-columns: 1.3fr 0.8fr 0.8fr 0.8fr;
+        gap: 12px;
+        align-items: center;
+        min-height: 50px;
+        padding: 0 18px;
+        border-bottom: 1px solid #edf0f5;
+        font-size: 12px;
+      }
+      .ledger-row.head {
+        min-height: 40px;
+        background: #f7f8fb;
+        color: var(--muted);
+        font-size: 10px;
+        font-weight: 800;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+      .badge {
+        justify-self: start;
+        border-radius: 999px;
+        padding: 5px 9px;
+        background: #eaf6f0;
+        color: var(--green);
+        font-size: 10px;
+        font-weight: 800;
+      }
+      .badge.amber {
+        background: #fbf2df;
+        color: var(--amber);
+      }
+
+      .chart {
+        position: relative;
+        height: 210px;
+        margin-top: 25px;
+        border-left: 1px solid var(--line);
+        border-bottom: 1px solid var(--line);
+      }
+      .chart::before,
+      .chart::after {
+        content: "";
+        position: absolute;
+        left: 0;
+        right: 0;
+        height: 1px;
+        background: #e7ebf2;
+      }
+      .chart::before {
+        top: 33%;
+      }
+      .chart::after {
+        top: 66%;
+      }
+      .chart svg {
+        position: absolute;
+        inset: 10px 0 0;
+        width: 100%;
+        height: 190px;
+        overflow: visible;
+      }
+      .legend {
+        display: flex;
+        gap: 22px;
+        margin-top: 18px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .dot {
+        display: inline-block;
+        width: 8px;
+        height: 8px;
+        margin-right: 7px;
+        border-radius: 50%;
+        background: var(--indigo);
+      }
+      .dot.gold-dot {
+        background: var(--gold);
+      }
+
+      .architecture {
+        display: grid;
+        grid-template-columns: 1fr 52px 1fr 52px 1fr;
+        align-items: center;
+        gap: 10px;
+        margin-top: 48px;
+      }
+      .arch-box {
+        min-height: 210px;
+        border: 1px solid var(--line);
+        border-radius: 20px;
+        background: white;
+        padding: 23px;
+      }
+      .arch-box strong {
+        display: block;
+        margin-bottom: 10px;
+        font-size: 19px;
+      }
+      .arch-box p {
+        font-size: 13px;
+      }
+      .arrow {
+        color: var(--indigo);
+        text-align: center;
+        font-size: 34px;
+        font-weight: 400;
+      }
+      .route-note {
+        border-top: 1px solid var(--line);
+        margin-top: 17px;
+        padding-top: 12px;
+        color: var(--muted);
+        font-size: 11px;
+      }
+
+      .shield {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 14px;
+      }
+      .guard {
+        min-height: 126px;
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        background: white;
+        padding: 17px;
+      }
+      .guard strong {
+        display: block;
+        margin-bottom: 7px;
+        font-size: 14px;
+      }
+      .guard p {
+        margin: 0;
+        font-size: 12px;
+      }
+
+      .roadmap {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 14px;
+      }
+      .roadmap-col {
+        min-height: 330px;
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        background: white;
+        padding: 20px;
+      }
+      .roadmap-col:nth-child(1) {
+        border-top: 4px solid var(--green);
+      }
+      .roadmap-col:nth-child(2) {
+        border-top: 4px solid var(--indigo);
+      }
+      .roadmap-col:nth-child(3) {
+        border-top: 4px solid var(--gold);
+      }
+      .roadmap-col ul {
+        margin: 16px 0 0;
+        padding-left: 18px;
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.5;
+      }
+      .roadmap-col li + li {
+        margin-top: 9px;
+      }
+
+      .controls {
+        position: fixed;
+        z-index: 20;
+        left: 50%;
+        bottom: 12px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        transform: translateX(-50%);
+      }
+      .controls button {
+        display: grid;
+        width: 38px;
+        height: 38px;
+        place-items: center;
+        border: 1px solid #cfd6e2;
+        border-radius: 12px;
+        background: rgba(255, 255, 255, 0.94);
+        color: var(--ink);
+        cursor: pointer;
+        box-shadow: 0 8px 24px rgba(23, 33, 59, 0.12);
+      }
+      .controls button:hover {
+        border-color: #aca4ee;
+        background: white;
+        color: var(--indigo);
+      }
+      .count {
+        min-width: 70px;
+        color: #657087;
+        text-align: center;
+        font-size: 12px;
+        font-weight: 750;
+      }
+      .progress {
+        position: fixed;
+        z-index: 21;
+        left: 0;
+        bottom: 0;
+        width: 100%;
+        height: 3px;
+        background: rgba(255, 255, 255, 0.5);
+      }
+      .progress > span {
+        display: block;
+        height: 100%;
+        background: var(--indigo);
+        transition: width 180ms ease;
+      }
+
+      @media print {
+        body {
+          overflow: visible;
+          background: white;
+        }
+        .deck {
+          display: block;
+          padding: 0;
+        }
+        .slide,
+        .slide.active {
+          display: block;
+          width: 100vw;
+          height: 56.25vw;
+          break-after: page;
+          border: 0;
+          border-radius: 0;
+          box-shadow: none;
+          animation: none;
+        }
+        .controls,
+        .progress {
+          display: none;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .slide.active {
+          animation: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="deck" aria-live="polite">
+      <section class="slide active" data-number="01 / 15">
+        <div class="brand"><span class="brand-mark">SN</span> SN & Associates</div>
+        <p class="eyebrow">Product vision · 2026</p>
+        <h1>The Practice<br /><span class="indigo">Command Center</span></h1>
+        <p class="lede">
+          One calm operating system for client work, deadlines, review, billing, and collections.
+        </p>
+        <p class="small" style="position: absolute; left: 68px; bottom: 52px">
+          SN Practice CRM · Premium desktop application
+        </p>
+        <div class="hero-ring" aria-hidden="true"></div>
+      </section>
+
+      <section class="slide" data-number="02 / 15">
+        <p class="eyebrow">Definition</p>
+        <h2>An accounting-practice CRM.<br /><span class="muted">Not healthcare RCM.</span></h2>
+        <div class="grid-3">
+          <article class="card">
+            <div class="icon">01</div>
+            <h3>Operational truth</h3>
+            <p>
+              Clients, services, engagements, assignments, tasks, documents, invoices, receipts, and
+              follow-ups share one connected record.
+            </p>
+          </article>
+          <article class="card">
+            <div class="icon">02</div>
+            <h3>Decisions first</h3>
+            <p>
+              Urgent work, stalled review, overdue fees, and the next action are visible before
+              secondary detail.
+            </p>
+          </article>
+          <article class="card">
+            <div class="icon">03</div>
+            <h3>Firm-specific</h3>
+            <p>
+              Indian currency, dates, financial years, statutory deadlines, and Asia/Kolkata are
+              native conventions.
+            </p>
+          </article>
+        </div>
+      </section>
+
+      <section class="slide" data-number="03 / 15">
+        <p class="eyebrow">People and permissions</p>
+        <h2>Each role sees the practice<br />at the right altitude.</h2>
+        <div class="grid-2">
+          <div class="card">
+            <div class="role">
+              <span class="role-code">FP</span>
+              <div>
+                <h3>Founder / Partner</h3>
+                <p>Practice risk, review queues, client exposure, and collections.</p>
+              </div>
+            </div>
+            <div class="role">
+              <span class="role-code">MG</span>
+              <div>
+                <h3>Manager</h3>
+                <p>Capacity, deadlines, blockers, assignments, and review flow.</p>
+              </div>
+            </div>
+            <div class="role">
+              <span class="role-code">FN</span>
+              <div>
+                <h3>Finance</h3>
+                <p>Invoices, receipts, allocations, outstanding, and ageing.</p>
+              </div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="role">
+              <span class="role-code">AT</span>
+              <div>
+                <h3>Associates / Trainees</h3>
+                <p>Assigned work, tasks, documents, dates, and feedback.</p>
+              </div>
+            </div>
+            <div class="role">
+              <span class="role-code">SP</span>
+              <div>
+                <h3>Support</h3>
+                <p>Communication history, document follow-ups, and coordination.</p>
+              </div>
+            </div>
+            <p
+              class="small"
+              style="margin: 30px 0 0; padding-top: 18px; border-top: 1px solid var(--line)"
+            >
+              Navigation adapts by role. Row-level security remains the real permission gate.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <section class="slide" data-number="04 / 15">
+        <p class="eyebrow">Lifecycle</p>
+        <h2>From client setup to collected cash.</h2>
+        <div class="flow">
+          <div class="flow-step">
+            <span class="step-no">01</span><strong>Client</strong
+            ><span>Identity, contacts, compliance profile</span>
+          </div>
+          <div class="flow-step">
+            <span class="step-no">02</span><strong>Service & engagement</strong
+            ><span>Scope, commercial terms, ownership</span>
+          </div>
+          <div class="flow-step">
+            <span class="step-no">03</span><strong>Assignment</strong
+            ><span>Dates, team, tasks, documents</span>
+          </div>
+          <div class="flow-step">
+            <span class="step-no">04</span><strong>Review</strong
+            ><span>Quality check, corrections, sign-off</span>
+          </div>
+          <div class="flow-step">
+            <span class="step-no">05</span><strong>Invoice</strong
+            ><span>Database-generated number and due date</span>
+          </div>
+          <div class="flow-step">
+            <span class="step-no">06</span><strong>Receipt</strong
+            ><span>Allocation drives paid status and balance</span>
+          </div>
+          <div class="flow-step">
+            <span class="step-no">07</span><strong>Insight</strong
+            ><span>Delivery, collections, ageing, risk</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="slide" data-number="05 / 15">
+        <p class="eyebrow">Login destination</p>
+        <h2>Leadership dashboard</h2>
+        <div class="dashboard-callout">
+          <strong>Five modules. No filler.</strong>
+          <p>
+            Headline strip · Collections Snapshot · Top Client Outstanding · Billing & Collections ·
+            All Open Assignments
+          </p>
+        </div>
+        <div class="dashboard-shot">
+          <img src="../.impeccable/review/desktop.png" alt="SN Practice CRM leadership dashboard" />
+        </div>
+      </section>
+
+      <section class="slide" data-number="06 / 15">
+        <p class="eyebrow">Dashboard logic</p>
+        <h2>The first screen answers five questions.</h2>
+        <div class="grid-4" style="margin-bottom: 16px">
+          <div class="card">
+            <div class="metric-label">Due today</div>
+            <div class="metric">1</div>
+            <div class="metric-sub">Action needed today</div>
+          </div>
+          <div class="card">
+            <div class="metric-label">Open assignments</div>
+            <div class="metric">2</div>
+            <div class="metric-sub">Across the practice</div>
+          </div>
+          <div class="card">
+            <div class="metric-label">Pending review</div>
+            <div class="metric">1</div>
+            <div class="metric-sub" style="color: var(--amber)">Partner action</div>
+          </div>
+          <div class="card">
+            <div class="metric-label">Outstanding fees</div>
+            <div class="metric">₹1,03,000</div>
+            <div class="metric-sub" style="color: var(--red)">₹14,500 overdue</div>
+          </div>
+        </div>
+        <div class="grid-3">
+          <div class="card">
+            <h3>What needs action?</h3>
+            <p class="small">Due today, pending review, and overdue work.</p>
+          </div>
+          <div class="card">
+            <h3>Where is cash stuck?</h3>
+            <p class="small">Outstanding clients, overdue invoices, and unallocated receipts.</p>
+          </div>
+          <div class="card">
+            <h3>What should I open?</h3>
+            <p class="small">
+              Every summary links directly to its underlying ledger or work queue.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <section class="slide" data-number="07 / 15">
+        <p class="eyebrow">Client 360</p>
+        <h2>One record, every relationship.</h2>
+        <div class="grid-2">
+          <div>
+            <ul class="feature-list">
+              <li>
+                <span class="check">✓</span
+                ><span>Master profile, contacts, entity and compliance details</span>
+              </li>
+              <li>
+                <span class="check">✓</span
+                ><span>Services, engagements, assignments, tasks, and statutory dates</span>
+              </li>
+              <li>
+                <span class="check">✓</span
+                ><span>Documents, communication, invoices, receipts, and tax money</span>
+              </li>
+              <li>
+                <span class="check">✓</span
+                ><span>Role-aware visibility with the complete history kept connected</span>
+              </li>
+            </ul>
+          </div>
+          <div class="card client-panel">
+            <div class="client-head">
+              <div class="client-id">
+                <span class="avatar">AB</span>
+                <div>
+                  <strong>Arora Buildcon Pvt Ltd</strong>
+                  <div class="small muted">CL-00042 · Company</div>
+                </div>
+              </div>
+              <span class="badge">Active</span>
+            </div>
+            <div class="tabs">
+              <span class="tab active">Overview</span><span class="tab">Assignments</span
+              ><span class="tab">Documents</span><span class="tab">Billing</span
+              ><span class="tab">Communication</span>
+            </div>
+            <div class="client-body">
+              <div class="mini">
+                <h3>Open work</h3>
+                <div class="mini-row"><span>GST annual return</span><strong>In review</strong></div>
+                <div class="mini-row"><span>Tax audit</span><strong>In progress</strong></div>
+              </div>
+              <div class="mini">
+                <h3>Financials</h3>
+                <div class="mini-row"><span>Outstanding</span><strong>₹42,000</strong></div>
+                <div class="mini-row">
+                  <span>Overdue</span><strong class="gold">₹14,500</strong>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="slide" data-number="08 / 15">
+        <p class="eyebrow">Delivery control</p>
+        <h2>Assignments move through<br />a controlled state machine.</h2>
+        <div class="state-line">
+          <span class="state">Not started</span><span class="connector"></span
+          ><span class="state active">In progress</span><span class="connector"></span
+          ><span class="state">Pending review</span><span class="connector"></span
+          ><span class="state">Completed</span>
+        </div>
+        <div class="grid-3">
+          <article class="card">
+            <div class="icon">#</div>
+            <h3>Reliable identity</h3>
+            <p class="small">
+              Assignment and task codes are generated by database sequences, never guessed by the
+              UI.
+            </p>
+          </article>
+          <article class="card">
+            <div class="icon">↺</div>
+            <h3>Safe transitions</h3>
+            <p class="small">
+              Invalid jumps, stale versions, and impossible progress values are rejected before
+              mutation.
+            </p>
+          </article>
+          <article class="card">
+            <div class="icon">◎</div>
+            <h3>Clear intervention</h3>
+            <p class="small">
+              Owners, reviewers, internal dates, statutory dates, blockers, and progress remain
+              scannable.
+            </p>
+          </article>
+        </div>
+      </section>
+
+      <section class="slide" data-number="09 / 15">
+        <p class="eyebrow">Collaboration and quality</p>
+        <h2>Documents and review stay<br />inside the work history.</h2>
+        <div class="grid-2">
+          <div class="card">
+            <h3>Document loop</h3>
+            <ul class="feature-list" style="margin-top: 20px">
+              <li><span class="check">1</span><span>Request the exact evidence needed</span></li>
+              <li>
+                <span class="check">2</span
+                ><span>Track requested, received, and verified states</span>
+              </li>
+              <li>
+                <span class="check">3</span
+                ><span>Keep follow-ups tied to client and assignment</span>
+              </li>
+              <li>
+                <span class="check">4</span><span>Retain a searchable communication timeline</span>
+              </li>
+            </ul>
+          </div>
+          <div class="card">
+            <h3>Review loop</h3>
+            <ul class="feature-list" style="margin-top: 20px">
+              <li><span class="check">1</span><span>Submit work to a named reviewer</span></li>
+              <li>
+                <span class="check">2</span><span>Record corrections without losing context</span>
+              </li>
+              <li><span class="check">3</span><span>Control completion and sign-off</span></li>
+              <li>
+                <span class="check">4</span><span>Leave an immutable operational audit trail</span>
+              </li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <section class="slide" data-number="10 / 15">
+        <p class="eyebrow">Financial workflow</p>
+        <h2>Collections are calculated,<br />not manually asserted.</h2>
+        <div class="ledger">
+          <div class="ledger-row head">
+            <span>Document</span><span>Total</span><span>Received</span><span>Status</span>
+          </div>
+          <div class="ledger-row">
+            <strong>INV/26-27/0042</strong><span>₹60,000</span><span>₹60,000</span
+            ><span class="badge">Paid</span>
+          </div>
+          <div class="ledger-row">
+            <strong>INV/26-27/0048</strong><span>₹42,000</span><span>₹20,000</span
+            ><span class="badge amber">Part paid</span>
+          </div>
+          <div class="ledger-row">
+            <strong>INV/26-27/0051</strong><span>₹14,500</span><span>—</span
+            ><span class="badge amber">Overdue</span>
+          </div>
+        </div>
+        <div class="grid-3" style="margin-top: 16px">
+          <div class="card">
+            <h3>Database numbering</h3>
+            <p class="small">Invoice and receipt identities come from configured sequences.</p>
+          </div>
+          <div class="card">
+            <h3>Allocation-led balances</h3>
+            <p class="small">
+              Payments are allocated; triggers recompute received amount and status.
+            </p>
+          </div>
+          <div class="card">
+            <h3>Reconciliation visibility</h3>
+            <p class="small">Outstanding, overdue, and unallocated cash remain explicit.</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="slide" data-number="11 / 15">
+        <p class="eyebrow">Management insight</p>
+        <h2>Delivery and cash tell<br />one management story.</h2>
+        <div class="grid-2">
+          <div>
+            <div class="chart">
+              <svg
+                viewBox="0 0 600 190"
+                preserveAspectRatio="none"
+                aria-label="Billing and collections trend"
+              >
+                <polyline
+                  points="0,145 110,95 220,112 330,58 440,78 600,25"
+                  fill="none"
+                  stroke="#5b50d6"
+                  stroke-width="5"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                />
+                <polyline
+                  points="0,165 110,132 220,140 330,100 440,117 600,78"
+                  fill="none"
+                  stroke="#c69436"
+                  stroke-width="5"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                />
+              </svg>
+            </div>
+            <div class="legend">
+              <span><i class="dot"></i>Billed</span
+              ><span><i class="dot gold-dot"></i>Collected</span>
+            </div>
+          </div>
+          <div class="card">
+            <ul class="feature-list">
+              <li><span class="check">✓</span><span>Billing versus collections trend</span></li>
+              <li><span class="check">✓</span><span>Client outstanding and ageing</span></li>
+              <li>
+                <span class="check">✓</span
+                ><span>Workload, assignment progress, and review queue</span>
+              </li>
+              <li>
+                <span class="check">✓</span
+                ><span>Service, tax-money, audit, and advisory reporting</span>
+              </li>
+              <li>
+                <span class="check">✓</span><span>₹ · DD/MM/YYYY · FY 2026–27 · Asia/Kolkata</span>
+              </li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <section class="slide" data-number="12 / 15">
+        <p class="eyebrow">Architecture</p>
+        <h2>A separate backend—without<br />a dangerous big-bang rewrite.</h2>
+        <div class="architecture">
+          <div class="arch-box">
+            <div class="icon">UI</div>
+            <strong>TanStack Start</strong>
+            <p>Premium role-aware interface, typed queries, clear loading and error states.</p>
+            <div class="route-note">Existing routes remain working while migration proceeds.</div>
+          </div>
+          <div class="arrow">→</div>
+          <div class="arch-box">
+            <div class="icon">API</div>
+            <strong>Practice API</strong>
+            <p>
+              Separate Node server, typed contract, validation, CORS, abort handling, and idempotent
+              operations.
+            </p>
+            <div class="route-note">Dashboard and assignment transitions use the seam now.</div>
+          </div>
+          <div class="arrow">→</div>
+          <div class="arch-box">
+            <div class="icon">DB</div>
+            <strong>Repositories</strong>
+            <p>
+              Credential-free demo repository or Supabase repository preserving the user's token and
+              RLS.
+            </p>
+            <div class="route-note">Same business contract, different data source.</div>
+          </div>
+        </div>
+      </section>
+
+      <section class="slide" data-number="13 / 15">
+        <p class="eyebrow">Trust model</p>
+        <h2>Security and financial integrity<br />are architectural, not decorative.</h2>
+        <div class="shield">
+          <div class="guard">
+            <strong>Row-level permission layer</strong>
+            <p>
+              Roles live in user_roles; security-definer helper functions govern visibility and
+              involvement.
+            </p>
+          </div>
+          <div class="guard">
+            <strong>Privilege isolation</strong>
+            <p>
+              Founder-only operations verify the founder role before the service client is ever
+              loaded.
+            </p>
+          </div>
+          <div class="guard">
+            <strong>Atomic business operations</strong>
+            <p>
+              Mutation, audit event, outbox event, and idempotency receipt commit as one
+              transaction.
+            </p>
+          </div>
+          <div class="guard">
+            <strong>Derived financial truth</strong>
+            <p>
+              Allocation triggers own invoice received totals and paid status; UI code cannot forge
+              them.
+            </p>
+          </div>
+          <div class="guard">
+            <strong>Concurrency safety</strong>
+            <p>
+              Expected versions and transaction advisory locks prevent stale or duplicate changes.
+            </p>
+          </div>
+          <div class="guard">
+            <strong>Deployment gate</strong>
+            <p>
+              The migration must be executed and validated on disposable or staging PostgreSQL
+              before production.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <section class="slide" data-number="14 / 15">
+        <p class="eyebrow">Delivery roadmap</p>
+        <h2>Build the reliable core,<br />then earn the advanced layer.</h2>
+        <div class="roadmap">
+          <div class="roadmap-col">
+            <h3>Ready now</h3>
+            <ul>
+              <li>Premium leadership dashboard</li>
+              <li>Client, work, billing, receipts, reports</li>
+              <li>Credential-free local demo</li>
+              <li>Separate API foundation</li>
+              <li>Atomic assignment operation</li>
+              <li>Tests, docs, production build</li>
+            </ul>
+          </div>
+          <div class="roadmap-col">
+            <h3>Next migration</h3>
+            <ul>
+              <li>Execute and validate SQL migration</li>
+              <li>Migrate remaining high-risk write routes</li>
+              <li>Expand contract tests</li>
+              <li>Confirm firm-specific review and billing rules</li>
+              <li>Operational monitoring and backup runbook</li>
+            </ul>
+          </div>
+          <div class="roadmap-col">
+            <h3>Release-gated</h3>
+            <ul>
+              <li>Client portal</li>
+              <li>Email and WhatsApp automation</li>
+              <li>Document-storage integrations</li>
+              <li>Accounting exports</li>
+              <li>Advanced capacity forecasting</li>
+              <li>External statutory integrations</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <section class="slide" data-number="15 / 15">
+        <div class="brand"><span class="brand-mark">SN</span> SN Practice CRM</div>
+        <p class="eyebrow">Guided walkthrough</p>
+        <h1 style="font-size: clamp(42px, 5vw, 72px)">
+          Login → Dashboard → Client → Assignment → Billing → Receipt → Reports
+        </h1>
+        <p class="lede">
+          The product is ready to preview. The next decision is not another visual direction—it is
+          confirming SN & Associates’ exact operating rules and prioritising the remaining API
+          migrations.
+        </p>
+        <div
+          class="card"
+          style="
+            position: absolute;
+            left: 68px;
+            right: 68px;
+            bottom: 62px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 18px 22px;
+          "
+        >
+          <span
+            ><strong>Local preview</strong><br /><span class="small muted"
+              >No Supabase credentials required</span
+            ></span
+          ><span style="font-weight: 800; color: var(--indigo)"
+            >npm run api:dev &nbsp;·&nbsp; npm run dev</span
+          >
+        </div>
+      </section>
+    </main>
+
+    <nav class="controls" aria-label="Presentation controls">
+      <button id="prev" type="button" aria-label="Previous slide">←</button>
+      <span id="count" class="count">1 / 15</span>
+      <button id="next" type="button" aria-label="Next slide">→</button>
+    </nav>
+    <div class="progress" aria-hidden="true"><span id="progress"></span></div>
+
+    <script>
+      const slides = [...document.querySelectorAll(".slide")];
+      const count = document.getElementById("count");
+      const progress = document.getElementById("progress");
+      let current = 0;
+      function show(index) {
+        current = (index + slides.length) % slides.length;
+        slides.forEach((slide, i) => slide.classList.toggle("active", i === current));
+        count.textContent = `${current + 1} / ${slides.length}`;
+        progress.style.width = `${((current + 1) / slides.length) * 100}%`;
+        history.replaceState(null, "", `#${current + 1}`);
+      }
+      document.getElementById("prev").addEventListener("click", () => show(current - 1));
+      document.getElementById("next").addEventListener("click", () => show(current + 1));
+      document.addEventListener("keydown", (event) => {
+        if (["ArrowRight", "PageDown", " "].includes(event.key)) {
+          event.preventDefault();
+          show(current + 1);
+        }
+        if (["ArrowLeft", "PageUp"].includes(event.key)) {
+          event.preventDefault();
+          show(current - 1);
+        }
+        if (event.key === "Home") show(0);
+        if (event.key === "End") show(slides.length - 1);
+      });
+      const requested = Number(location.hash.slice(1));
+      show(Number.isInteger(requested) && requested > 0 ? requested - 1 : 0);
+    </script>
+  </body>
+</html>

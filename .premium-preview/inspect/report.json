@@ -1,0 +1,1781 @@
+{
+ "url": ".premium-preview\\index.html",
+ "at": "2026-10-28T12:03:01.467Z",
+ "allow": [],
+ "viewports": [
+  {
+   "width": 1440,
+   "height": 900,
+   "load": "load",
+   "screens": 1,
+   "filled": [
+    0.82
+   ],
+   "motion": {
+    "elements": 0,
+    "css": 0,
+    "transitions": 0,
+    "scripted": 0,
+    "videos": 0,
+    "playingVideos": 0
+   },
+   "metrics": {
+    "viewport": {
+     "w": 1440,
+     "h": 900
+    },
+    "page": {
+     "height": 900,
+     "screens": 1,
+     "words": 243,
+     "img": 0,
+     "video": 0,
+     "canvas": 0,
+     "svg": 19,
+     "sections": 2,
+     "horizontalOverflow": 0,
+     "overflowCulprits": [],
+     "uiFragments": 0,
+     "uiAbuse": false,
+     "realPictures": 0,
+     "videoCount": 0,
+     "uiPictures": 0,
+     "pictureSamples": [],
+     "blendText": 0,
+     "sideScrollers": 0,
+     "brokenImages": [],
+     "emoji": [],
+     "videosNoPoster": 0
+    },
+    "hero": {
+     "text": "Practice overview",
+     "words": 2,
+     "chars": 17,
+     "lines": 1,
+     "size": 26,
+     "vw": 1.8,
+     "font": "Aptos",
+     "weight": 620,
+     "tracking": -0.03,
+     "leading": 1.15,
+     "top": 62,
+     "tag": "h1",
+     "kind": "heading",
+     "align": "left",
+     "position": "left"
+    },
+    "h1": {
+     "text": "Practice overview",
+     "words": 2,
+     "lines": 1,
+     "size": 26,
+     "font": "Aptos"
+    },
+    "headings": [
+     {
+      "text": "₹12,80,000",
+      "words": 1,
+      "chars": 10,
+      "lines": 1,
+      "size": 32,
+      "vw": 2.2,
+      "font": "Cambria",
+      "weight": 600,
+      "tracking": -0.025,
+      "leading": 1.1,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "left",
+      "widthRatio": 0.27,
+      "top": 249,
+      "tag": "strong",
+      "kind": "heading"
+     }
+    ],
+    "headingSummary": {
+     "count": 1,
+     "maxLines": 1,
+     "over2Lines": 0,
+     "statements": 0,
+     "centered": 0,
+     "medianWords": null,
+     "mixedFontHeadings": 0
+    },
+    "type": {
+     "families": [
+      {
+       "family": "Aptos",
+       "share": 0.94,
+       "mono": false
+      },
+      {
+       "family": "Cambria",
+       "share": 0.06,
+       "mono": false
+      }
+     ],
+     "familyCount": 2,
+     "sizes": [
+      10,
+      11,
+      12,
+      13,
+      14,
+      15,
+      16,
+      20,
+      23,
+      26,
+      32
+     ],
+     "sizeCount": 11,
+     "notLoaded": [],
+     "body": null,
+     "measureChars": null,
+     "max": {
+      "size": 32,
+      "vw": 2.2,
+      "font": "Cambria",
+      "text": "₹12,80,000"
+     },
+     "monoShare": 0,
+     "monoProseShare": 0,
+     "monoFamilies": [],
+     "monoSamples": [],
+     "microLabels": 1,
+     "microLabelShare": 0.002,
+     "microSamples": [
+      "CRM"
+     ],
+     "upperShare": 0.04,
+     "centerShare": 0.13,
+     "smallText": 27
+    },
+    "eyebrows": [
+     {
+      "text": "Received",
+      "above": "₹12,80,000",
+      "upper": false,
+      "tracked": false,
+      "mono": false,
+      "pill": false,
+      "size": 12,
+      "top": 230
+     }
+    ],
+    "numbered": [
+     {
+      "text": "01",
+      "size": 11,
+      "top": 232
+     },
+     {
+      "text": "02",
+      "size": 11,
+      "top": 232
+     },
+     {
+      "text": "03",
+      "size": 11,
+      "top": 232
+     },
+     {
+      "text": "03",
+      "size": 16,
+      "top": 433
+     }
+    ],
+    "color": {
+     "bodyBg": "#f5f3ee",
+     "bodyBgHsl": {
+      "h": 43,
+      "s": 0.26,
+      "l": 0.95
+     },
+     "dark": false,
+     "sectionBgs": [],
+     "textColors": [
+      {
+       "color": "#67645d",
+       "share": 0.55
+      },
+      {
+       "color": "#1c1c19",
+       "share": 0.3
+      },
+      {
+       "color": "#858077",
+       "share": 0.05
+      },
+      {
+       "color": "#765921",
+       "share": 0.04
+      },
+      {
+       "color": "#a43d35",
+       "share": 0.02
+      }
+     ],
+     "button": {
+      "bg": "#ffffff",
+      "hsl": {
+       "h": 0,
+       "s": 0,
+       "l": 1
+      },
+      "fg": "#1c1c19"
+     },
+     "lowContrast": [
+      {
+       "text": "Practice",
+       "ratio": 3.9,
+       "need": 4.5,
+       "size": 12,
+       "fg": "#858077",
+       "bg": "#ffffff"
+      },
+      {
+       "text": "Finance",
+       "ratio": 3.9,
+       "need": 4.5,
+       "size": 12,
+       "fg": "#858077",
+       "bg": "#ffffff"
+      },
+      {
+       "text": "Assignment",
+       "ratio": 3.9,
+       "need": 4.5,
+       "size": 10,
+       "fg": "#858077",
+       "bg": "#ffffff"
+      },
+      {
+       "text": "Status",
+       "ratio": 3.9,
+       "need": 4.5,
+       "size": 10,
+       "fg": "#858077",
+       "bg": "#ffffff"
+      }
+     ]
+    },
+    "buttons": {
+     "count": 10,
+     "inHero": 10,
+     "radius": 0,
+     "height": 60,
+     "withShadow": 1,
+     "withGradient": 0,
+     "mono": 0,
+     "upper": 0,
+     "heroLabels": [
+      "S SN & Associates FY 2026–27",
+      "Overview",
+      "New assignment",
+      "This month",
+      "30 Oct GSTR-1 filing review Mehta Textil"
+     ]
+    },
+    "surfaces": {
+     "shadowStatic": 2,
+     "shadowOverlay": 1,
+     "shadowSamples": [
+      "div.search-results → rgba(44, 38, 28, 0.14) 0px 12px 32px 0px",
+      "button.active → rgba(33, 29, 20, 0.1) 0px 1px 3px 0px"
+     ],
+     "gradients": 0,
+     "scrims": 0,
+     "gradientSamples": [],
+     "gradientText": 0,
+     "hairlines": 18,
+     "hairlineSamples": [
+      "aside.sidebar 244px",
+      "div.panel-header 688px",
+      "div.panel-header 412px",
+      "button 376px",
+      "button 376px"
+     ],
+     "outlinedBoxes": 5,
+     "dashed": 0,
+     "blurred": 0,
+     "roundedBoxes": 5,
+     "boxRadius": 9,
+     "squareMedia": 0,
+     "roundedMedia": 0,
+     "mediaRadius": 0,
+     "textShadow": 0,
+     "cardRows": []
+    },
+    "heroMedia": [],
+    "nav": {
+     "links": 0,
+     "fixed": true,
+     "height": 900,
+     "floatingPill": false,
+     "blur": false
+    },
+    "fontsLoaded": []
+   },
+   "layout": {
+    "viewport": {
+     "w": 1440,
+     "h": 900
+    },
+    "pageH": 900,
+    "margins": {
+     "left": 283,
+     "right": 57
+    },
+    "sections": [
+     {
+      "sel": "section.lead-grid",
+      "tag": "section",
+      "top": 139,
+      "height": 356,
+      "words": 86,
+      "media": 0,
+      "middle": 124,
+      "heading": {
+       "text": "₹12,80,000",
+       "size": 32,
+       "tag": "strong"
+      },
+      "left": 301,
+      "right": 57,
+      "textLeft": 301,
+      "textRight": 57,
+      "fullBleed": false,
+      "footer": false,
+      "hero": true,
+      "continues": false,
+      "pinned": false
+     },
+     {
+      "sel": "section.lower-grid",
+      "tag": "section",
+      "top": 511,
+      "height": 302,
+      "words": 93,
+      "media": 0,
+      "middle": 36,
+      "heading": {
+       "text": "Needs attention",
+       "size": 15,
+       "tag": "h2"
+      },
+      "left": 283,
+      "right": 57,
+      "textLeft": 301,
+      "textRight": 57,
+      "fullBleed": false,
+      "footer": true,
+      "hero": false,
+      "continues": false,
+      "pinned": false
+     }
+    ],
+    "gaps": [],
+    "h1s": [
+     {
+      "text": "Practice overview",
+      "size": 26,
+      "top": 62,
+      "firstScreen": true
+     }
+    ],
+    "edgeText": [],
+    "edges": [
+     {
+      "x": 301,
+      "n": 2
+     },
+     {
+      "x": 282,
+      "n": 1
+     },
+     {
+      "x": 1007,
+      "n": 1
+     },
+     {
+      "x": 1061,
+      "n": 1
+     }
+    ],
+    "leftBlocks": 5,
+    "bodySize": 13,
+    "stage": false,
+    "explains": false,
+    "slivers": [],
+    "voidShare": 0.04,
+    "voidBox": {
+     "x": 540,
+     "y": 120,
+     "w": 180,
+     "h": 300
+    }
+   },
+   "app": {
+    "viewport": {
+     "w": 1440,
+     "h": 900
+    },
+    "dark": false,
+    "ground": "#f5f3ee",
+    "sidebar": {
+     "w": 244,
+     "tag": "aside",
+     "links": 11,
+     "share": 0.17
+    },
+    "topbar": null,
+    "canvas": {
+     "left": 39,
+     "right": 53
+    },
+    "hero": {
+     "text": "Practice overview",
+     "words": 2,
+     "chars": 17,
+     "lines": 1,
+     "size": 26,
+     "vw": 1.8,
+     "font": "Aptos",
+     "weight": 620,
+     "tracking": -0.03,
+     "leading": 1.15,
+     "top": 62,
+     "tag": "h1",
+     "kind": "heading",
+     "align": "left",
+     "position": "left"
+    },
+    "charts": 2,
+    "layout": {
+     "panels": 5,
+     "firstScreen": 5,
+     "ragged": [],
+     "voids": [
+      {
+       "gap": 57,
+       "at": 437,
+       "panel": "Collections"
+      }
+     ]
+    },
+    "tiles": 0,
+    "panels": {
+     "count": 5,
+     "radii": [
+      [
+       9,
+       4
+      ],
+      [
+       0,
+       1
+      ]
+     ],
+     "heavyBorders": 0,
+     "borderSamples": [],
+     "heavyShadows": 0,
+     "softShadows": 0,
+     "shadowSamples": [],
+     "glass": 0
+    },
+    "chips": {
+     "count": 0,
+     "hues": 0,
+     "samples": []
+    },
+    "numbers": {
+     "cells": 0,
+     "leftAligned": 0,
+     "figures": 8,
+     "tabularShare": 0.88,
+     "kpiMax": 11
+    },
+    "rows": {
+     "count": 4,
+     "median": 58
+    },
+    "chartHues": 0,
+    "placeholders": [],
+    "type": {
+     "under13": 0.62,
+     "tiny": 34,
+     "tinySamples": [
+      "⌘ K 10px",
+      "₹4L 10px",
+      "₹2L 10px",
+      "₹3.4L 10px"
+     ],
+     "sizes": [
+      10,
+      11,
+      12,
+      13,
+      14,
+      15,
+      16,
+      20,
+      23,
+      26,
+      32
+     ]
+    },
+    "title": {
+     "text": "Practice overview",
+     "size": 26,
+     "top": 62
+    },
+    "colourShare": 0.007
+   },
+   "consoleErrors": []
+  },
+  {
+   "width": 768,
+   "height": 1024,
+   "load": "load",
+   "screens": 2,
+   "filled": [
+    0.82,
+    0.96
+   ],
+   "motion": {
+    "elements": 0,
+    "css": 0,
+    "transitions": 0,
+    "scripted": 0,
+    "videos": 0,
+    "playingVideos": 0
+   },
+   "metrics": {
+    "viewport": {
+     "w": 768,
+     "h": 1024
+    },
+    "page": {
+     "height": 1623,
+     "screens": 1.6,
+     "words": 243,
+     "img": 0,
+     "video": 0,
+     "canvas": 0,
+     "svg": 19,
+     "sections": 2,
+     "horizontalOverflow": 20,
+     "overflowCulprits": [
+      "button.primary-button (+20px)"
+     ],
+     "uiFragments": 0,
+     "uiAbuse": false,
+     "realPictures": 0,
+     "videoCount": 0,
+     "uiPictures": 0,
+     "pictureSamples": [],
+     "blendText": 0,
+     "sideScrollers": 0,
+     "brokenImages": [],
+     "emoji": [],
+     "videosNoPoster": 0
+    },
+    "hero": {
+     "text": "Practice overview",
+     "words": 2,
+     "chars": 17,
+     "lines": 2,
+     "size": 26,
+     "vw": 3.4,
+     "font": "Aptos",
+     "weight": 620,
+     "tracking": -0.03,
+     "leading": 1.15,
+     "top": 62,
+     "tag": "h1",
+     "kind": "heading",
+     "align": "left",
+     "position": "left"
+    },
+    "h1": {
+     "text": "Practice overview",
+     "words": 2,
+     "lines": 2,
+     "size": 26,
+     "font": "Aptos"
+    },
+    "headings": [
+     {
+      "text": "Practice overview",
+      "words": 2,
+      "chars": 17,
+      "lines": 2,
+      "size": 26,
+      "vw": 3.4,
+      "font": "Aptos",
+      "weight": 620,
+      "tracking": -0.028,
+      "leading": 1.15,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "left",
+      "widthRatio": 0.13,
+      "top": 62,
+      "tag": "h1",
+      "kind": "heading"
+     },
+     {
+      "text": "₹12,80,000",
+      "words": 1,
+      "chars": 10,
+      "lines": 1,
+      "size": 32,
+      "vw": 4.2,
+      "font": "Cambria",
+      "weight": 600,
+      "tracking": -0.025,
+      "leading": 1.1,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "center",
+      "widthRatio": 0.24,
+      "top": 330,
+      "tag": "strong",
+      "kind": "heading"
+     }
+    ],
+    "headingSummary": {
+     "count": 2,
+     "maxLines": 2,
+     "over2Lines": 0,
+     "statements": 0,
+     "centered": 0,
+     "medianWords": 2,
+     "mixedFontHeadings": 0
+    },
+    "type": {
+     "families": [
+      {
+       "family": "Aptos",
+       "share": 0.94,
+       "mono": false
+      },
+      {
+       "family": "Cambria",
+       "share": 0.06,
+       "mono": false
+      }
+     ],
+     "familyCount": 2,
+     "sizes": [
+      10,
+      11,
+      12,
+      13,
+      14,
+      15,
+      16,
+      20,
+      23,
+      26,
+      32
+     ],
+     "sizeCount": 11,
+     "notLoaded": [],
+     "body": null,
+     "measureChars": null,
+     "max": {
+      "size": 32,
+      "vw": 4.2,
+      "font": "Cambria",
+      "text": "₹12,80,000"
+     },
+     "monoShare": 0,
+     "monoProseShare": 0,
+     "monoFamilies": [],
+     "monoSamples": [],
+     "microLabels": 1,
+     "microLabelShare": 0.002,
+     "microSamples": [
+      "CRM"
+     ],
+     "upperShare": 0.04,
+     "centerShare": 0.13,
+     "smallText": 27
+    },
+    "eyebrows": [
+     {
+      "text": "Received",
+      "above": "₹12,80,000",
+      "upper": false,
+      "tracked": false,
+      "mono": false,
+      "pill": false,
+      "size": 12,
+      "top": 311
+     }
+    ],
+    "numbered": [
+     {
+      "text": "01",
+      "size": 11,
+      "top": 648
+     },
+     {
+      "text": "02",
+      "size": 11,
+      "top": 648
+     },
+     {
+      "text": "03",
+      "size": 11,
+      "top": 648
+     },
+     {
+      "text": "03",
+      "size": 16,
+      "top": 849
+     }
+    ],
+    "color": {
+     "bodyBg": "#f5f3ee",
+     "bodyBgHsl": {
+      "h": 43,
+      "s": 0.26,
+      "l": 0.95
+     },
+     "dark": false,
+     "sectionBgs": [
+      {
+       "color": "#ffffff",
+       "top": 0,
+       "hsl": {
+        "h": 0,
+        "s": 0,
+        "l": 1
+       }
+      }
+     ],
+     "textColors": [
+      {
+       "color": "#67645d",
+       "share": 0.55
+      },
+      {
+       "color": "#1c1c19",
+       "share": 0.3
+      },
+      {
+       "color": "#858077",
+       "share": 0.05
+      },
+      {
+       "color": "#765921",
+       "share": 0.04
+      },
+      {
+       "color": "#a43d35",
+       "share": 0.02
+      }
+     ],
+     "button": {
+      "bg": "#ffffff",
+      "hsl": {
+       "h": 0,
+       "s": 0,
+       "l": 1
+      },
+      "fg": "#1c1c19"
+     },
+     "lowContrast": [
+      {
+       "text": "Practice",
+       "ratio": 3.9,
+       "need": 4.5,
+       "size": 12,
+       "fg": "#858077",
+       "bg": "#ffffff"
+      },
+      {
+       "text": "Finance",
+       "ratio": 3.9,
+       "need": 4.5,
+       "size": 12,
+       "fg": "#858077",
+       "bg": "#ffffff"
+      },
+      {
+       "text": "Assignment",
+       "ratio": 3.9,
+       "need": 4.5,
+       "size": 10,
+       "fg": "#858077",
+       "bg": "#ffffff"
+      },
+      {
+       "text": "Status",
+       "ratio": 3.9,
+       "need": 4.5,
+       "size": 10,
+       "fg": "#858077",
+       "bg": "#ffffff"
+      }
+     ]
+    },
+    "buttons": {
+     "count": 10,
+     "inHero": 7,
+     "radius": 0,
+     "height": 60,
+     "withShadow": 1,
+     "withGradient": 0,
+     "mono": 0,
+     "upper": 0,
+     "heroLabels": [
+      "S SN & Associates FY 2026–27",
+      "Overview",
+      "New assignment",
+      "This month",
+      "30 Oct GSTR-1 filing review Mehta Textil"
+     ]
+    },
+    "surfaces": {
+     "shadowStatic": 2,
+     "shadowOverlay": 1,
+     "shadowSamples": [
+      "div.search-results → rgba(44, 38, 28, 0.14) 0px 12px 32px 0px",
+      "button.active → rgba(33, 29, 20, 0.1) 0px 1px 3px 0px"
+     ],
+     "gradients": 0,
+     "scrims": 0,
+     "gradientSamples": [],
+     "gradientText": 0,
+     "hairlines": 18,
+     "hairlineSamples": [
+      "aside.sidebar 244px",
+      "div.panel-header 474px",
+      "div.panel-header 474px",
+      "button 438px",
+      "button 438px"
+     ],
+     "outlinedBoxes": 5,
+     "dashed": 0,
+     "blurred": 0,
+     "roundedBoxes": 5,
+     "boxRadius": 9,
+     "squareMedia": 0,
+     "roundedMedia": 0,
+     "mediaRadius": 0,
+     "textShadow": 0,
+     "cardRows": []
+    },
+    "heroMedia": [],
+    "nav": {
+     "links": 0,
+     "fixed": true,
+     "height": 1024,
+     "floatingPill": false,
+     "blur": false
+    },
+    "fontsLoaded": []
+   },
+   "layout": {
+    "viewport": {
+     "w": 768,
+     "h": 1024
+    },
+    "pageH": 1623,
+    "margins": {
+     "left": 269,
+     "right": 25
+    },
+    "sections": [
+     {
+      "sel": "header.page-header",
+      "tag": "header",
+      "top": 62,
+      "height": 134,
+      "words": 12,
+      "media": 0,
+      "middle": 42,
+      "heading": null,
+      "left": 268,
+      "right": 0,
+      "textLeft": 268,
+      "textRight": 6,
+      "fullBleed": false,
+      "footer": false,
+      "hero": true,
+      "continues": false,
+      "pinned": false
+     },
+     {
+      "sel": "section.lead-grid",
+      "tag": "section",
+      "top": 220,
+      "height": 691,
+      "words": 86,
+      "media": 0,
+      "middle": 0,
+      "heading": {
+       "text": "₹12,80,000",
+       "size": 32,
+       "tag": "strong"
+      },
+      "left": 287,
+      "right": 43,
+      "textLeft": 287,
+      "textRight": 43,
+      "fullBleed": false,
+      "footer": false,
+      "hero": true,
+      "continues": false,
+      "pinned": false
+     },
+     {
+      "sel": "section.lower-grid",
+      "tag": "section",
+      "top": 927,
+      "height": 624,
+      "words": 87,
+      "media": 0,
+      "middle": 0,
+      "heading": {
+       "text": "Needs attention",
+       "size": 15,
+       "tag": "h2"
+      },
+      "left": 269,
+      "right": 25,
+      "textLeft": 287,
+      "textRight": 43,
+      "fullBleed": false,
+      "footer": true,
+      "hero": false,
+      "continues": false,
+      "pinned": false
+     }
+    ],
+    "gaps": [],
+    "h1s": [
+     {
+      "text": "Practice overview",
+      "size": 26,
+      "top": 62,
+      "firstScreen": true
+     }
+    ],
+    "edgeText": [
+     {
+      "text": "New assignment",
+      "side": "right",
+      "px": 6
+     }
+    ],
+    "edges": [
+     {
+      "x": 287,
+      "n": 4
+     },
+     {
+      "x": 268,
+      "n": 1
+     }
+    ],
+    "leftBlocks": 5,
+    "bodySize": 13,
+    "stage": false,
+    "explains": false,
+    "slivers": [],
+    "voidShare": 0,
+    "voidBox": null
+   },
+   "app": {
+    "viewport": {
+     "w": 768,
+     "h": 1024
+    },
+    "dark": false,
+    "ground": "#f5f3ee",
+    "sidebar": {
+     "w": 244,
+     "tag": "aside",
+     "links": 11,
+     "share": 0.32
+    },
+    "topbar": null,
+    "canvas": {
+     "left": 25,
+     "right": -87
+    },
+    "hero": {
+     "text": "Practice overview",
+     "words": 2,
+     "chars": 17,
+     "lines": 2,
+     "size": 26,
+     "vw": 3.4,
+     "font": "Aptos",
+     "weight": 620,
+     "tracking": -0.03,
+     "leading": 1.15,
+     "top": 62,
+     "tag": "h1",
+     "kind": "heading",
+     "align": "left",
+     "position": "left"
+    },
+    "charts": 2,
+    "layout": {
+     "panels": 5,
+     "firstScreen": 4,
+     "ragged": [],
+     "voids": []
+    },
+    "tiles": 0,
+    "panels": {
+     "count": 5,
+     "radii": [
+      [
+       9,
+       4
+      ],
+      [
+       0,
+       1
+      ]
+     ],
+     "heavyBorders": 0,
+     "borderSamples": [],
+     "heavyShadows": 0,
+     "softShadows": 0,
+     "shadowSamples": [],
+     "glass": 0
+    },
+    "chips": {
+     "count": 0,
+     "hues": 0,
+     "samples": []
+    },
+    "numbers": {
+     "cells": 0,
+     "leftAligned": 0,
+     "figures": 8,
+     "tabularShare": 0.88,
+     "kpiMax": 11
+    },
+    "rows": {
+     "count": 4,
+     "median": 58
+    },
+    "chartHues": 0,
+    "placeholders": [],
+    "type": {
+     "under13": 0.62,
+     "tiny": 34,
+     "tinySamples": [
+      "⌘ K 10px",
+      "₹4L 10px",
+      "₹2L 10px",
+      "₹3.4L 10px"
+     ],
+     "sizes": [
+      10,
+      11,
+      12,
+      13,
+      14,
+      15,
+      16,
+      20,
+      23,
+      26,
+      32
+     ]
+    },
+    "title": {
+     "text": "Practice overview",
+     "size": 26,
+     "top": 62
+    },
+    "colourShare": 0.01
+   },
+   "consoleErrors": []
+  },
+  {
+   "width": 390,
+   "height": 844,
+   "load": "load",
+   "screens": 3,
+   "filled": [
+    0.71,
+    0.92,
+    0.8
+   ],
+   "motion": {
+    "elements": 0,
+    "css": 0,
+    "transitions": 0,
+    "scripted": 0,
+    "videos": 0,
+    "playingVideos": 0
+   },
+   "metrics": {
+    "viewport": {
+     "w": 390,
+     "h": 844
+    },
+    "page": {
+     "height": 1778,
+     "screens": 2.1,
+     "words": 229,
+     "img": 0,
+     "video": 0,
+     "canvas": 0,
+     "svg": 19,
+     "sections": 2,
+     "horizontalOverflow": 0,
+     "overflowCulprits": [],
+     "uiFragments": 0,
+     "uiAbuse": false,
+     "realPictures": 0,
+     "videoCount": 0,
+     "uiPictures": 0,
+     "pictureSamples": [],
+     "blendText": 0,
+     "sideScrollers": 0,
+     "brokenImages": [],
+     "emoji": [],
+     "videosNoPoster": 0
+    },
+    "hero": {
+     "text": "Practice overview",
+     "words": 2,
+     "chars": 17,
+     "lines": 1,
+     "size": 23,
+     "vw": 5.9,
+     "font": "Aptos",
+     "weight": 620,
+     "tracking": -0.03,
+     "leading": 1.15,
+     "top": 64,
+     "tag": "h1",
+     "kind": "heading",
+     "align": "left",
+     "position": "left"
+    },
+    "h1": {
+     "text": "Practice overview",
+     "words": 2,
+     "lines": 1,
+     "size": 23,
+     "font": "Aptos"
+    },
+    "headings": [
+     {
+      "text": "Practice overview",
+      "words": 2,
+      "chars": 17,
+      "lines": 1,
+      "size": 23,
+      "vw": 5.9,
+      "font": "Aptos",
+      "weight": 620,
+      "tracking": -0.028,
+      "leading": 1.15,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "center",
+      "widthRatio": 0.92,
+      "top": 64,
+      "tag": "h1",
+      "kind": "heading"
+     },
+     {
+      "text": "SN",
+      "words": 1,
+      "chars": 2,
+      "lines": 1,
+      "size": 23,
+      "vw": 5.9,
+      "font": "Cambria",
+      "weight": 400,
+      "tracking": -0.06,
+      "leading": 1.39,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "left",
+      "widthRatio": 0.1,
+      "top": 70,
+      "tag": "div",
+      "kind": "heading"
+     },
+     {
+      "text": "₹12,80,000",
+      "words": 1,
+      "chars": 10,
+      "lines": 1,
+      "size": 29,
+      "vw": 7.4,
+      "font": "Cambria",
+      "weight": 600,
+      "tracking": -0.025,
+      "leading": 1.1,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "center",
+      "widthRatio": 0.84,
+      "top": 333,
+      "tag": "strong",
+      "kind": "heading"
+     }
+    ],
+    "headingSummary": {
+     "count": 3,
+     "maxLines": 1,
+     "over2Lines": 0,
+     "statements": 0,
+     "centered": 0,
+     "medianWords": 2,
+     "mixedFontHeadings": 0
+    },
+    "type": {
+     "families": [
+      {
+       "family": "Aptos",
+       "share": 0.94,
+       "mono": false
+      },
+      {
+       "family": "Cambria",
+       "share": 0.06,
+       "mono": false
+      }
+     ],
+     "familyCount": 2,
+     "sizes": [
+      10,
+      11,
+      12,
+      13,
+      14,
+      15,
+      16,
+      17,
+      23,
+      29
+     ],
+     "sizeCount": 10,
+     "notLoaded": [],
+     "body": null,
+     "measureChars": null,
+     "max": {
+      "size": 29,
+      "vw": 7.4,
+      "font": "Cambria",
+      "text": "₹12,80,000"
+     },
+     "monoShare": 0,
+     "monoProseShare": 0,
+     "monoFamilies": [],
+     "monoSamples": [],
+     "microLabels": 1,
+     "microLabelShare": 0.002,
+     "microSamples": [
+      "CRM"
+     ],
+     "upperShare": 0.05,
+     "centerShare": 0.13,
+     "smallText": 25
+    },
+    "eyebrows": [
+     {
+      "text": "Received",
+      "above": "₹12,80,000",
+      "upper": false,
+      "tracked": false,
+      "mono": false,
+      "pill": false,
+      "size": 12,
+      "top": 314
+     }
+    ],
+    "numbered": [
+     {
+      "text": "01",
+      "size": 11,
+      "top": 708
+     },
+     {
+      "text": "02",
+      "size": 11,
+      "top": 708
+     },
+     {
+      "text": "03",
+      "size": 11,
+      "top": 708
+     },
+     {
+      "text": "03",
+      "size": 16,
+      "top": 940
+     }
+    ],
+    "color": {
+     "bodyBg": "#f5f3ee",
+     "bodyBgHsl": {
+      "h": 43,
+      "s": 0.26,
+      "l": 0.95
+     },
+     "dark": false,
+     "sectionBgs": [
+      {
+       "color": "#ffffff",
+       "top": 0,
+       "hsl": {
+        "h": 0,
+        "s": 0,
+        "l": 1
+       }
+      }
+     ],
+     "textColors": [
+      {
+       "color": "#67645d",
+       "share": 0.53
+      },
+      {
+       "color": "#1c1c19",
+       "share": 0.31
+      },
+      {
+       "color": "#765921",
+       "share": 0.05
+      },
+      {
+       "color": "#858077",
+       "share": 0.04
+      },
+      {
+       "color": "#a43d35",
+       "share": 0.02
+      }
+     ],
+     "button": {
+      "bg": "#ffffff",
+      "hsl": {
+       "h": 0,
+       "s": 0,
+       "l": 1
+      },
+      "fg": "#1c1c19"
+     },
+     "lowContrast": [
+      {
+       "text": "Practice",
+       "ratio": 3.9,
+       "need": 4.5,
+       "size": 12,
+       "fg": "#858077",
+       "bg": "#ffffff"
+      },
+      {
+       "text": "Finance",
+       "ratio": 3.9,
+       "need": 4.5,
+       "size": 12,
+       "fg": "#858077",
+       "bg": "#ffffff"
+      }
+     ]
+    },
+    "buttons": {
+     "count": 9,
+     "inHero": 4,
+     "radius": 0,
+     "height": 78,
+     "withShadow": 0,
+     "withGradient": 0,
+     "mono": 0,
+     "upper": 0,
+     "heroLabels": [
+      "S SN & Associates FY 2026–27",
+      "Overview",
+      "New assignment",
+      "30 Oct GSTR-1 filing review Mehta Textil"
+     ]
+    },
+    "surfaces": {
+     "shadowStatic": 1,
+     "shadowOverlay": 1,
+     "shadowSamples": [
+      "div.search-results → rgba(44, 38, 28, 0.14) 0px 12px 32px 0px"
+     ],
+     "gradients": 0,
+     "scrims": 0,
+     "gradientSamples": [],
+     "gradientText": 0,
+     "hairlines": 17,
+     "hairlineSamples": [
+      "aside.sidebar 320px",
+      "div.panel-header 356px",
+      "div.panel-header 356px",
+      "button 328px",
+      "button 328px"
+     ],
+     "outlinedBoxes": 5,
+     "dashed": 0,
+     "blurred": 0,
+     "roundedBoxes": 5,
+     "boxRadius": 9,
+     "squareMedia": 0,
+     "roundedMedia": 0,
+     "mediaRadius": 0,
+     "textShadow": 0,
+     "cardRows": []
+    },
+    "heroMedia": [],
+    "nav": {
+     "links": 0,
+     "fixed": true,
+     "height": 844,
+     "floatingPill": false,
+     "blur": false
+    },
+    "fontsLoaded": []
+   },
+   "layout": {
+    "viewport": {
+     "w": 390,
+     "h": 844
+    },
+    "pageH": 1778,
+    "margins": {
+     "left": 16,
+     "right": 17
+    },
+    "sections": [
+     {
+      "sel": "header.page-header",
+      "tag": "header",
+      "top": 64,
+      "height": 126,
+      "words": 10,
+      "media": 0,
+      "middle": 10,
+      "heading": null,
+      "left": 16,
+      "right": 16,
+      "textLeft": 16,
+      "textRight": 28,
+      "fullBleed": false,
+      "footer": false,
+      "hero": true,
+      "continues": false,
+      "pinned": false
+     },
+     {
+      "sel": "section.lead-grid",
+      "tag": "section",
+      "top": 208,
+      "height": 815,
+      "words": 86,
+      "media": 0,
+      "middle": 0,
+      "heading": {
+       "text": "₹12,80,000",
+       "size": 29,
+       "tag": "strong"
+      },
+      "left": 31,
+      "right": 31,
+      "textLeft": 31,
+      "textRight": 31,
+      "fullBleed": false,
+      "footer": false,
+      "hero": true,
+      "continues": false,
+      "pinned": false
+     },
+     {
+      "sel": "section.lower-grid",
+      "tag": "section",
+      "top": 1035,
+      "height": 653,
+      "words": 81,
+      "media": 0,
+      "middle": 0,
+      "heading": {
+       "text": "Needs attention",
+       "size": 15,
+       "tag": "h2"
+      },
+      "left": 17,
+      "right": 17,
+      "textLeft": 31,
+      "textRight": 31,
+      "fullBleed": false,
+      "footer": true,
+      "hero": false,
+      "continues": false,
+      "pinned": false
+     }
+    ],
+    "gaps": [],
+    "h1s": [
+     {
+      "text": "Practice overview",
+      "size": 23,
+      "top": 64,
+      "firstScreen": true
+     }
+    ],
+    "edgeText": [],
+    "edges": [
+     {
+      "x": 31,
+      "n": 4
+     },
+     {
+      "x": 16,
+      "n": 1
+     }
+    ],
+    "leftBlocks": 5,
+    "bodySize": 13,
+    "stage": false,
+    "explains": false,
+    "slivers": [],
+    "voidShare": 0,
+    "voidBox": null
+   },
+   "app": {
+    "viewport": {
+     "w": 390,
+     "h": 844
+    },
+    "dark": false,
+    "ground": "#f5f3ee",
+    "sidebar": null,
+    "topbar": null,
+    "canvas": {
+     "left": 16,
+     "right": 17
+    },
+    "hero": {
+     "text": "Practice overview",
+     "words": 2,
+     "chars": 17,
+     "lines": 1,
+     "size": 23,
+     "vw": 5.9,
+     "font": "Aptos",
+     "weight": 620,
+     "tracking": -0.03,
+     "leading": 1.15,
+     "top": 64,
+     "tag": "h1",
+     "kind": "heading",
+     "align": "left",
+     "position": "left"
+    },
+    "charts": 2,
+    "layout": {
+     "panels": 5,
+     "firstScreen": 3,
+     "ragged": [],
+     "voids": []
+    },
+    "tiles": 0,
+    "panels": {
+     "count": 8,
+     "radii": [
+      [
+       0,
+       4
+      ],
+      [
+       9,
+       4
+      ]
+     ],
+     "heavyBorders": 0,
+     "borderSamples": [],
+     "heavyShadows": 0,
+     "softShadows": 0,
+     "shadowSamples": [],
+     "glass": 0
+    },
+    "chips": {
+     "count": 0,
+     "hues": 0,
+     "samples": []
+    },
+    "numbers": {
+     "cells": 0,
+     "leftAligned": 0,
+     "figures": 8,
+     "tabularShare": 0.88,
+     "kpiMax": 11
+    },
+    "rows": {
+     "count": 3,
+     "median": 76
+    },
+    "chartHues": 0,
+    "placeholders": [],
+    "type": {
+     "under13": 0.61,
+     "tiny": 32,
+     "tinySamples": [
+      "₹4L 10px",
+      "₹2L 10px",
+      "₹3.4L 10px",
+      "Wed 10px"
+     ],
+     "sizes": [
+      10,
+      11,
+      12,
+      13,
+      14,
+      15,
+      16,
+      17,
+      23,
+      29
+     ]
+    },
+    "title": {
+     "text": "Practice overview",
+     "size": 23,
+     "top": 64
+    },
+    "colourShare": 0.018
+   },
+   "consoleErrors": []
+  }
+ ],
+ "findings": [
+  {
+   "level": "WARN",
+   "id": "micro-label",
+   "width": 1440,
+   "message": "1 tiny uppercase letter-spaced label(s): \"CRM\"",
+   "fix": "Prefer sentence case at body size.",
+   "alsoAt": [
+    768,
+    390
+   ]
+  },
+  {
+   "level": "FAIL",
+   "id": "button-fx",
+   "width": 1440,
+   "message": "Buttons with shadow/glow.",
+   "fix": "Flat fill, one colour.",
+   "alsoAt": [
+    768
+   ]
+  },
+  {
+   "level": "WARN",
+   "id": "palette-cream",
+   "width": 1440,
+   "message": "Yellow-cream background (page background #f5f3ee).",
+   "fix": "Use the drawn palette. If you want warmth, take a low-chroma stone or bone, not a yellow cream.",
+   "alsoAt": [
+    768,
+    390
+   ]
+  },
+  {
+   "level": "WARN",
+   "id": "contrast",
+   "width": 1440,
+   "message": "Low-contrast text: \"Practice\" 3.9:1 needs 4.5:1; \"Finance\" 3.9:1 needs 4.5:1; \"Assignment\" 3.9:1 needs 4.5:1; \"Status\" 3.9:1 needs 4.5:1",
+   "fix": "Darken or lighten the text colour.",
+   "alsoAt": [
+    768,
+    390
+   ]
+  },
+  {
+   "level": "FAIL",
+   "id": "tiny-text",
+   "width": 1440,
+   "message": "34 text blocks under 11px: ⌘ K 10px, ₹4L 10px, ₹2L 10px, ₹3.4L 10px.",
+   "fix": "Nothing below 11px; secondary text 12px, data 13–14px.",
+   "alsoAt": [
+    768,
+    390
+   ]
+  },
+  {
+   "level": "WARN",
+   "id": "panel-void",
+   "width": 1440,
+   "message": "1 card(s) hold a blank band inside: 57px in \"Collections\".",
+   "fix": "A card stretches to its neighbour only when it has content to fill. Keep a legend or a note directly under its chart (only an action or a total may sit at a stretched card's foot), let a short card keep its own height (align-items: start), and let a filtered block shrink to its rows."
+  },
+  {
+   "level": "FAIL",
+   "id": "overflow",
+   "width": 768,
+   "message": "Page scrolls sideways by 20px at 768px. Widest offenders: button.primary-button (+20px).",
+   "fix": "Constrain the element that is wider than the viewport (max-width: 100%, or overflow: clip on its section)."
+  },
+  {
+   "level": "FAIL",
+   "id": "edge-text",
+   "width": 768,
+   "message": "1 text block(s) sit within 16px of the screen edge: \"New assignment\" (6px from the right)",
+   "fix": "Keep text inside the page margin (16–32px or more). Only display type deliberately bled past the edge may touch it."
+  }
+ ],
+ "images": [
+  {
+   "viewport": "desktop",
+   "width": 1440,
+   "fold": "C:\\Users\\HP\\CRM\\Workspace\\.premium-preview\\inspect\\desktop-fold.jpg",
+   "pages": [
+    "C:\\Users\\HP\\CRM\\Workspace\\.premium-preview\\inspect\\desktop-page-01.jpg"
+   ],
+   "film": []
+  },
+  {
+   "viewport": "tablet",
+   "width": 768,
+   "fold": "C:\\Users\\HP\\CRM\\Workspace\\.premium-preview\\inspect\\tablet-fold.jpg",
+   "pages": [
+    "C:\\Users\\HP\\CRM\\Workspace\\.premium-preview\\inspect\\tablet-page-01.jpg"
+   ],
+   "film": []
+  },
+  {
+   "viewport": "mobile",
+   "width": 390,
+   "fold": "C:\\Users\\HP\\CRM\\Workspace\\.premium-preview\\inspect\\mobile-fold.jpg",
+   "pages": [
+    "C:\\Users\\HP\\CRM\\Workspace\\.premium-preview\\inspect\\mobile-page-01.jpg"
+   ],
+   "film": []
+  }
+ ]
+}

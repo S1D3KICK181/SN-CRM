@@ -1,0 +1,301 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#f5f3ee" />
+    <title>SN Practice CRM · Premium concept preview</title>
+    <link rel="stylesheet" href="./preview.css" />
+  </head>
+  <body>
+    <svg aria-hidden="true" class="icon-sprite">
+      <symbol id="i-grid" viewBox="0 0 24 24">
+        <rect x="3" y="3" width="7" height="7" rx="1" />
+        <rect x="14" y="3" width="7" height="7" rx="1" />
+        <rect x="3" y="14" width="7" height="7" rx="1" />
+        <rect x="14" y="14" width="7" height="7" rx="1" />
+      </symbol>
+      <symbol id="i-users" viewBox="0 0 24 24">
+        <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
+        <circle cx="9" cy="7" r="4" />
+        <path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" />
+      </symbol>
+      <symbol id="i-briefcase" viewBox="0 0 24 24">
+        <rect x="3" y="7" width="18" height="13" rx="2" />
+        <path d="M8 7V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M3 12h18M10 12v2h4v-2" />
+      </symbol>
+      <symbol id="i-check" viewBox="0 0 24 24">
+        <path d="m9 11 3 3L22 4" />
+        <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" />
+      </symbol>
+      <symbol id="i-file" viewBox="0 0 24 24">
+        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+        <path d="M14 2v6h6M8 13h8M8 17h6" />
+      </symbol>
+      <symbol id="i-wallet" viewBox="0 0 24 24">
+        <path d="M20 7V5a2 2 0 0 0-2-2H5a3 3 0 0 0 0 6h15v12H5a3 3 0 0 1-3-3V6" />
+        <path d="M16 13h4" />
+      </symbol>
+      <symbol id="i-chart" viewBox="0 0 24 24">
+        <path d="M3 3v18h18" />
+        <path d="m7 16 4-5 4 3 5-8" />
+      </symbol>
+      <symbol id="i-search" viewBox="0 0 24 24">
+        <circle cx="11" cy="11" r="7" />
+        <path d="m20 20-4-4" />
+      </symbol>
+      <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" /></symbol>
+      <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16" /></symbol>
+      <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6" /></symbol>
+      <symbol id="i-bell" viewBox="0 0 24 24">
+        <path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4" />
+      </symbol>
+      <symbol id="i-settings" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="3" />
+        <path
+          d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.03 1.55V21h-4v-.08A1.7 1.7 0 0 0 9 19.37a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.63 15 1.7 1.7 0 0 0 3.08 14H3v-4h.08A1.7 1.7 0 0 0 4.63 9a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 9 4.63a1.7 1.7 0 0 0 1-1.55V3h4v.08A1.7 1.7 0 0 0 15 4.63a1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.37 9 1.7 1.7 0 0 0 20.92 10H21v4h-.08A1.7 1.7 0 0 0 19.4 15z"
+        />
+      </symbol>
+    </svg>
+
+    <div class="preview-note" role="note">
+      <strong>Design preview</strong
+      ><span>Standalone concept. No production code is connected.</span>
+    </div>
+    <button class="mobile-menu" aria-label="Open navigation" aria-expanded="false">
+      <svg><use href="#i-menu" /></svg>
+    </button>
+
+    <aside class="sidebar" aria-label="Primary navigation">
+      <div class="brand">
+        <div class="brand-mark">SN<span></span></div>
+        <div><strong>SN Practice CRM</strong><small>SN &amp; Associates</small></div>
+      </div>
+
+      <button class="workspace" type="button">
+        <span class="workspace-monogram">S</span
+        ><span><strong>SN &amp; Associates</strong><small>FY 2026–27</small></span
+        ><svg><use href="#i-chevron" /></svg>
+      </button>
+
+      <nav>
+        <p class="nav-label">Practice</p>
+        <button class="nav-item active">
+          <svg><use href="#i-grid" /></svg><span>Overview</span>
+        </button>
+        <button class="nav-item">
+          <svg><use href="#i-users" /></svg><span>Clients</span>
+        </button>
+        <button class="nav-item">
+          <svg><use href="#i-briefcase" /></svg><span>Assignments</span><em>12</em>
+        </button>
+        <button class="nav-item">
+          <svg><use href="#i-check" /></svg><span>My tasks</span><em>4</em>
+        </button>
+        <button class="nav-item">
+          <svg><use href="#i-file" /></svg><span>Documents</span>
+        </button>
+
+        <p class="nav-label nav-label-spaced">Finance</p>
+        <button class="nav-item">
+          <svg><use href="#i-wallet" /></svg><span>Billing</span>
+        </button>
+        <button class="nav-item">
+          <svg><use href="#i-wallet" /></svg><span>Receipts</span>
+        </button>
+        <button class="nav-item">
+          <svg><use href="#i-chart" /></svg><span>Reports</span>
+        </button>
+      </nav>
+
+      <div class="sidebar-bottom">
+        <button class="nav-item">
+          <svg><use href="#i-settings" /></svg><span>Settings</span>
+        </button>
+        <button class="profile">
+          <span>SK</span><span><strong>Sanjay Kumar</strong><small>Founder</small></span
+          ><svg><use href="#i-chevron" /></svg>
+        </button>
+      </div>
+    </aside>
+
+    <main>
+      <div class="page">
+        <header class="page-header">
+          <div>
+            <h1>Practice overview</h1>
+            <p>Wednesday, 28 October · FY 2026–27 · Asia/Kolkata</p>
+          </div>
+          <div class="header-actions">
+            <div class="search">
+              <svg><use href="#i-search" /></svg>
+              <input aria-label="Search clients" placeholder="Search clients" />
+              <kbd>⌘ K</kbd>
+              <div class="search-results">
+                <button><span>Arora Trading Co.</span><small>CLI-1004</small></button>
+                <button><span>Mehta Textiles Pvt Ltd</span><small>CLI-1012</small></button>
+                <button><span>Rao Family Office</span><small>CLI-1018</small></button>
+              </div>
+            </div>
+            <button class="icon-button" aria-label="Notifications">
+              <svg><use href="#i-bell" /></svg><span></span>
+            </button>
+            <button class="primary-button">
+              <svg><use href="#i-plus" /></svg>New assignment
+            </button>
+          </div>
+        </header>
+
+        <section class="lead-grid">
+          <article class="panel collections">
+            <div class="panel-header">
+              <div>
+                <h2>Collections</h2>
+                <p>Cash received against issued invoices</p>
+              </div>
+              <div class="period-control" aria-label="Collections period">
+                <button class="active" data-period="month">This month</button
+                ><button data-period="quarter">Quarter</button>
+              </div>
+            </div>
+            <div class="collection-summary">
+              <div>
+                <span>Received</span><strong id="received-value">₹12,80,000</strong
+                ><small><b>+₹2,40,000</b> against September</small>
+              </div>
+              <div class="money-pair">
+                <span>Outstanding<strong id="outstanding-value">₹28,40,000</strong></span
+                ><span>Overdue<strong class="negative">₹3,80,000</strong></span>
+              </div>
+            </div>
+            <div class="bar-chart" aria-label="Collections by week">
+              <div class="axis"><span>₹4L</span><span>₹2L</span><span>₹0</span></div>
+              <div class="plot">
+                <i class="gridline g1"></i><i class="gridline g2"></i><i class="gridline g3"></i>
+                <div class="bar muted" style="--h: 42%"><span>W1</span></div>
+                <div class="bar muted" style="--h: 58%"><span>W2</span></div>
+                <div class="bar muted" style="--h: 49%"><span>W3</span></div>
+                <div class="bar gold" style="--h: 82%"><b>₹3.4L</b><span>W4</span></div>
+              </div>
+            </div>
+          </article>
+
+          <article class="panel deadlines">
+            <div class="panel-header">
+              <div>
+                <h2>Statutory runway</h2>
+                <p>Deadlines over the next seven days</p>
+              </div>
+              <button class="text-button">View calendar</button>
+            </div>
+            <div class="deadline-rail" aria-label="Seven day statutory deadline runway">
+              <div class="rail-line"></div>
+              <div class="day done"><span>28</span><small>Wed</small></div>
+              <div class="day"><span>29</span><small>Thu</small></div>
+              <div class="day urgent"><span>30</span><small>Fri</small></div>
+              <div class="day"><span>31</span><small>Sat</small></div>
+              <div class="day"><span>1</span><small>Sun</small></div>
+              <div class="day"><span>2</span><small>Mon</small></div>
+              <div class="day"><span>3</span><small>Tue</small></div>
+            </div>
+            <div class="deadline-list">
+              <button>
+                <span class="date-box">30<small>Oct</small></span
+                ><span
+                  ><strong>GSTR-1 filing review</strong
+                  ><small>Mehta Textiles Pvt Ltd · AST-2041</small></span
+                ><em class="status danger">At risk</em>
+              </button>
+              <button>
+                <span class="date-box">31<small>Oct</small></span
+                ><span
+                  ><strong>Tax audit submission</strong
+                  ><small>Arora Trading Co. · AST-2033</small></span
+                ><em class="status warning">Waiting</em>
+              </button>
+              <button>
+                <span class="date-box">3<small>Nov</small></span
+                ><span
+                  ><strong>TDS return filing</strong
+                  ><small>Rao Family Office · AST-2067</small></span
+                ><em class="status neutral">On track</em>
+              </button>
+            </div>
+          </article>
+        </section>
+
+        <section class="lower-grid">
+          <article class="panel attention">
+            <div class="panel-header">
+              <div>
+                <h2>Needs attention</h2>
+                <p>Work with a deadline, blocker, or pending review</p>
+              </div>
+              <button class="text-button">View all 12</button>
+            </div>
+            <div class="table" role="table" aria-label="Assignments needing attention">
+              <div class="table-row table-head" role="row">
+                <span>Assignment</span><span>Client</span><span>Due</span><span>Status</span
+                ><span></span>
+              </div>
+              <button class="table-row" role="row">
+                <span><strong>AST-2041</strong><small>GSTR-1 filing review</small></span
+                ><span>Mehta Textiles</span><span class="num danger-text">30/10/2026</span
+                ><span><em class="status danger">At risk</em></span
+                ><svg><use href="#i-chevron" /></svg>
+              </button>
+              <button class="table-row" role="row">
+                <span><strong>AST-2033</strong><small>Tax audit submission</small></span
+                ><span>Arora Trading Co.</span><span class="num">31/10/2026</span
+                ><span><em class="status warning">Waiting</em></span
+                ><svg><use href="#i-chevron" /></svg>
+              </button>
+              <button class="table-row" role="row">
+                <span><strong>AST-2067</strong><small>TDS return filing</small></span
+                ><span>Rao Family Office</span><span class="num">03/11/2026</span
+                ><span><em class="status neutral">On track</em></span
+                ><svg><use href="#i-chevron" /></svg>
+              </button>
+            </div>
+          </article>
+
+          <article class="panel receivables">
+            <div class="panel-header">
+              <div>
+                <h2>Client receivables</h2>
+                <p>Highest outstanding balances</p>
+              </div>
+              <button class="text-button">Open receipts</button>
+            </div>
+            <div class="receivable-list">
+              <button>
+                <span
+                  ><strong>Mehta Textiles Pvt Ltd</strong
+                  ><small>2 invoices · oldest 18 days</small></span
+                ><b>₹8,40,000</b>
+              </button>
+              <button>
+                <span
+                  ><strong>Arora Trading Co.</strong><small>1 invoice · oldest 12 days</small></span
+                ><b>₹6,25,000</b>
+              </button>
+              <button>
+                <span
+                  ><strong>Kapoor Manufacturing</strong
+                  ><small>3 invoices · oldest 7 days</small></span
+                ><b>₹4,80,000</b>
+              </button>
+              <button>
+                <span
+                  ><strong>Rao Family Office</strong><small>1 invoice · due in 4 days</small></span
+                ><b>₹3,10,000</b>
+              </button>
+            </div>
+          </article>
+        </section>
+      </div>
+    </main>
+
+    <script src="./preview.js"></script>
+  </body>
+</html>

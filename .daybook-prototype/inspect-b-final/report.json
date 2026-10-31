@@ -1,0 +1,1818 @@
+{
+ "url": "http://127.0.0.1:4174/?variant=B",
+ "at": "2026-10-29T08:01:31.405Z",
+ "allow": [],
+ "viewports": [
+  {
+   "width": 1440,
+   "height": 900,
+   "load": "load",
+   "screens": 2,
+   "filled": [
+    0.8,
+    0.73
+   ],
+   "motion": {
+    "elements": 0,
+    "css": 0,
+    "transitions": 0,
+    "scripted": 0,
+    "videos": 0,
+    "playingVideos": 0
+   },
+   "metrics": {
+    "viewport": {
+     "w": 1440,
+     "h": 900
+    },
+    "page": {
+     "height": 970,
+     "screens": 1.1,
+     "words": 195,
+     "img": 0,
+     "video": 0,
+     "canvas": 0,
+     "svg": 0,
+     "sections": 8,
+     "horizontalOverflow": 0,
+     "overflowCulprits": [],
+     "uiFragments": 0,
+     "uiAbuse": false,
+     "realPictures": 0,
+     "videoCount": 0,
+     "uiPictures": 0,
+     "pictureSamples": [],
+     "blendText": 0,
+     "sideScrollers": 0,
+     "brokenImages": [],
+     "emoji": [],
+     "videosNoPoster": 0
+    },
+    "hero": {
+     "text": "One thing at a time.",
+     "words": 5,
+     "chars": 20,
+     "lines": 1,
+     "size": 32,
+     "vw": 2.2,
+     "font": "Instrument Serif",
+     "weight": 400,
+     "tracking": -0.04,
+     "leading": 0.96,
+     "top": 36,
+     "tag": "h1",
+     "kind": "heading",
+     "align": "left",
+     "position": "left"
+    },
+    "h1": {
+     "text": "One thing at a time.",
+     "words": 5,
+     "lines": 1,
+     "size": 32,
+     "font": "Instrument Serif"
+    },
+    "headings": [
+     {
+      "text": "One thing at a time.",
+      "words": 5,
+      "chars": 20,
+      "lines": 1,
+      "size": 32,
+      "vw": 2.2,
+      "font": "Instrument Serif",
+      "weight": 400,
+      "tracking": -0.035,
+      "leading": 0.96,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "center",
+      "widthRatio": 0.59,
+      "top": 36,
+      "tag": "h1",
+      "kind": "heading"
+     },
+     {
+      "text": "Current",
+      "words": 1,
+      "chars": 7,
+      "lines": 1,
+      "size": 52,
+      "vw": 3.6,
+      "font": "Instrument Serif",
+      "weight": 400,
+      "tracking": 0,
+      "leading": 1,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "center",
+      "widthRatio": 0.35,
+      "top": 309,
+      "tag": "span",
+      "kind": "heading"
+     },
+     {
+      "text": "File GSTR-1 today.",
+      "words": 3,
+      "chars": 18,
+      "lines": 1,
+      "size": 38,
+      "vw": 2.6,
+      "font": "Instrument Serif",
+      "weight": 400,
+      "tracking": -0.03,
+      "leading": 1,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "center",
+      "widthRatio": 0.35,
+      "top": 415,
+      "tag": "h2",
+      "kind": "heading"
+     },
+     {
+      "text": "72%",
+      "words": 1,
+      "chars": 3,
+      "lines": 1,
+      "size": 36,
+      "vw": 2.5,
+      "font": "Instrument Sans",
+      "weight": 400,
+      "tracking": 0,
+      "leading": 1.2,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "right",
+      "widthRatio": 0.05,
+      "top": 654,
+      "tag": "strong",
+      "kind": "heading"
+     }
+    ],
+    "headingSummary": {
+     "count": 4,
+     "maxLines": 1,
+     "over2Lines": 0,
+     "statements": 0,
+     "centered": 0,
+     "medianWords": 3,
+     "mixedFontHeadings": 0
+    },
+    "type": {
+     "families": [
+      {
+       "family": "Instrument Sans",
+       "share": 0.96,
+       "mono": false
+      },
+      {
+       "family": "Instrument Serif",
+       "share": 0.04,
+       "mono": false
+      }
+     ],
+     "familyCount": 2,
+     "sizes": [
+      11,
+      12,
+      13,
+      14,
+      15,
+      17,
+      18,
+      25,
+      32,
+      36,
+      38,
+      52
+     ],
+     "sizeCount": 12,
+     "notLoaded": [],
+     "body": {
+      "font": "Instrument Sans",
+      "size": 14,
+      "leading": 1.2,
+      "weight": 400,
+      "tracking": 0,
+      "contrast": 15
+     },
+     "measureChars": 33,
+     "max": {
+      "size": 52,
+      "vw": 3.6,
+      "font": "Instrument Serif",
+      "text": "Current"
+     },
+     "monoShare": 0,
+     "monoProseShare": 0,
+     "monoFamilies": [],
+     "monoSamples": [],
+     "microLabels": 0,
+     "microLabelShare": 0,
+     "microSamples": [],
+     "upperShare": 0.01,
+     "centerShare": 0.12,
+     "smallText": 8
+    },
+    "eyebrows": [
+     {
+      "text": "09:00–10:45 · 46 minutes reserved",
+      "above": "Current",
+      "upper": false,
+      "tracked": false,
+      "mono": false,
+      "pill": false,
+      "size": 13,
+      "top": 279
+     }
+    ],
+    "numbered": [],
+    "color": {
+     "bodyBg": "#f4f5f2",
+     "bodyBgHsl": {
+      "h": 80,
+      "s": 0.13,
+      "l": 0.95
+     },
+     "dark": false,
+     "sectionBgs": [],
+     "textColors": [
+      {
+       "color": "#686a64",
+       "share": 0.35
+      },
+      {
+       "color": "#1f201d",
+       "share": 0.33
+      },
+      {
+       "color": "#ffffff",
+       "share": 0.21
+      },
+      {
+       "color": "#176b62",
+       "share": 0.07
+      },
+      {
+       "color": "#9fd2c9",
+       "share": 0.02
+      }
+     ],
+     "button": {
+      "bg": "#ffffff",
+      "hsl": {
+       "h": 0,
+       "s": 0,
+       "l": 1
+      },
+      "fg": "#1f201d"
+     },
+     "lowContrast": []
+    },
+    "buttons": {
+     "count": 7,
+     "inHero": 7,
+     "radius": 11,
+     "height": 58,
+     "withShadow": 0,
+     "withGradient": 0,
+     "mono": 0,
+     "upper": 0,
+     "heroLabels": [
+      "Today T",
+      "Create assignment",
+      "GSTR-1 filing Verma Hospitals Now",
+      "Missing documents Four clients 11:10",
+      "Partner review Kedia Holdings 13:00"
+     ]
+    },
+    "surfaces": {
+     "shadowStatic": 0,
+     "shadowOverlay": 2,
+     "shadowSamples": [],
+     "gradients": 0,
+     "scrims": 0,
+     "gradientSamples": [],
+     "gradientText": 0,
+     "hairlines": 0,
+     "hairlineSamples": [],
+     "outlinedBoxes": 0,
+     "dashed": 0,
+     "blurred": 0,
+     "roundedBoxes": 8,
+     "boxRadius": 22,
+     "squareMedia": 0,
+     "roundedMedia": 0,
+     "mediaRadius": 0,
+     "textShadow": 0,
+     "cardRows": [
+      {
+       "count": 3,
+       "iconTopped": false,
+       "rounded": true,
+       "top": 394
+      }
+     ]
+    },
+    "heroMedia": [],
+    "nav": {
+     "links": 0,
+     "fixed": true,
+     "height": 900,
+     "floatingPill": false,
+     "blur": false
+    },
+    "fontsLoaded": [
+     "instrument sans",
+     "instrument serif"
+    ]
+   },
+   "layout": {
+    "viewport": {
+     "w": 1440,
+     "h": 900
+    },
+    "pageH": 970,
+    "margins": {
+     "left": 16,
+     "right": 77
+    },
+    "sections": [],
+    "gaps": [],
+    "h1s": [
+     {
+      "text": "One thing at a time.",
+      "size": 32,
+      "top": 36,
+      "firstScreen": true
+     }
+    ],
+    "edgeText": [],
+    "edges": [
+     {
+      "x": 267,
+      "n": 2
+     },
+     {
+      "x": 563,
+      "n": 2
+     },
+     {
+      "x": 287,
+      "n": 1
+     },
+     {
+      "x": 369,
+      "n": 1
+     },
+     {
+      "x": 1117,
+      "n": 1
+     },
+     {
+      "x": 1131,
+      "n": 1
+     }
+    ],
+    "leftBlocks": 8,
+    "bodySize": 14,
+    "stage": false,
+    "explains": false,
+    "slivers": [],
+    "voidShare": 0.08,
+    "voidBox": {
+     "x": 0,
+     "y": 600,
+     "w": 540,
+     "h": 180
+    }
+   },
+   "app": {
+    "viewport": {
+     "w": 1440,
+     "h": 900
+    },
+    "dark": false,
+    "ground": "#f4f5f2",
+    "sidebar": {
+     "w": 224,
+     "tag": "aside",
+     "links": 9,
+     "share": 0.16
+    },
+    "topbar": null,
+    "canvas": {
+     "left": 43,
+     "right": 60
+    },
+    "hero": {
+     "text": "One thing at a time.",
+     "words": 5,
+     "chars": 20,
+     "lines": 1,
+     "size": 32,
+     "vw": 2.2,
+     "font": "Instrument Serif",
+     "weight": 400,
+     "tracking": -0.04,
+     "leading": 0.96,
+     "top": 36,
+     "tag": "h1",
+     "kind": "heading",
+     "align": "left",
+     "position": "left"
+    },
+    "charts": 1,
+    "layout": {
+     "panels": 6,
+     "firstScreen": 6,
+     "ragged": [
+      {
+       "diff": 189,
+       "top": 238
+      },
+      {
+       "diff": 189,
+       "top": 238
+      }
+     ],
+     "voids": [
+      {
+       "gap": 159,
+       "at": 486,
+       "panel": "Current focus"
+      }
+     ]
+    },
+    "tiles": 0,
+    "panels": {
+     "count": 20,
+     "radii": [
+      [
+       0,
+       11
+      ],
+      [
+       12,
+       4
+      ],
+      [
+       22,
+       3
+      ],
+      [
+       18,
+       1
+      ],
+      [
+       16,
+       1
+      ]
+     ],
+     "heavyBorders": 0,
+     "borderSamples": [],
+     "heavyShadows": 0,
+     "softShadows": 0,
+     "shadowSamples": [],
+     "glass": 0
+    },
+    "chips": {
+     "count": 0,
+     "hues": 0,
+     "samples": []
+    },
+    "numbers": {
+     "cells": 0,
+     "leftAligned": 0,
+     "figures": 1,
+     "tabularShare": 0,
+     "kpiMax": 36
+    },
+    "rows": null,
+    "chartHues": 0,
+    "placeholders": [],
+    "type": {
+     "under13": 0.35,
+     "tiny": 0,
+     "tinySamples": [],
+     "sizes": [
+      11,
+      12,
+      13,
+      14,
+      15,
+      17,
+      18,
+      25,
+      32,
+      36,
+      38,
+      52
+     ]
+    },
+    "title": {
+     "text": "One thing at a time.",
+     "size": 32,
+     "top": 36
+    },
+    "colourShare": 0.003
+   },
+   "consoleErrors": []
+  },
+  {
+   "width": 768,
+   "height": 1024,
+   "load": "load",
+   "screens": 1,
+   "filled": [
+    0.62
+   ],
+   "motion": {
+    "elements": 0,
+    "css": 0,
+    "transitions": 0,
+    "scripted": 0,
+    "videos": 0,
+    "playingVideos": 0
+   },
+   "metrics": {
+    "viewport": {
+     "w": 768,
+     "h": 1024
+    },
+    "page": {
+     "height": 1024,
+     "screens": 1,
+     "words": 133,
+     "img": 0,
+     "video": 0,
+     "canvas": 0,
+     "svg": 0,
+     "sections": 8,
+     "horizontalOverflow": 0,
+     "overflowCulprits": [],
+     "uiFragments": 0,
+     "uiAbuse": false,
+     "realPictures": 0,
+     "videoCount": 0,
+     "uiPictures": 0,
+     "pictureSamples": [],
+     "blendText": 0,
+     "sideScrollers": 0,
+     "brokenImages": [],
+     "emoji": [],
+     "videosNoPoster": 0
+    },
+    "hero": {
+     "text": "One thing at a time.",
+     "words": 5,
+     "chars": 20,
+     "lines": 1,
+     "size": 28,
+     "vw": 3.6,
+     "font": "Instrument Serif",
+     "weight": 400,
+     "tracking": -0.03,
+     "leading": 0.96,
+     "top": 36,
+     "tag": "h1",
+     "kind": "heading",
+     "align": "left",
+     "position": "left"
+    },
+    "h1": {
+     "text": "One thing at a time.",
+     "words": 5,
+     "lines": 1,
+     "size": 28,
+     "font": "Instrument Serif"
+    },
+    "headings": [
+     {
+      "text": "One thing at a time.",
+      "words": 5,
+      "chars": 20,
+      "lines": 1,
+      "size": 28,
+      "vw": 3.6,
+      "font": "Instrument Serif",
+      "weight": 400,
+      "tracking": -0.035,
+      "leading": 0.96,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "left",
+      "widthRatio": 0.48,
+      "top": 36,
+      "tag": "h1",
+      "kind": "heading"
+     },
+     {
+      "text": "Current",
+      "words": 1,
+      "chars": 7,
+      "lines": 1,
+      "size": 52,
+      "vw": 6.8,
+      "font": "Instrument Serif",
+      "weight": 400,
+      "tracking": 0,
+      "leading": 1,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "right",
+      "widthRatio": 0.48,
+      "top": 324,
+      "tag": "span",
+      "kind": "heading"
+     },
+     {
+      "text": "File GSTR-1 today.",
+      "words": 3,
+      "chars": 18,
+      "lines": 1,
+      "size": 28,
+      "vw": 3.6,
+      "font": "Instrument Serif",
+      "weight": 400,
+      "tracking": -0.03,
+      "leading": 1,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "right",
+      "widthRatio": 0.48,
+      "top": 430,
+      "tag": "h2",
+      "kind": "heading"
+     },
+     {
+      "text": "72%",
+      "words": 1,
+      "chars": 3,
+      "lines": 1,
+      "size": 36,
+      "vw": 4.7,
+      "font": "Instrument Sans",
+      "weight": 400,
+      "tracking": 0,
+      "leading": 1.2,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "right",
+      "widthRatio": 0.09,
+      "top": 669,
+      "tag": "strong",
+      "kind": "heading"
+     }
+    ],
+    "headingSummary": {
+     "count": 4,
+     "maxLines": 1,
+     "over2Lines": 0,
+     "statements": 0,
+     "centered": 0,
+     "medianWords": 3,
+     "mixedFontHeadings": 0
+    },
+    "type": {
+     "families": [
+      {
+       "family": "Instrument Sans",
+       "share": 0.94,
+       "mono": false
+      },
+      {
+       "family": "Instrument Serif",
+       "share": 0.06,
+       "mono": false
+      }
+     ],
+     "familyCount": 2,
+     "sizes": [
+      11,
+      12,
+      13,
+      14,
+      15,
+      17,
+      18,
+      25,
+      28,
+      36,
+      52
+     ],
+     "sizeCount": 11,
+     "notLoaded": [],
+     "body": {
+      "font": "Instrument Sans",
+      "size": 15,
+      "leading": 1.2,
+      "weight": 400,
+      "tracking": 0,
+      "contrast": 5
+     },
+     "measureChars": 49,
+     "max": {
+      "size": 52,
+      "vw": 6.8,
+      "font": "Instrument Serif",
+      "text": "Current"
+     },
+     "monoShare": 0,
+     "monoProseShare": 0,
+     "monoFamilies": [],
+     "monoSamples": [],
+     "microLabels": 0,
+     "microLabelShare": 0,
+     "microSamples": [],
+     "upperShare": 0.01,
+     "centerShare": 0.09,
+     "smallText": 4
+    },
+    "eyebrows": [
+     {
+      "text": "09:00–10:45 · 46 minutes reserved",
+      "above": "Current",
+      "upper": false,
+      "tracked": false,
+      "mono": false,
+      "pill": false,
+      "size": 13,
+      "top": 294
+     }
+    ],
+    "numbered": [],
+    "color": {
+     "bodyBg": "#f4f5f2",
+     "bodyBgHsl": {
+      "h": 80,
+      "s": 0.13,
+      "l": 0.95
+     },
+     "dark": false,
+     "sectionBgs": [
+      {
+       "color": "#ffffff",
+       "top": 0,
+       "hsl": {
+        "h": 0,
+        "s": 0,
+        "l": 1
+       }
+      }
+     ],
+     "textColors": [
+      {
+       "color": "#686a64",
+       "share": 0.35
+      },
+      {
+       "color": "#ffffff",
+       "share": 0.31
+      },
+      {
+       "color": "#1f201d",
+       "share": 0.18
+      },
+      {
+       "color": "#176b62",
+       "share": 0.11
+      },
+      {
+       "color": "#9fd2c9",
+       "share": 0.03
+      }
+     ],
+     "button": {
+      "bg": "#ffffff",
+      "hsl": {
+       "h": 0,
+       "s": 0,
+       "l": 1
+      },
+      "fg": "#1f201d"
+     },
+     "lowContrast": []
+    },
+    "buttons": {
+     "count": 6,
+     "inHero": 6,
+     "radius": 11,
+     "height": 58,
+     "withShadow": 0,
+     "withGradient": 0,
+     "mono": 0,
+     "upper": 0,
+     "heroLabels": [
+      "Create assignment",
+      "GSTR-1 filing Verma Hospitals Now",
+      "Missing documents Four clients 11:10",
+      "Partner review Kedia Holdings 13:00",
+      "Collections call Mehta Infra 62d"
+     ]
+    },
+    "surfaces": {
+     "shadowStatic": 0,
+     "shadowOverlay": 2,
+     "shadowSamples": [],
+     "gradients": 0,
+     "scrims": 0,
+     "gradientSamples": [],
+     "gradientText": 0,
+     "hairlines": 0,
+     "hairlineSamples": [],
+     "outlinedBoxes": 0,
+     "dashed": 0,
+     "blurred": 0,
+     "roundedBoxes": 4,
+     "boxRadius": 22,
+     "squareMedia": 0,
+     "roundedMedia": 0,
+     "mediaRadius": 0,
+     "textShadow": 0,
+     "cardRows": []
+    },
+    "heroMedia": [],
+    "nav": {
+     "links": 0,
+     "fixed": true,
+     "height": 1024,
+     "floatingPill": false,
+     "blur": false
+    },
+    "fontsLoaded": [
+     "instrument sans",
+     "instrument serif"
+    ]
+   },
+   "layout": {
+    "viewport": {
+     "w": 768,
+     "h": 1024
+    },
+    "pageH": 1024,
+    "margins": {
+     "left": 10,
+     "right": 29
+    },
+    "sections": [],
+    "gaps": [],
+    "h1s": [
+     {
+      "text": "One thing at a time.",
+      "size": 28,
+      "top": 36,
+      "firstScreen": true
+     }
+    ],
+    "edgeText": [],
+    "edges": [
+     {
+      "x": 100,
+      "n": 2
+     },
+     {
+      "x": 356,
+      "n": 2
+     },
+     {
+      "x": 120,
+      "n": 1
+     },
+     {
+      "x": 189,
+      "n": 1
+     }
+    ],
+    "leftBlocks": 6,
+    "bodySize": 15,
+    "stage": false,
+    "explains": false,
+    "slivers": [],
+    "voidShare": 0,
+    "voidBox": null
+   },
+   "app": {
+    "viewport": {
+     "w": 768,
+     "h": 1024
+    },
+    "dark": false,
+    "ground": "#f4f5f2",
+    "sidebar": {
+     "w": 76,
+     "tag": "aside",
+     "links": 9,
+     "share": 0.1
+    },
+    "topbar": null,
+    "canvas": {
+     "left": 24,
+     "right": 29
+    },
+    "hero": {
+     "text": "One thing at a time.",
+     "words": 5,
+     "chars": 20,
+     "lines": 1,
+     "size": 28,
+     "vw": 3.6,
+     "font": "Instrument Serif",
+     "weight": 400,
+     "tracking": -0.03,
+     "leading": 0.96,
+     "top": 36,
+     "tag": "h1",
+     "kind": "heading",
+     "align": "left",
+     "position": "left"
+    },
+    "charts": 1,
+    "layout": {
+     "panels": 4,
+     "firstScreen": 4,
+     "ragged": [
+      {
+       "diff": 189,
+       "top": 253
+      }
+     ],
+     "voids": [
+      {
+       "gap": 169,
+       "at": 491,
+       "panel": "Current focus"
+      }
+     ]
+    },
+    "tiles": 0,
+    "panels": {
+     "count": 7,
+     "radii": [
+      [
+       0,
+       3
+      ],
+      [
+       22,
+       2
+      ],
+      [
+       18,
+       1
+      ],
+      [
+       16,
+       1
+      ]
+     ],
+     "heavyBorders": 0,
+     "borderSamples": [],
+     "heavyShadows": 0,
+     "softShadows": 0,
+     "shadowSamples": [],
+     "glass": 0
+    },
+    "chips": {
+     "count": 0,
+     "hues": 0,
+     "samples": []
+    },
+    "numbers": {
+     "cells": 0,
+     "leftAligned": 0,
+     "figures": 1,
+     "tabularShare": 0,
+     "kpiMax": 36
+    },
+    "rows": null,
+    "chartHues": 0,
+    "placeholders": [],
+    "type": {
+     "under13": 0.35,
+     "tiny": 0,
+     "tinySamples": [],
+     "sizes": [
+      11,
+      12,
+      13,
+      14,
+      15,
+      17,
+      18,
+      25,
+      28,
+      36,
+      52
+     ]
+    },
+    "title": {
+     "text": "One thing at a time.",
+     "size": 28,
+     "top": 36
+    },
+    "colourShare": 0.004
+   },
+   "consoleErrors": []
+  },
+  {
+   "width": 390,
+   "height": 844,
+   "load": "load",
+   "screens": 3,
+   "filled": [
+    0.87,
+    0.78,
+    0.56
+   ],
+   "motion": {
+    "elements": 0,
+    "css": 0,
+    "transitions": 0,
+    "scripted": 0,
+    "videos": 0,
+    "playingVideos": 0
+   },
+   "metrics": {
+    "viewport": {
+     "w": 390,
+     "h": 844
+    },
+    "page": {
+     "height": 2059,
+     "screens": 2.4,
+     "words": 171,
+     "img": 0,
+     "video": 0,
+     "canvas": 0,
+     "svg": 0,
+     "sections": 8,
+     "horizontalOverflow": 0,
+     "overflowCulprits": [],
+     "uiFragments": 0,
+     "uiAbuse": false,
+     "realPictures": 0,
+     "videoCount": 0,
+     "uiPictures": 0,
+     "pictureSamples": [],
+     "blendText": 0,
+     "sideScrollers": 0,
+     "brokenImages": [],
+     "emoji": [],
+     "videosNoPoster": 0
+    },
+    "hero": {
+     "text": "One thing at a time.",
+     "words": 5,
+     "chars": 20,
+     "lines": 1,
+     "size": 28,
+     "vw": 7.2,
+     "font": "Instrument Serif",
+     "weight": 400,
+     "tracking": -0.03,
+     "leading": 0.96,
+     "top": 80,
+     "tag": "h1",
+     "kind": "heading",
+     "align": "left",
+     "position": "left"
+    },
+    "h1": {
+     "text": "One thing at a time.",
+     "words": 5,
+     "lines": 1,
+     "size": 28,
+     "font": "Instrument Serif"
+    },
+    "headings": [
+     {
+      "text": "One thing at a time.",
+      "words": 5,
+      "chars": 20,
+      "lines": 1,
+      "size": 28,
+      "vw": 7.2,
+      "font": "Instrument Serif",
+      "weight": 400,
+      "tracking": -0.035,
+      "leading": 0.96,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "center",
+      "widthRatio": 0.92,
+      "top": 80,
+      "tag": "h1",
+      "kind": "heading"
+     },
+     {
+      "text": "3",
+      "words": 1,
+      "chars": 1,
+      "lines": 1,
+      "size": 25,
+      "vw": 6.4,
+      "font": "Instrument Sans",
+      "weight": 400,
+      "tracking": 0,
+      "leading": 1.2,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "center",
+      "widthRatio": 0.83,
+      "top": 284,
+      "tag": "strong",
+      "kind": "heading"
+     },
+     {
+      "text": "6",
+      "words": 1,
+      "chars": 1,
+      "lines": 1,
+      "size": 25,
+      "vw": 6.4,
+      "font": "Instrument Sans",
+      "weight": 400,
+      "tracking": 0,
+      "leading": 1.2,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "center",
+      "widthRatio": 0.83,
+      "top": 373,
+      "tag": "strong",
+      "kind": "heading"
+     },
+     {
+      "text": "₹8.4L",
+      "words": 1,
+      "chars": 5,
+      "lines": 1,
+      "size": 25,
+      "vw": 6.4,
+      "font": "Instrument Sans",
+      "weight": 400,
+      "tracking": 0,
+      "leading": 1.2,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "center",
+      "widthRatio": 0.83,
+      "top": 462,
+      "tag": "strong",
+      "kind": "heading"
+     },
+     {
+      "text": "Current",
+      "words": 1,
+      "chars": 7,
+      "lines": 1,
+      "size": 52,
+      "vw": 13.3,
+      "font": "Instrument Serif",
+      "weight": 400,
+      "tracking": 0,
+      "leading": 1,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "center",
+      "widthRatio": 0.82,
+      "top": 983,
+      "tag": "span",
+      "kind": "heading"
+     },
+     {
+      "text": "File GSTR-1 today.",
+      "words": 3,
+      "chars": 18,
+      "lines": 1,
+      "size": 28,
+      "vw": 7.2,
+      "font": "Instrument Serif",
+      "weight": 400,
+      "tracking": -0.03,
+      "leading": 1,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "center",
+      "widthRatio": 0.82,
+      "top": 1089,
+      "tag": "h2",
+      "kind": "heading"
+     },
+     {
+      "text": "72%",
+      "words": 1,
+      "chars": 3,
+      "lines": 1,
+      "size": 36,
+      "vw": 9.2,
+      "font": "Instrument Sans",
+      "weight": 400,
+      "tracking": 0,
+      "leading": 1.2,
+      "upper": false,
+      "italic": false,
+      "mono": false,
+      "align": "left",
+      "position": "right",
+      "widthRatio": 0.17,
+      "top": 1232,
+      "tag": "strong",
+      "kind": "heading"
+     }
+    ],
+    "headingSummary": {
+     "count": 7,
+     "maxLines": 1,
+     "over2Lines": 0,
+     "statements": 0,
+     "centered": 0,
+     "medianWords": 1,
+     "mixedFontHeadings": 0
+    },
+    "type": {
+     "families": [
+      {
+       "family": "Instrument Sans",
+       "share": 0.95,
+       "mono": false
+      },
+      {
+       "family": "Instrument Serif",
+       "share": 0.05,
+       "mono": false
+      }
+     ],
+     "familyCount": 2,
+     "sizes": [
+      11,
+      12,
+      13,
+      14,
+      15,
+      17,
+      18,
+      25,
+      28,
+      36,
+      52
+     ],
+     "sizeCount": 11,
+     "notLoaded": [],
+     "body": {
+      "font": "Instrument Sans",
+      "size": 14,
+      "leading": 1.2,
+      "weight": 400,
+      "tracking": 0,
+      "contrast": 15
+     },
+     "measureChars": 41,
+     "max": {
+      "size": 52,
+      "vw": 13.3,
+      "font": "Instrument Serif",
+      "text": "Current"
+     },
+     "monoShare": 0,
+     "monoProseShare": 0,
+     "monoFamilies": [],
+     "monoSamples": [],
+     "microLabels": 0,
+     "microLabelShare": 0,
+     "microSamples": [],
+     "upperShare": 0.01,
+     "centerShare": 0.07,
+     "smallText": 7
+    },
+    "eyebrows": [
+     {
+      "text": "Deadlines in the next seven days",
+      "above": "3",
+      "upper": false,
+      "tracked": false,
+      "mono": false,
+      "pill": false,
+      "size": 12,
+      "top": 263
+     },
+     {
+      "text": "Documents waiting on clients",
+      "above": "6",
+      "upper": false,
+      "tracked": false,
+      "mono": false,
+      "pill": false,
+      "size": 12,
+      "top": 352
+     },
+     {
+      "text": "Overdue receivables",
+      "above": "₹8.4L",
+      "upper": false,
+      "tracked": false,
+      "mono": false,
+      "pill": false,
+      "size": 12,
+      "top": 441
+     },
+     {
+      "text": "09:00–10:45 · 46 minutes reserved",
+      "above": "Current",
+      "upper": false,
+      "tracked": false,
+      "mono": false,
+      "pill": false,
+      "size": 13,
+      "top": 937
+     }
+    ],
+    "numbered": [],
+    "color": {
+     "bodyBg": "#f4f5f2",
+     "bodyBgHsl": {
+      "h": 80,
+      "s": 0.13,
+      "l": 0.95
+     },
+     "dark": false,
+     "sectionBgs": [
+      {
+       "color": "#ffffff",
+       "top": 529,
+       "hsl": {
+        "h": 0,
+        "s": 0,
+        "l": 1
+       }
+      },
+      {
+       "color": "#1f201d",
+       "top": 896,
+       "hsl": {
+        "h": 80,
+        "s": 0.05,
+        "l": 0.12
+       }
+      }
+     ],
+     "textColors": [
+      {
+       "color": "#686a64",
+       "share": 0.36
+      },
+      {
+       "color": "#1f201d",
+       "share": 0.3
+      },
+      {
+       "color": "#ffffff",
+       "share": 0.23
+      },
+      {
+       "color": "#176b62",
+       "share": 0.08
+      },
+      {
+       "color": "#9fd2c9",
+       "share": 0.02
+      }
+     ],
+     "button": {
+      "bg": "#ffffff",
+      "hsl": {
+       "h": 0,
+       "s": 0,
+       "l": 1
+      },
+      "fg": "#1f201d"
+     },
+     "lowContrast": []
+    },
+    "buttons": {
+     "count": 6,
+     "inHero": 5,
+     "radius": 11,
+     "height": 58,
+     "withShadow": 0,
+     "withGradient": 0,
+     "mono": 0,
+     "upper": 0,
+     "heroLabels": [
+      "Create assignment",
+      "GSTR-1 filing Verma Hospitals Now",
+      "Missing documents Four clients 11:10",
+      "Partner review Kedia Holdings 13:00",
+      "Collections call Mehta Infra 62d"
+     ]
+    },
+    "surfaces": {
+     "shadowStatic": 0,
+     "shadowOverlay": 2,
+     "shadowSamples": [],
+     "gradients": 0,
+     "scrims": 0,
+     "gradientSamples": [],
+     "gradientText": 0,
+     "hairlines": 0,
+     "hairlineSamples": [],
+     "outlinedBoxes": 0,
+     "dashed": 0,
+     "blurred": 0,
+     "roundedBoxes": 8,
+     "boxRadius": 22,
+     "squareMedia": 0,
+     "roundedMedia": 0,
+     "mediaRadius": 0,
+     "textShadow": 0,
+     "cardRows": [
+      {
+       "count": 3,
+       "iconTopped": false,
+       "rounded": true,
+       "top": 1528
+      }
+     ]
+    },
+    "heroMedia": [],
+    "nav": {
+     "links": 0,
+     "fixed": false,
+     "height": 0,
+     "floatingPill": false,
+     "blur": false
+    },
+    "fontsLoaded": [
+     "instrument sans",
+     "instrument serif"
+    ]
+   },
+   "layout": {
+    "viewport": {
+     "w": 390,
+     "h": 844
+    },
+    "pageH": 2059,
+    "margins": {
+     "left": 16,
+     "right": 32
+    },
+    "sections": [
+     {
+      "sel": "header.page-header",
+      "tag": "header",
+      "top": 80,
+      "height": 143,
+      "words": 14,
+      "media": 0,
+      "middle": 0,
+      "heading": null,
+      "left": 16,
+      "right": 22,
+      "textLeft": 16,
+      "textRight": 22,
+      "fullBleed": false,
+      "footer": false,
+      "hero": true,
+      "continues": false,
+      "pinned": false
+     },
+     {
+      "sel": "section.finding-strip",
+      "tag": "section",
+      "top": 247,
+      "height": 266,
+      "words": 13,
+      "media": 0,
+      "middle": 0,
+      "heading": {
+       "text": "₹8.4L",
+       "size": 25,
+       "tag": "strong"
+      },
+      "left": 34,
+      "right": 178,
+      "textLeft": 34,
+      "textRight": 178,
+      "fullBleed": false,
+      "footer": false,
+      "hero": true,
+      "continues": false,
+      "pinned": false
+     },
+     {
+      "sel": "section.panel.focus-queue",
+      "tag": "section",
+      "top": 529,
+      "height": 351,
+      "words": 25,
+      "media": 0,
+      "middle": 0,
+      "heading": {
+       "text": "Today’s queue",
+       "size": 14,
+       "tag": "h2"
+      },
+      "left": 36,
+      "right": 36,
+      "textLeft": 36,
+      "textRight": 47,
+      "fullBleed": false,
+      "footer": false,
+      "hero": false,
+      "continues": true,
+      "pinned": false
+     },
+     {
+      "sel": "section.panel.focus-stage",
+      "tag": "section",
+      "top": 896,
+      "height": 460,
+      "words": 32,
+      "media": 0,
+      "middle": 0,
+      "heading": {
+       "text": "Current",
+       "size": 52,
+       "tag": "span"
+      },
+      "left": 36,
+      "right": 36,
+      "textLeft": 36,
+      "textRight": 36,
+      "fullBleed": false,
+      "footer": false,
+      "hero": false,
+      "continues": true,
+      "pinned": false
+     },
+     {
+      "sel": "aside.panel.context-panel",
+      "tag": "aside",
+      "top": 1372,
+      "height": 483,
+      "words": 40,
+      "media": 0,
+      "middle": 0,
+      "heading": {
+       "text": "Context",
+       "size": 14,
+       "tag": "h2"
+      },
+      "left": 36,
+      "right": 50,
+      "textLeft": 36,
+      "textRight": 50,
+      "fullBleed": false,
+      "footer": true,
+      "hero": false,
+      "continues": true,
+      "pinned": false
+     }
+    ],
+    "gaps": [],
+    "h1s": [
+     {
+      "text": "One thing at a time.",
+      "size": 28,
+      "top": 80,
+      "firstScreen": true
+     }
+    ],
+    "edgeText": [],
+    "edges": [
+     {
+      "x": 36,
+      "n": 4
+     },
+     {
+      "x": 16,
+      "n": 2
+     },
+     {
+      "x": 50,
+      "n": 1
+     },
+     {
+      "x": 105,
+      "n": 1
+     }
+    ],
+    "leftBlocks": 8,
+    "bodySize": 14,
+    "stage": false,
+    "explains": false,
+    "slivers": [],
+    "voidShare": 0,
+    "voidBox": null
+   },
+   "app": {
+    "viewport": {
+     "w": 390,
+     "h": 844
+    },
+    "dark": false,
+    "ground": "#f4f5f2",
+    "sidebar": null,
+    "topbar": {
+     "h": 54
+    },
+    "canvas": {
+     "left": 16,
+     "right": -241
+    },
+    "hero": {
+     "text": "One thing at a time.",
+     "words": 5,
+     "chars": 20,
+     "lines": 1,
+     "size": 28,
+     "vw": 7.2,
+     "font": "Instrument Serif",
+     "weight": 400,
+     "tracking": -0.03,
+     "leading": 0.96,
+     "top": 80,
+     "tag": "h1",
+     "kind": "heading",
+     "align": "left",
+     "position": "left"
+    },
+    "charts": 1,
+    "layout": {
+     "panels": 5,
+     "firstScreen": 2,
+     "ragged": [],
+     "voids": [
+      {
+       "gap": 55,
+       "at": 1150,
+       "panel": "Current focus"
+      }
+     ]
+    },
+    "tiles": 0,
+    "panels": {
+     "count": 12,
+     "radii": [
+      [
+       12,
+       4
+      ],
+      [
+       0,
+       3
+      ],
+      [
+       22,
+       3
+      ],
+      [
+       18,
+       1
+      ],
+      [
+       16,
+       1
+      ]
+     ],
+     "heavyBorders": 0,
+     "borderSamples": [],
+     "heavyShadows": 0,
+     "softShadows": 0,
+     "shadowSamples": [],
+     "glass": 0
+    },
+    "chips": {
+     "count": 0,
+     "hues": 0,
+     "samples": []
+    },
+    "numbers": {
+     "cells": 0,
+     "leftAligned": 0,
+     "figures": 1,
+     "tabularShare": 0,
+     "kpiMax": 36
+    },
+    "rows": null,
+    "chartHues": 0,
+    "placeholders": [],
+    "type": {
+     "under13": 0.35,
+     "tiny": 0,
+     "tinySamples": [],
+     "sizes": [
+      11,
+      12,
+      13,
+      14,
+      15,
+      17,
+      18,
+      25,
+      28,
+      36,
+      52
+     ]
+    },
+    "title": {
+     "text": "One thing at a time.",
+     "size": 28,
+     "top": 80
+    },
+    "colourShare": 0.001
+   },
+   "consoleErrors": []
+  }
+ ],
+ "findings": [
+  {
+   "level": "WARN",
+   "id": "dev-server",
+   "width": 1440,
+   "message": "This page is served by a development server (Vite, webpack or Next in dev mode).",
+   "fix": "Run the last gate on the production build too (vite build && vite preview, next build && next start, or the built index.html): minifiers and bundlers change the CSS a visitor receives.",
+   "alsoAt": [
+    768,
+    390
+   ]
+  },
+  {
+   "level": "WARN",
+   "id": "ragged-row",
+   "width": 1440,
+   "message": "2 pair(s) of cards in one row end at different heights (by 189px, 189px).",
+   "fix": "Cards that share a row share a bottom edge: balance them by their content (the same number of rows, a block of similar height beside it), or stack them. In testing, ragged rows were marked down every time.",
+   "alsoAt": [
+    768
+   ]
+  },
+  {
+   "level": "WARN",
+   "id": "panel-void",
+   "width": 1440,
+   "message": "1 card(s) hold a blank band inside: 159px in \"Current focus\".",
+   "fix": "A card stretches to its neighbour only when it has content to fill. Keep a legend or a note directly under its chart (only an action or a total may sit at a stretched card's foot), let a short card keep its own height (align-items: start), and let a filtered block shrink to its rows."
+  }
+ ],
+ "images": [
+  {
+   "viewport": "desktop",
+   "width": 1440,
+   "fold": "C:\\Users\\HP\\CRM\\Workspace\\.daybook-prototype\\inspect-b-final\\desktop-fold.jpg",
+   "pages": [
+    "C:\\Users\\HP\\CRM\\Workspace\\.daybook-prototype\\inspect-b-final\\desktop-page-01.jpg"
+   ],
+   "film": []
+  },
+  {
+   "viewport": "tablet",
+   "width": 768,
+   "fold": "C:\\Users\\HP\\CRM\\Workspace\\.daybook-prototype\\inspect-b-final\\tablet-fold.jpg",
+   "pages": [
+    "C:\\Users\\HP\\CRM\\Workspace\\.daybook-prototype\\inspect-b-final\\tablet-page-01.jpg"
+   ],
+   "film": []
+  },
+  {
+   "viewport": "mobile",
+   "width": 390,
+   "fold": "C:\\Users\\HP\\CRM\\Workspace\\.daybook-prototype\\inspect-b-final\\mobile-fold.jpg",
+   "pages": [
+    "C:\\Users\\HP\\CRM\\Workspace\\.daybook-prototype\\inspect-b-final\\mobile-page-01.jpg"
+   ],
+   "film": []
+  }
+ ]
+}

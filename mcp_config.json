@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "antigravity-worker": {
+      "command": "C:\\Program Files\\nodejs\\node.exe",
+      "args": [
+        "C:\\Users\\HP\\AppData\\Roaming\\npm\\node_modules\\mcp-server-google-antigravity\\index.js"
+      ],
+      "env": {
+        "AGY_PATH": "C:\\Users\\HP\\AppData\\Local\\agy\\bin\\agy.exe",
+        "AGY_MODEL": "gemini-3.8-flash-high",
+        "AGY_AUTO_APPROVE": "false",
+        "AGY_SANDBOX": "false",
+        "AGY_PRINT_TIMEOUT": "20m",
+        "AGY_HEARTBEAT_MS": "15000"
+      }
+    }
+  }
+}

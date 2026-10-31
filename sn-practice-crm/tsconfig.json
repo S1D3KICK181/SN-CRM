@@ -1,0 +1,13 @@
+{
+  "extends": "../tsconfig.json",
+  "include": ["apps/**/*.ts", "apps/**/*.tsx", "packages/**/*.ts", "packages/**/*.tsx"],
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@sn/domain": ["./packages/domain/src/index.ts"],
+      "@sn/contracts": ["./packages/contracts/src/index.ts"],
+      "@web/*": ["./apps/web/src/*"]
+    },
+    "noEmit": true
+  }
+}

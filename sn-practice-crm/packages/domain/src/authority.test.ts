@@ -1,0 +1,119 @@
+import { describe, expect, it } from 'vitest';
+import { authorize, validateReportingLine, type Actor, type CompanyRole, type EmployeeRef } from './authority';
+
+const actor = (role: CompanyRole, id: string = role): Actor => ({ id, role });
+const employee = (role: CompanyRole, id: string = role): EmployeeRef => ({ id, role });
+
+describe('practice-level authority', () => {
+  it.each(['founder', 'manager'] as const)('allows %s to create an Assignment', (role) => {
+    expect(authorize({ action: 'assignment.create', actor: actor(role) })).toEqual({ allowed: true });
+  });
+
+  it.each(['senior_staff', 'staff', 'trainee'] as const)('prevents %s from creating an Assignment', (role) => {
+    expect(authorize({ action: 'assignment.create', actor: actor(role) }).allowed).toBe(false);
+  });
+
+  it('prevents a Trainee from being the primary Assignment Owner', () => {
+    expect(authorize({ action: 'assignment.assign', actor: actor('manager'), target: employee('trainee') })).toMatchObject({
+      allowed: false,
+      code: 'trainee_cannot_own_assignment',
+    });
+  });
+
+  it('reserves office accounts for the Founder and Manager', () => {
+    expect(authorize({ action: 'finance.manage', actor: actor('manager') }).allowed).toBe(true);
+    expect(authorize({ action: 'finance.manage', actor: actor('senior_staff') }).allowed).toBe(false);
+  });
+});
+
+describe('delegation', () => {
+  it('allows Senior Staff to delegate owned Assignment work to Staff or Trainee', () => {
+    const senior = actor('senior_staff', 'senior-1');
+    expect(authorize({ action: 'task.delegate', actor: senior, assignmentOwnerId: senior.id, target: employee('staff') }).allowed).toBe(true);
+    expect(authorize({ action: 'task.delegate', actor: senior, assignmentOwnerId: senior.id, target: employee('trainee') }).allowed).toBe(true);
+  });
+
+  it('prevents Senior Staff from delegating work on an unrelated Assignment', () => {
+    expect(
+      authorize({ action: 'task.delegate', actor: actor('senior_staff'), assignmentOwnerId: 'someone-else', target: employee('trainee') }),
+    ).toMatchObject({ allowed: false, code: 'not_assignment_owner_or_reviewer' });
+  });
+
+  it('allows an explicit Senior Staff reviewer to delegate child work', () => {
+    expect(
+      authorize({
+        action: 'task.delegate',
+        actor: actor('senior_staff', 'reviewer-1'),
+        assignmentOwnerId: 'owner-1',
+        reviewerIds: ['reviewer-1'],
+        target: employee('staff'),
+      }).allowed,
+    ).toBe(true);
+  });
+
+  it('allows Staff to delegate owned Assignment work only to a Trainee', () => {
+    const staff = actor('staff', 'staff-1');
+    expect(authorize({ action: 'task.delegate', actor: staff, assignmentOwnerId: staff.id, target: employee('trainee') }).allowed).toBe(true);
+    expect(authorize({ action: 'task.delegate', actor: staff, assignmentOwnerId: staff.id, target: employee('staff') })).toMatchObject({
+      allowed: false,
+      code: 'invalid_delegate_role',
+    });
+  });
+
+  it('prevents Trainees from delegating client or internal work', () => {
+    expect(
+      authorize({ action: 'task.delegate', actor: actor('trainee'), assignmentOwnerId: 'trainee', target: employee('trainee', 'other') }).allowed,
+    ).toBe(false);
+    expect(authorize({ action: 'task.create_internal', actor: actor('trainee'), target: employee('trainee', 'other') }).allowed).toBe(false);
+  });
+});
+
+describe('personal work', () => {
+  it.each(['founder', 'manager', 'senior_staff', 'staff', 'trainee'] as const)('lets %s create a Personal Task for themselves', (role) => {
+    const currentActor = actor(role, `${role}-1`);
+    expect(authorize({ action: 'task.create_personal', actor: currentActor, ownerId: currentActor.id })).toEqual({ allowed: true });
+  });
+
+  it('does not let a Personal Task become an assignment to somebody else', () => {
+    expect(authorize({ action: 'task.create_personal', actor: actor('staff', 'staff-1'), ownerId: 'trainee-1' })).toMatchObject({
+      allowed: false,
+      code: 'personal_task_must_be_self_owned',
+    });
+  });
+});
+
+describe('reporting lines', () => {
+  it('requires a Manager to report to the Founder', () => {
+    expect(validateReportingLine(employee('manager'), employee('founder'))).toEqual({ allowed: true });
+    expect(validateReportingLine(employee('manager'), employee('manager', 'manager-2')).allowed).toBe(false);
+  });
+
+  it.each(['senior_staff', 'staff', 'trainee'] as const)('allows %s to report to Founder or Manager', (role) => {
+    expect(validateReportingLine(employee(role), employee('founder')).allowed).toBe(true);
+    expect(validateReportingLine(employee(role), employee('manager')).allowed).toBe(true);
+  });
+
+  it('rejects self-reporting and peer reporting', () => {
+    expect(validateReportingLine(employee('staff', 'person-1'), employee('manager', 'person-1')).allowed).toBe(false);
+    expect(validateReportingLine(employee('trainee'), employee('senior_staff')).allowed).toBe(false);
+  });
+
+  it('allows a Manager to maintain only lower-role reporting lines', () => {
+    expect(
+      authorize({
+        action: 'team.manage_reporting',
+        actor: actor('manager'),
+        subject: employee('staff'),
+        proposedManager: employee('manager', 'manager-2'),
+      }).allowed,
+    ).toBe(true);
+    expect(
+      authorize({
+        action: 'team.manage_reporting',
+        actor: actor('manager'),
+        subject: employee('manager', 'manager-2'),
+        proposedManager: employee('founder'),
+      }).allowed,
+    ).toBe(false);
+  });
+});

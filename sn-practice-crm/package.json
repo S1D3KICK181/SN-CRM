@@ -1,0 +1,11 @@
+{
+  "name": "sn-practice-crm",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite dev --config apps/web/vite.config.ts",
+    "build": "vite build --config apps/web/vite.config.ts",
+    "test": "vitest run --config vitest.config.ts",
+    "typecheck": "tsc -p tsconfig.json"
+  }
+}

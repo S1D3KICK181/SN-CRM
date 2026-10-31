@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light" />
+    <meta name="robots" content="noindex,nofollow" />
+    <title>SN Practice CRM — Daybook prototype</title>
+    <link rel='icon' href='data:,' />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600&family=Instrument+Serif&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./preview.css" />
+  </head>
+  <body>
+    <!-- PROTOTYPE: Three Daybook dashboard variants, switchable via ?variant=A|B|C. -->
+    <div class="app-shell">
+      <aside class="sidebar" aria-label="Primary navigation">
+        <a class="brand" href="#" aria-label="SN Practice CRM home">
+          <span class="brand-mark">SN</span>
+          <span><strong>Practice</strong><small>CRM</small></span>
+        </a>
+
+        <nav class="nav-list">
+          <p class="nav-group">Workspace</p>
+          <button class="nav-item is-active" type="button"><span>Today</span><kbd>T</kbd></button>
+          <button class="nav-item" type="button"><span>Clients</span><kbd>C</kbd></button>
+          <button class="nav-item" type="button"><span>Assignments</span><kbd>A</kbd></button>
+          <button class="nav-item" type="button"><span>Documents</span><kbd>D</kbd></button>
+          <p class="nav-group nav-group-spaced">Practice</p>
+          <button class="nav-item" type="button"><span>Billing</span><kbd>B</kbd></button>
+          <button class="nav-item" type="button"><span>Team</span><kbd>M</kbd></button>
+          <button class="nav-item" type="button"><span>Reports</span><kbd>R</kbd></button>
+        </nav>
+
+        <div class="sidebar-footer">
+          <button class="user-row" type="button">
+            <span class="avatar">AS</span>
+            <span><strong>Aarav Shah</strong><small>Managing partner</small></span>
+            <span aria-hidden="true">⌄</span>
+          </button>
+        </div>
+      </aside>
+
+      <main id="prototype" class="prototype" tabindex="-1"></main>
+    </div>
+
+    <div id="drawer-backdrop" class="drawer-backdrop" hidden></div>
+    <aside id="task-drawer" class="task-drawer" aria-label="Assignment details" aria-hidden="true"></aside>
+    <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="true"></div>
+
+    <div class="prototype-switcher" aria-label="Prototype variant switcher">
+      <button id="previous-variant" type="button" aria-label="Previous variant">←</button>
+      <span id="variant-label">A · Split day</span>
+      <button id="next-variant" type="button" aria-label="Next variant">→</button>
+    </div>
+
+    <script type="module" src="./preview.js"></script>
+  </body>
+</html>
