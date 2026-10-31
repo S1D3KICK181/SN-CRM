@@ -1,0 +1,11 @@
+{
+  "name": "@sn/api",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node ../../../node_modules/tsx/dist/cli.mjs watch src/index.ts",
+    "start": "node ../../../node_modules/tsx/dist/cli.mjs src/index.ts",
+    "test": "node ../../../node_modules/vitest/vitest.mjs run --root ../.. --config vitest.config.ts apps/api/src/application.test.ts apps/api/src/http.test.ts",
+    "typecheck": "node ../../../node_modules/typescript/bin/tsc -p tsconfig.json"
+  }
+}
