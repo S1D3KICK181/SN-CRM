@@ -1,7 +1,6 @@
 import {
   Activity,
   AlertTriangle,
-  Bell,
   BookOpenCheck,
   BriefcaseBusiness,
   Building2,
@@ -19,7 +18,6 @@ import {
   FileText,
   Files,
   IndianRupee,
-  LayoutDashboard,
   ListChecks,
   Lock,
   Mail,
@@ -31,18 +29,17 @@ import {
   ReceiptIndianRupee,
   Repeat2,
   Search,
-  Settings2,
   ShieldCheck,
-  Sparkles,
   TrendingUp,
   UserRoundCheck,
   UsersRound,
   WalletCards,
   X,
-  type LucideIcon,
 } from 'lucide-react';
 import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react';
-import { authorize, COMPANY_ROLES, type CompanyRole } from '@sn/domain';
+import { authorize, type CompanyRole } from '@sn/domain';
+import { ApplicationChrome } from './shell/application-chrome';
+import { MODULE_DESCRIPTIONS, type PageKey } from './shell/navigation';
 import {
   ASSIGNMENTS,
   CLIENTS,
@@ -73,121 +70,6 @@ import {
 } from './data';
 
 type DialogMode = 'assignment' | 'personal' | 'delegated' | 'client' | 'schedule' | 'invoice' | 'receipt' | null;
-type PageKey =
-  | 'Dashboard'
-  | 'Clients'
-  | 'Assignments'
-  | 'My Tasks'
-  | 'Team'
-  | 'Documents'
-  | 'Communication'
-  | 'Billing & Collections'
-  | 'Office Accounts'
-  | 'Reports'
-  | 'Settings';
-
-interface NavItem {
-  label: PageKey;
-  icon: LucideIcon;
-}
-
-interface NavGroup {
-  label: string;
-  items: NavItem[];
-}
-
-const ALL_NAV: NavGroup[] = [
-  {
-    label: 'Workspace',
-    items: [
-      { label: 'Dashboard', icon: LayoutDashboard },
-      { label: 'Clients', icon: Building2 },
-      { label: 'Assignments', icon: BriefcaseBusiness },
-      { label: 'My Tasks', icon: ListChecks },
-    ],
-  },
-  {
-    label: 'Practice',
-    items: [
-      { label: 'Team', icon: UsersRound },
-      { label: 'Documents', icon: Files },
-      { label: 'Communication', icon: MessageSquareText },
-      { label: 'Billing & Collections', icon: ReceiptIndianRupee },
-      { label: 'Office Accounts', icon: WalletCards },
-      { label: 'Reports', icon: TrendingUp },
-    ],
-  },
-  { label: 'System', items: [{ label: 'Settings', icon: Settings2 }] },
-];
-
-const ROLE_NAV: Record<CompanyRole, readonly PageKey[]> = {
-  founder: [
-    'Dashboard',
-    'Clients',
-    'Assignments',
-    'My Tasks',
-    'Team',
-    'Documents',
-    'Communication',
-    'Billing & Collections',
-    'Office Accounts',
-    'Reports',
-    'Settings',
-  ],
-  manager: [
-    'Dashboard',
-    'Clients',
-    'Assignments',
-    'My Tasks',
-    'Team',
-    'Documents',
-    'Communication',
-    'Billing & Collections',
-    'Office Accounts',
-    'Reports',
-  ],
-  senior_staff: [
-    'Dashboard',
-    'Clients',
-    'Assignments',
-    'My Tasks',
-    'Billing & Collections',
-    'Documents',
-    'Communication',
-    'Reports',
-  ],
-  staff: [
-    'Dashboard',
-    'Clients',
-    'Assignments',
-    'My Tasks',
-    'Billing & Collections',
-    'Documents',
-    'Communication',
-  ],
-  trainee: ['Dashboard', 'My Tasks', 'Documents', 'Communication'],
-};
-
-const MODULE_DESCRIPTIONS: Record<PageKey, string> = {
-  Dashboard: '',
-  Clients: 'Client identity, contacts, registrations, service history, documents, and communication in one record.',
-  Assignments: 'Continuous monthly compliance schedules and ad-hoc client obligations with ownership, deadlines, and evidence.',
-  'My Tasks': 'Personal reminders, delegated work, internal tasks, checklists, and due-time planning.',
-  Team: 'Reporting lines, workload, capabilities, departments, and controlled access.',
-  Documents: 'Client evidence, versions, requests, expiry dates, and Assignment links.',
-  Communication: 'Client calls, emails, notes, reminders, and follow-ups with a complete activity trail.',
-  'Billing & Collections': 'Invoices, receipts, allocations, outstanding fees, ageing, and collection follow-ups.',
-  'Office Accounts': 'Manager-operated cash ledger, expenses, bank entries, and daily reconciliation.',
-  Reports: 'Delivery, compliance, utilization, revenue, collection, and practice-performance reporting.',
-  Settings: 'Founder-controlled access, practice configuration, numbering, templates, and audit history.',
-};
-
-function roleNav(role: CompanyRole): NavGroup[] {
-  const allowed = ROLE_NAV[role];
-  return ALL_NAV.map((group) => ({ ...group, items: group.items.filter((item) => allowed.includes(item.label)) })).filter(
-    (group) => group.items.length > 0,
-  );
-}
 
 export function App() {
   const [role, setRole] = useState<CompanyRole>('founder');
@@ -564,204 +446,94 @@ export function App() {
   }
 
   return (
-    <div className="app-shell">
-      <Sidebar role={role} activePage={activePage} onNavigate={setActivePage} />
-      <div className="main-column">
-        <div className="preview-banner">
-          <span>
-            <Sparkles aria-hidden="true" />
-            <strong>Clean-slate preview</strong> · permission-aware demo data
-          </span>
-          <label>
-            Preview as
-            <select value={role} onChange={(event) => switchRole(event.target.value as CompanyRole)}>
-              {COMPANY_ROLES.map((item) => (
-                <option value={item} key={item}>
-                  {ROLE_LABELS[item]}
-                </option>
-              ))}
-            </select>
-          </label>
-        </div>
-        <Topbar activePage={activePage} person={person} onQuickAdd={openPrimaryAction} onToast={setToast} />
-        <main className="main-content">
-          {activePage === 'Dashboard' ? (
-            <RoleDashboard
+    <ApplicationChrome
+      role={role}
+      activePage={activePage}
+      toast={toast}
+      onRoleChange={switchRole}
+      onNavigate={setActivePage}
+      onQuickAdd={openPrimaryAction}
+      onToast={setToast}
+      overlays={
+        <>
+          {selectedAssignmentForDrawer ? (
+            <AssignmentDetailDrawer
+              assignment={selectedAssignmentForDrawer}
+              leadership={role === 'founder' || role === 'manager'}
               role={role}
-              assignments={assignments}
-              schedules={schedules}
-              invoices={invoices}
-              personalTasks={personalTasks}
-              delegatedTasks={delegatedTasks}
-              onCompose={setDialog}
+              onClose={() => setSelectedAssignmentForDrawer(null)}
               onToast={setToast}
-              onSelectAssignment={setSelectedAssignmentForDrawer}
-              onTogglePersonalTask={handleTogglePersonalTask}
-              onUpdateDelegatedTask={handleUpdateDelegatedTask}
-              onApproveDelegatedTask={handleApproveDelegatedTask}
-              onSubmitTaskForReview={handleSubmitTaskForReview}
-              onNavigate={setActivePage}
-            />
-          ) : (
-            <ModuleWorkspace
-              page={activePage}
-              role={role}
-              clients={clients}
-              schedules={schedules}
-              assignments={assignments}
-              invoices={invoices}
-              receipts={receipts}
-              personalTasks={personalTasks}
-              delegatedTasks={delegatedTasks}
-              onCompose={setDialog}
-              onToast={setToast}
-              onUpdateSchedule={handleUpdateSchedule}
               onUpdateAssignment={handleUpdateAssignment}
-              onSelectAssignment={setSelectedAssignmentForDrawer}
-              onTogglePersonalTask={handleTogglePersonalTask}
-              onRecordPaymentForInvoice={openReceiptModalForInvoice}
-              onOpenInvoiceForAssignment={handleOpenInvoiceForAssignment}
-              onSubmitTaskForReview={handleSubmitTaskForReview}
-              onUpdateClient={handleUpdateClient}
+              onOpenInvoice={handleOpenInvoiceForAssignment}
             />
-          )}
-        </main>
-      </div>
-      {selectedAssignmentForDrawer ? (
-        <AssignmentDetailDrawer
-          assignment={selectedAssignmentForDrawer}
-          leadership={role === 'founder' || role === 'manager'}
+          ) : null}
+          <ComposerDialog
+            mode={dialog}
+            role={role}
+            clients={clients}
+            invoices={invoices}
+            assignments={assignments}
+            personalTasks={personalTasks}
+            delegatedTasks={delegatedTasks}
+            presetInvoice={presetInvoiceForReceipt}
+            presetAssignment={presetAssignmentForInvoice}
+            onClose={() => {
+              setDialog(null);
+              setPresetInvoiceForReceipt(null);
+              setPresetAssignmentForInvoice(null);
+            }}
+            onCreated={setToast}
+            onClientCreated={handleCreateClient}
+            onInvoiceCreated={handleCreateInvoice}
+            onReceiptCreated={handleCreateReceipt}
+            onAssignmentCreated={handleCreateAssignment}
+            onPersonalTaskCreated={handleCreatePersonalTask}
+            onDelegatedTaskCreated={handleDelegateTask}
+          />
+        </>
+      }
+    >
+      {activePage === 'Dashboard' ? (
+        <RoleDashboard
           role={role}
-          onClose={() => setSelectedAssignmentForDrawer(null)}
+          assignments={assignments}
+          schedules={schedules}
+          invoices={invoices}
+          personalTasks={personalTasks}
+          delegatedTasks={delegatedTasks}
+          onCompose={setDialog}
           onToast={setToast}
-          onUpdateAssignment={handleUpdateAssignment}
-          onOpenInvoice={handleOpenInvoiceForAssignment}
+          onSelectAssignment={setSelectedAssignmentForDrawer}
+          onTogglePersonalTask={handleTogglePersonalTask}
+          onUpdateDelegatedTask={handleUpdateDelegatedTask}
+          onApproveDelegatedTask={handleApproveDelegatedTask}
+          onSubmitTaskForReview={handleSubmitTaskForReview}
+          onNavigate={setActivePage}
         />
-      ) : null}
-      <ComposerDialog
-        mode={dialog}
-        role={role}
-        clients={clients}
-        invoices={invoices}
-        assignments={assignments}
-        personalTasks={personalTasks}
-        delegatedTasks={delegatedTasks}
-        presetInvoice={presetInvoiceForReceipt}
-        presetAssignment={presetAssignmentForInvoice}
-        onClose={() => {
-          setDialog(null);
-          setPresetInvoiceForReceipt(null);
-          setPresetAssignmentForInvoice(null);
-        }}
-        onCreated={setToast}
-        onClientCreated={handleCreateClient}
-        onInvoiceCreated={handleCreateInvoice}
-        onReceiptCreated={handleCreateReceipt}
-        onAssignmentCreated={handleCreateAssignment}
-        onPersonalTaskCreated={handleCreatePersonalTask}
-        onDelegatedTaskCreated={handleDelegateTask}
-      />
-      {toast ? (
-        <div className="toast" role="status">
-          <CheckCircle2 aria-hidden="true" />
-          {toast}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-function Sidebar({
-  role,
-  activePage,
-  onNavigate,
-}: {
-  role: CompanyRole;
-  activePage: PageKey;
-  onNavigate: (page: PageKey) => void;
-}) {
-  const person = ROLE_PEOPLE[role];
-  return (
-    <aside className="sidebar" aria-label="Primary navigation">
-      <button className="brand" type="button" onClick={() => onNavigate('Dashboard')}>
-        <span className="brand-mark">SN</span>
-        <span className="brand-copy">
-          <strong>SN Practice CRM</strong>
-          <small>SN &amp; Associates</small>
-        </span>
-      </button>
-      <div className="sidebar-divider" />
-      <nav className="nav-scroll">
-        {roleNav(role).map((group) => (
-          <div className="nav-group" key={group.label}>
-            <p>{group.label}</p>
-            {group.items.map((item) => {
-              const Icon = item.icon;
-              const selected = activePage === item.label;
-              return (
-                <button
-                  className={selected ? 'nav-item is-active' : 'nav-item'}
-                  type="button"
-                  aria-current={selected ? 'page' : undefined}
-                  onClick={() => onNavigate(item.label)}
-                  key={item.label}
-                >
-                  <Icon aria-hidden="true" />
-                  <span>{item.label}</span>
-                </button>
-              );
-            })}
-          </div>
-        ))}
-      </nav>
-      <div className="sidebar-footer">
-        <button className="profile-card" type="button">
-          <span className="avatar">{person.initials}</span>
-          <span className="profile-copy">
-            <strong>{person.name}</strong>
-            <small>{ROLE_LABELS[role]}</small>
-          </span>
-          <ChevronRight aria-hidden="true" />
-        </button>
-      </div>
-    </aside>
-  );
-}
-
-function Topbar({
-  activePage,
-  person,
-  onQuickAdd,
-  onToast,
-}: {
-  activePage: PageKey;
-  person: { initials: string };
-  onQuickAdd: () => void;
-  onToast: (message: string) => void;
-}) {
-  return (
-    <header className="topbar">
-      <div className="breadcrumb">
-        <span>Workspace / {activePage}</span>
-        <strong>{activePage === 'Dashboard' ? 'Main dashboard' : activePage}</strong>
-      </div>
-      <div className="topbar-actions">
-        <label className="search-control">
-          <Search aria-hidden="true" />
-          <span className="sr-only">Search the practice</span>
-          <input placeholder="Search clients, PAN, GSTIN…" onKeyDown={(event) => event.key === 'Enter' && onToast('Search is ready for API wiring')} />
-        </label>
-        <button className="icon-button has-indicator" type="button" aria-label="Notifications" onClick={() => onToast('Three items need attention')}>
-          <Bell aria-hidden="true" />
-        </button>
-        <button className="icon-button" type="button" aria-label="Create new item" onClick={onQuickAdd}>
-          <Plus aria-hidden="true" />
-        </button>
-        <span className="user-avatar" aria-hidden="true">
-          {person.initials}
-        </span>
-      </div>
-    </header>
+      ) : (
+        <ModuleWorkspace
+          page={activePage}
+          role={role}
+          clients={clients}
+          schedules={schedules}
+          assignments={assignments}
+          invoices={invoices}
+          receipts={receipts}
+          personalTasks={personalTasks}
+          delegatedTasks={delegatedTasks}
+          onCompose={setDialog}
+          onToast={setToast}
+          onUpdateSchedule={handleUpdateSchedule}
+          onUpdateAssignment={handleUpdateAssignment}
+          onSelectAssignment={setSelectedAssignmentForDrawer}
+          onTogglePersonalTask={handleTogglePersonalTask}
+          onRecordPaymentForInvoice={openReceiptModalForInvoice}
+          onOpenInvoiceForAssignment={handleOpenInvoiceForAssignment}
+          onSubmitTaskForReview={handleSubmitTaskForReview}
+          onUpdateClient={handleUpdateClient}
+        />
+      )}
+    </ApplicationChrome>
   );
 }
 
