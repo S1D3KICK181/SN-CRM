@@ -5,22 +5,30 @@
 > - **Platform:** Windows 11 (PowerShell 5.1)
 > - **Canonical Workspace:** `C:\Users\HP\Mohammed\CRM`
 > - **Canonical Target Directory:** `C:\Users\HP\Mohammed\CRM\sn-practice-crm`
-> - **Accepted Parent Commit:** `03fc85d65d5af033e98b8ba6040cc7b2f75bc0a1`
+> - **Initial Baseline Commit:** `03fc85d65d5af033e98b8ba6040cc7b2f75bc0a1`
+> - **Status Refresh Base Commit:** `0ea6ff88ee361787274650a12c84679120d24220`
 
 ---
 
-> [!CAUTION]
-> ### CURRENT STATUS: BLOCKED — PREREQUISITES ABSENT
+> [!WARNING]
+> ### CURRENT STATUS: TOOLING INSTALLED — RUNTIME INITIALIZATION PENDING RESTART
 >
-> **Required local tooling (`docker`, `supabase`, `psql`) is not installed on this host.**
+> **Required local tooling (`docker` CLI, `supabase` CLI, `psql`) is installed on this host, but runtime engines are NOT running.**
 >
-> **Database migration and live catalog invariant verification (`001_catalog_invariants.sql`) have NOT run.**
+> - **Docker Desktop:** Official WinGet package `Docker.DockerDesktop 4.97.0` is installed (Docker CLI `29.9.2, build a82e528`). Windows reports a pending CBS reboot. Docker Desktop has **NOT** been launched, the Docker daemon has **NOT** been verified, and first-launch terms have **NOT** been accepted.
+> - **Supabase CLI:** Project-local Supabase CLI `2.122.0` is installed as exact `devDependencies` `"supabase": "2.122.0"` in `sn-practice-crm/package.json` with lockfile (committed in `88476be7d72b582a531962d82ae36cad0422b4e7`). `npx supabase --version` succeeded (`2.122.0`).
+> - **PostgreSQL Client:** PostgreSQL `18.6-5` is installed through Scoop (`psql (PostgreSQL) 18.6`). User PATH contains `C:\Users\HP\scoop\apps\postgresql\current\bin`. Pre-existing long-lived terminals may need reopening to refresh PATH. No PostgreSQL background service or process was started.
+> - **Local Stack & Database:** `npx supabase init`, `npx supabase start`, `npx supabase status`, containers, database migration (`0001_practice_core.sql`), and live catalog invariant SQL (`001_catalog_invariants.sql`) have **NOT** run.
 >
-> No containers, daemons, background processes, or network links were started or altered during this task.
+> No Docker/Supabase/PostgreSQL runtime or local database container was started. The next manual action is: restart Windows, launch Docker Desktop, accept its first-launch terms, then verify the daemon.
 
 ---
 
-## 1. Preflight Environment Evidence
+## 1. Preflight Environment Evidence (Historical Pre-Install Snapshot)
+
+> [!NOTE]
+> **HISTORICAL PRE-INSTALL SNAPSHOT (Captured 2026-10-31 @ commit `03fc85d65d5af033e98b8ba6040cc7b2f75bc0a1`):**
+> The table below records baseline preflight observations captured prior to prerequisite installation. These absence records reflect the historical state when CRM-P1-T9A was first drafted; see Section 2 for the current post-installation tooling state.
 
 All checks executed non-interactively in Windows PowerShell from canonical root `C:\Users\HP\Mohammed\CRM` on 2026-10-31:
 
@@ -30,9 +38,9 @@ All checks executed non-interactively in Windows PowerShell from canonical root 
 | `git status --short` | Clean working tree | *(Empty)* | 0 | **Verified Clean** |
 | `node --version` | Node 20+ required | `v26.13.0` | 0 | **Satisfied** |
 | `npm --version` | Compatible npm package manager | `11.20.0` | 0 | **Satisfied** |
-| `Get-Command docker -ErrorAction SilentlyContinue` | Binary present | *(No output / Null)* | 0 | **ABSENT (Gap)** |
-| `Get-Command supabase -ErrorAction SilentlyContinue` | Binary present | *(No output / Null)* | 0 | **ABSENT (Gap)** |
-| `Get-Command psql -ErrorAction SilentlyContinue` | Binary present | *(No output / Null)* | 0 | **ABSENT (Gap)** |
+| `Get-Command docker -ErrorAction SilentlyContinue` | Binary present | *(No output / Null)* | 0 | **ABSENT (Gap — Historical Snapshot)** |
+| `Get-Command supabase -ErrorAction SilentlyContinue` | Binary present | *(No output / Null)* | 0 | **ABSENT (Gap — Historical Snapshot)** |
+| `Get-Command psql -ErrorAction SilentlyContinue` | Binary present | *(No output / Null)* | 0 | **ABSENT (Gap — Historical Snapshot)** |
 | `Test-Path sn-practice-crm/supabase/config.toml` | `False` (uninitialized) | `False` | 0 | **Expected Uninitialized** |
 | `Test-Path sn-practice-crm/database/package.json` | `False` (no bespoke runner) | `False` | 0 | **Expected Clean** |
 
@@ -40,48 +48,60 @@ All checks executed non-interactively in Windows PowerShell from canonical root 
 
 ---
 
-## 2. Official Windows Prerequisite Installation Instructions
+## 2. Tooling Status & Official Installation Guidance
 
-> [!IMPORTANT]
-> **STATUS OF COMMANDS IN THIS SECTION: NOT EXECUTED.**
->
-> This documentation task is strictly non-mutating. Software installation, system configuration changes, and package installations require authorization and a subsequent dedicated implementation task.
+### 2.1 Current Tooling Status
 
-### 2.1 Container Runtime: Docker Desktop on Windows
+| Tool / Component | Installed Version / Package | Verification Evidence | Current State & Remaining Action |
+| :--- | :--- | :--- | :--- |
+| **Docker Desktop** | `Docker.DockerDesktop 4.97.0` (WinGet) | Direct binary at `C:\Program Files\Docker\Docker\resources\bin\docker.exe` reports Docker CLI `29.9.2, build a82e528` | **Installed; daemon unverified.** Windows reports pending CBS reboot. Docker Desktop NOT launched; first-launch terms NOT accepted. Remaining: Restart Windows, launch Docker Desktop, accept terms, verify daemon. |
+| **Supabase CLI** | Project-local `supabase: 2.122.0` (exact `devDependencies` in `sn-practice-crm/package.json`, commit `88476be7d72b582a531962d82ae36cad0422b4e7`) | `npx supabase --version` executed cleanly with exit code 0 (`2.122.0`) | **Installed locally; stack uninitialized.** Containers and `supabase init`/`start`/`status` NOT run. Remaining: Run `npx supabase init` and `npx supabase start` once Docker daemon is live. |
+| **PostgreSQL (`psql`)** | PostgreSQL `18.6-5` (Scoop) | Direct binary reports `psql (PostgreSQL) 18.6`. User PATH includes `C:\Users\HP\scoop\apps\postgresql\current\bin` | **Installed; client utility only.** No background PostgreSQL service or daemon was started. Pre-existing long-lived terminal may need reopening to refresh PATH. Remaining: Execute core migration and invariant tests once local database is up. |
+
+> [!NOTE]
+> **INSTALLATION VS. RUNTIME INITIALIZATION:** Prerequisite tooling packages have been installed on the host. However, runtime daemons, containers, local Supabase stacks, and database migrations remain unexecuted pending system reboot and manual first launch.
+
+### 2.2 Container Runtime: Docker Desktop on Windows
 - **Official Source & Installation:** Per the official [Docker Desktop Windows installation](https://docs.docker.com/desktop/setup/install/windows-install/) guide, Docker Desktop specifies a per-user installation with the WSL 2 backend as the standard configuration on Windows 10/11 64-bit.
 - **Requirements:** Windows 10/11 64-bit with WSL 2 feature enabled and an updated Linux kernel package (`wsl --update`), as outlined in [Docker Desktop Windows installation](https://docs.docker.com/desktop/setup/install/windows-install/).
-- **Installation Procedure:** Download `Docker Desktop Installer.exe` from official Docker channels and execute the installer ensuring the "Use WSL 2 instead of Hyper-V" option is selected, following [Docker Desktop Windows installation](https://docs.docker.com/desktop/setup/install/windows-install/).
+- **Installation Procedure:** Download `Docker Desktop Installer.exe` from official Docker channels or install via WinGet (`winget install Docker.DockerDesktop`), ensuring the "Use WSL 2 instead of Hyper-V" option is selected, following [Docker Desktop Windows installation](https://docs.docker.com/desktop/setup/install/windows-install/).
 - **Service Verification:** Docker Desktop must be launched and the daemon verified running before invoking container commands.
 
-### 2.2 CLI Tooling: Project-Local Supabase CLI (npm / npx)
+### 2.3 CLI Tooling: Project-Local Supabase CLI (npm / npx)
 - **Official Source & Installation:** As specified in [Supabase CLI local development](https://supabase.com/docs/guides/local-development/cli/getting-started?platform=npm&queryGroups=platform), the Supabase CLI is installed as a project-local devDependency using `npm install supabase --save-dev` inside the project root, with commands executed via `npx supabase <command>`.
 - **Requirements:** Node.js 20+ is required according to [Supabase CLI local development](https://supabase.com/docs/guides/local-development/cli/getting-started?platform=npm&queryGroups=platform) (the current host runtime `v26.13.0` satisfies this requirement).
-- **Target Location:** Must be installed strictly inside `sn-practice-crm/` (`sn-practice-crm/package.json`), never globally or at the parent repository root.
+- **Target Location:** Installed strictly inside `sn-practice-crm/` (`sn-practice-crm/package.json` devDependencies as `"supabase": "2.122.0"`), never globally or at the parent repository root.
 - **Command Invocation:** All subsequent commands use `npx supabase` per [Supabase CLI local development](https://supabase.com/docs/guides/local-development/cli/getting-started?platform=npm&queryGroups=platform) to guarantee version locking and sandbox reproducibility.
 
-### 2.3 Database Client Tooling: PostgreSQL `psql`
+### 2.4 Database Client Tooling: PostgreSQL `psql`
 - **Official Source & Distribution:** The [PostgreSQL Windows downloads](https://www.postgresql.org/download/windows/) page provides certified EDB Windows installers and archive packages to obtain client utilities including `psql`.
 - **Requirements:** `psql` command-line executable installed on the host and available in Windows `PATH`, as described in [PostgreSQL Windows downloads](https://www.postgresql.org/download/windows/).
-- **Verification Rule:** `Get-Command psql` must resolve successfully before attempting direct SQL script execution.
+- **Verification Rule:** `Get-Command psql` (or direct path invocation `C:\Users\HP\scoop\apps\postgresql\current\bin\psql.exe`) must resolve successfully before attempting direct SQL script execution.
 
 ---
 
-## 3. Safe Future Verification Commands
+## 3. Safe Verification Commands (Post-Restart & Post-First-Launch)
 
-> [!NOTE]
-> **STATUS: NOT EXECUTED.**
+> [!IMPORTANT]
+> **PREREQUISITE GATE: RUN ONLY AFTER RESTART AND FIRST LAUNCH.**
 >
-> The next worker must run these read-only checks to confirm tool readiness prior to any stack initialization:
+> Because Windows has a pending CBS reboot and Docker Desktop has not completed its first launch or accepted terms of service, these verification commands must be executed only after:
+> 1. Windows is restarted.
+> 2. Docker Desktop is launched and its first-launch terms of service are accepted.
+> 3. The Docker engine is confirmed running in the system tray.
+> 4. A fresh PowerShell terminal is opened to pick up environment and PATH variables.
+>
+> Zero secrets, tokens, or environment keys should be printed or recorded.
 
 ```powershell
-# Verify container runtime daemon
+# 1. Verify container runtime daemon and WSL 2 backend
 docker version
 
-# Verify project-local Supabase CLI via npx from sn-practice-crm root
+# 2. Verify project-local Supabase CLI via npx from canonical sn-practice-crm root
 Set-Location "C:\Users\HP\Mohammed\CRM\sn-practice-crm"
 npx supabase --version
 
-# Verify PostgreSQL client on system PATH
+# 3. Verify PostgreSQL client on system PATH
 psql --version
 ```
 
@@ -200,18 +220,18 @@ Direct inspection of `sn-practice-crm/database/tests/001_catalog_invariants.sql`
 
 Prior to claiming completion of local database provisioning in a subsequent task, the implementation worker must satisfy every check:
 
-- [ ] `docker version` confirms Docker daemon running with WSL 2 backend per [Docker Desktop Windows installation](https://docs.docker.com/desktop/setup/install/windows-install/).
-- [ ] `psql --version` confirms PostgreSQL client available on system PATH per [PostgreSQL Windows downloads](https://www.postgresql.org/download/windows/).
-- [ ] `sn-practice-crm/package.json` contains `supabase` in `devDependencies` per [Supabase CLI local development](https://supabase.com/docs/guides/local-development/cli/getting-started?platform=npm&queryGroups=platform).
-- [ ] `npx supabase --version` executes cleanly from `sn-practice-crm`.
+- [ ] `docker version` confirms Docker daemon running with WSL 2 backend per [Docker Desktop Windows installation](https://docs.docker.com/desktop/setup/install/windows-install/) (Docker Desktop 4.97.0 installed; first launch, terms acceptance, and daemon verification pending Windows restart).
+- [x] `psql --version` confirms PostgreSQL client available on system PATH per [PostgreSQL Windows downloads](https://www.postgresql.org/download/windows/) (PostgreSQL 18.6-5 installed via Scoop; direct psql reports 18.6; long-lived shells may require reopening).
+- [x] `sn-practice-crm/package.json` contains `supabase` in `devDependencies` per [Supabase CLI local development](https://supabase.com/docs/guides/local-development/cli/getting-started?platform=npm&queryGroups=platform) (exact devDependency `"supabase": "2.122.0"` committed in `88476be7d72b582a531962d82ae36cad0422b4e7`).
+- [x] `npx supabase --version` executes cleanly from `sn-practice-crm` (verified `2.122.0`).
 - [ ] `npx supabase init` generates valid `sn-practice-crm/supabase/config.toml` per [Supabase CLI reference](https://supabase.com/docs/reference/cli/global-flags).
 - [ ] `npx supabase start` launches local containers with zero port conflicts per [Supabase CLI reference](https://supabase.com/docs/reference/cli/global-flags).
 - [ ] `npx supabase status` reports local endpoints; loopback URL is verified before execution.
 - [ ] `psql -v ON_ERROR_STOP=1 "$crmLocalDatabaseUrl" -f "database/migrations/0001_practice_core.sql"` succeeds with exit code 0.
 - [ ] `psql -v ON_ERROR_STOP=1 "$crmLocalDatabaseUrl" -f "database/tests/001_catalog_invariants.sql"` succeeds with exit code 0 and transaction rollback.
-- [ ] `npm --prefix sn-practice-crm run test:all` executes and passes all **75 automated tests** (24 domain + 42 API + 9 static DB).
-- [ ] `npm --prefix sn-practice-crm run typecheck` exits with code 0 across the monorepo.
-- [ ] `git status` verifies no `.env`, secret tokens, or unintended runtime caches are tracked.
+- [x] `npm --prefix sn-practice-crm run test:all` executes and passes all **85 automated tests** (76 Vitest + 9 static DB/policy).
+- [x] `npm --prefix sn-practice-crm run typecheck` exits with code 0 across the monorepo (typecheck and production build passed).
+- [ ] A final tracked/untracked secret/runtime-artifact audit is still required before provisioning completion (verifying no `.env`, secret tokens, or unintended runtime caches are tracked).
 
 ---
 
