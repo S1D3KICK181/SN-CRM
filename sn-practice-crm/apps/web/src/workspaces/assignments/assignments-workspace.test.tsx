@@ -16,9 +16,17 @@ const workspaceSource = readFileSync(
   'utf8',
 ).replaceAll('\r\n', '\n');
 
+const drawerSource = readFileSync(
+  new URL('./assignment-detail-drawer.tsx', import.meta.url),
+  'utf8',
+).replaceAll('\r\n', '\n');
+
 describe('Assignments workspace source contracts', () => {
   it('verifies app.tsx imports extracted modules and maintains drawer declaration boundaries', () => {
-    // 1. app.tsx imports AssignmentsTable and AssignmentsWorkspace from extracted modules
+    // 1. app.tsx imports AssignmentsTable, AssignmentsWorkspace, and AssignmentDetailDrawer from extracted modules
+    expect(appSource).toMatch(
+      /import\s*\{[^}]*\bAssignmentDetailDrawer\b[^}]*\}\s*from\s*['"]\.\/workspaces\/assignments\/assignment-detail-drawer['"]/,
+    );
     expect(appSource).toMatch(
       /import\s*\{[^}]*\bAssignmentsTable\b[^}]*\}\s*from\s*['"]\.\/workspaces\/assignments\/assignments-table['"]/,
     );
@@ -26,16 +34,20 @@ describe('Assignments workspace source contracts', () => {
       /import\s*\{[^}]*\bAssignmentsWorkspace\b[^}]*\}\s*from\s*['"]\.\/workspaces\/assignments\/assignments-workspace['"]/,
     );
 
-    // app source does not declare AssignmentsTable, AssignmentsWorkspace, or ScheduleDetailDrawer
+    // app source does not declare AssignmentsTable, AssignmentsWorkspace, ScheduleDetailDrawer, or AssignmentDetailDrawer
     expect(appSource).not.toMatch(/\bfunction\s+AssignmentsTable\b/);
     expect(appSource).not.toMatch(/\bconst\s+AssignmentsTable\b/);
     expect(appSource).not.toMatch(/\bfunction\s+AssignmentsWorkspace\b/);
     expect(appSource).not.toMatch(/\bconst\s+AssignmentsWorkspace\b/);
     expect(appSource).not.toMatch(/\bfunction\s+ScheduleDetailDrawer\b/);
     expect(appSource).not.toMatch(/\bconst\s+ScheduleDetailDrawer\b/);
+    expect(appSource).not.toMatch(/\bfunction\s+AssignmentDetailDrawer\b/);
+    expect(appSource).not.toMatch(/\bconst\s+AssignmentDetailDrawer\b/);
 
-    // app source still declares AssignmentDetailDrawer
-    expect(appSource).toMatch(/\bfunction\s+AssignmentDetailDrawer\b/);
+    // AssignmentDetailDrawer mount remains wired in app.tsx overlays
+    expect(appSource).toMatch(
+      /<AssignmentDetailDrawer[\s\S]*?assignment=\{selectedAssignmentForDrawer\}[\s\S]*?leadership=\{role === 'founder' \|\| role === 'manager'\}[\s\S]*?role=\{role\}[\s\S]*?onClose=\{[^}]*\}[\s\S]*?onToast=\{setToast\}[\s\S]*?onUpdateAssignment=\{handleUpdateAssignment\}[\s\S]*?onOpenInvoice=\{handleOpenInvoiceForAssignment\}[\s\S]*?\/>/,
+    );
   });
 
   it('verifies assignments-table exports AssignmentsTable with optional callbacks and default props', () => {
@@ -137,5 +149,77 @@ describe('Assignments workspace source contracts', () => {
 
     // zero-state copy
     expect(workspaceSource).toMatch(/No compliance schedules match your current filters\./);
+  });
+
+  it('verifies assignment-detail-drawer exports AssignmentDetailDrawer with exact flat interface, optional props, and defaults', () => {
+    // exports AssignmentDetailDrawer
+    expect(drawerSource).toMatch(/export\s+(?:function|const)\s+AssignmentDetailDrawer\b/);
+
+    // flat interface and required props
+    expect(drawerSource).toMatch(/assignment:\s*AssignmentRow/);
+    expect(drawerSource).toMatch(/leadership:\s*boolean/);
+    expect(drawerSource).toMatch(/onClose:\s*\(\)\s*=>\s*void/);
+    expect(drawerSource).toMatch(/onToast:\s*\(msg:\s*string\)\s*=>\s*void/);
+    expect(drawerSource).toMatch(/onUpdateAssignment:\s*\(updated:\s*AssignmentRow\)\s*=>\s*void/);
+
+    // required callbacks are not optional
+    expect(drawerSource).not.toMatch(/onClose\?:/);
+    expect(drawerSource).not.toMatch(/onToast\?:/);
+    expect(drawerSource).not.toMatch(/onUpdateAssignment\?:/);
+
+    // optional props and defaults
+    expect(drawerSource).toMatch(/role\?:\s*CompanyRole/);
+    expect(drawerSource).toMatch(/onOpenInvoice\?:\s*\(asn:\s*AssignmentRow\)\s*=>\s*void/);
+    expect(drawerSource).toMatch(/initialEditing\?:\s*boolean/);
+    expect(drawerSource).toMatch(/initialEditing\s*=\s*false/);
+  });
+
+  it('verifies assignment-detail-drawer critical contracts: edit gates, custodian locking, progress, bank exemption, invoice flow, and working papers', () => {
+    // founder/manager edit gate
+    expect(drawerSource).toMatch(
+      /const\s+canEditAssignment\s*=\s*role\s*===\s*['"]founder['"]\s*\|\|\s*role\s*===\s*['"]manager['"]/,
+    );
+    expect(drawerSource).toMatch(
+      /\{canEditAssignment\s*\?\s*\([\s\S]*?Edit Assignment[\s\S]*?\)\s*:\s*null\}/,
+    );
+
+    // custodian detection logic and lock copy
+    expect(drawerSource).toMatch(/const\s+isAssignedCustodian\s*=\s*Boolean\(/);
+    expect(drawerSource).toMatch(
+      /Fieldwork milestones and delivery progress can only be updated by the assigned custodian/,
+    );
+    expect(drawerSource).toMatch(
+      /Milestones locked to assigned custodian \(\{assignment\.owner\}\)/,
+    );
+
+    // milestone progress calculation
+    expect(drawerSource).toMatch(
+      /Math\.round\(\s*\(\s*doneCount\s*\/\s*next\.length\s*\)\s*\*\s*100\s*\)/,
+    );
+    expect(drawerSource).toMatch(
+      /Math\.round\(\s*\(\s*doneCount\s*\/\s*milestones\.length\s*\)\s*\*\s*100\s*\)/,
+    );
+    expect(drawerSource).toMatch(
+      /Math\.round\(\s*\(\s*visibleMilestones\.filter\([\s\S]*?done\)\.length\s*\/\s*\(visibleMilestones\.length\s*\|\|\s*1\)\s*\)\s*\*\s*100\s*\)/,
+    );
+
+    // bank exemption filtering and bankRecStatus edit logic
+    expect(drawerSource).toMatch(
+      /if\s*\(\s*assignment\.bankStatementRequired\s*===\s*false\s*\)\s*\{[\s\S]*?milestones\.filter\([\s\S]*?bank statement[\s\S]*?bank reconciliation[\s\S]*?\)/,
+    );
+    expect(drawerSource).toMatch(
+      /bankRecStatus:\s*editBankStatementReq\s*\?\s*\(assignment\.bankRecStatus\s*\|\|\s*['"]Awaited['"]\)\s*:\s*['"]Not applicable['"]/,
+    );
+
+    // invoice leadership/unbilled guard with close then callback
+    expect(drawerSource).toMatch(/!assignment\.billed\s*&&\s*leadership/);
+    expect(drawerSource).toMatch(
+      /onClick=\{\(\)\s*=>\s*\{[\s\S]*?onClose\(\);[\s\S]*?if\s*\(\s*onOpenInvoice\s*\)\s*onOpenInvoice\(\s*assignment\s*\);[\s\S]*?\}\}/,
+    );
+    expect(drawerSource).toMatch(/Raise Tax Invoice for this Assignment/);
+
+    // working-paper toasts
+    expect(drawerSource).toMatch(/onToast\(\s*`Downloaded \$\{paper\}`\s*\)/);
+    expect(drawerSource).toMatch(/onToast\(\s*`Added working paper reference`\s*\)/);
   });
 });
