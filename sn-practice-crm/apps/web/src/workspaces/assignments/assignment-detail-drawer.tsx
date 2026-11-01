@@ -61,12 +61,16 @@ export function AssignmentDetailDrawer({
   ]);
 
   const visibleMilestones = useMemo(() => {
+    const indexed = milestones.map((milestone, sourceIndex) => ({
+      milestone,
+      sourceIndex,
+    }));
     if (assignment.bankStatementRequired === false) {
-      return milestones.filter(
-        (m) => !m.title.toLowerCase().includes('bank statement') && !m.title.toLowerCase().includes('bank reconciliation')
+      return indexed.filter(
+        ({ milestone: m }) => !m.title.toLowerCase().includes('bank statement') && !m.title.toLowerCase().includes('bank reconciliation')
       );
     }
-    return milestones;
+    return indexed;
   }, [milestones, assignment.bankStatementRequired]);
 
   const [editTitle, setEditTitle] = useState(assignment.title);
@@ -179,7 +183,7 @@ export function AssignmentDetailDrawer({
               type="button"
               onClick={() => setTab('checklist')}
             >
-              Milestones &amp; Checklist ({visibleMilestones.filter((m) => m.done).length}/{visibleMilestones.length})
+              Milestones &amp; Checklist ({visibleMilestones.filter(({ milestone: m }) => m.done).length}/{visibleMilestones.length})
             </button>
             <button
               className={`drawer-tab ${tab === 'overview' ? 'is-active' : ''}`}
@@ -337,7 +341,7 @@ export function AssignmentDetailDrawer({
                     <div>
                       <span style={{ fontSize: 11, color: 'var(--ink-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600 }}>Delivery Progress</span>
                       <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--ink)' }}>
-                        {Math.round((visibleMilestones.filter((m) => m.done).length / (visibleMilestones.length || 1)) * 100)}%
+                        {Math.round((visibleMilestones.filter(({ milestone: m }) => m.done).length / (visibleMilestones.length || 1)) * 100)}%
                       </div>
                     </div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -359,7 +363,7 @@ export function AssignmentDetailDrawer({
 
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                     <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink-secondary)' }}>Engagement Milestones</span>
-                    {visibleMilestones.map((m, idx) => (
+                    {visibleMilestones.map(({ milestone: m, sourceIndex }, idx) => (
                       <label
                         key={m.title}
                         className={`checklist-interactive-row ${m.done ? 'is-completed' : ''}`}
@@ -369,7 +373,7 @@ export function AssignmentDetailDrawer({
                           type="checkbox"
                           checked={m.done}
                           disabled={!isAssignedCustodian}
-                          onChange={() => isAssignedCustodian && toggleMilestone(idx)}
+                          onChange={() => isAssignedCustodian && toggleMilestone(sourceIndex)}
                           className="checklist-checkbox"
                           style={{ cursor: isAssignedCustodian ? 'pointer' : 'not-allowed' }}
                         />
@@ -413,11 +417,11 @@ export function AssignmentDetailDrawer({
                     <span className="drawer-label">Bank Rec for GST</span>
                     <span className="drawer-val">
                       {assignment.bankStatementRequired === false ? (
-                        <span className="category-tag" style={{ background: '#f1f5f9', color: '#64748b', padding: '2px 8px' }}>
+                        <span className="category-tag" style={{ background: 'var(--canvas)', color: 'var(--ink-muted)', padding: '2px 8px' }}>
                           Not Applicable (No Bank)
                         </span>
                       ) : (
-                        <span style={{ color: '#01b574', fontWeight: 600 }}>Required</span>
+                        <span style={{ color: 'var(--success)', fontWeight: 600 }}>Required</span>
                       )}
                     </span>
                   </div>
@@ -554,7 +558,6 @@ export function AssignmentDetailDrawer({
                 className="primary-button"
                 type="submit"
                 form="assignment-edit-form"
-                onClick={() => handleSaveEdit()}
                 style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}
               >
                 <Check size={14} /> Save Changes

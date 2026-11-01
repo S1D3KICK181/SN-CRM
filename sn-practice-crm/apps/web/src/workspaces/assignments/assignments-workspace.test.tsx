@@ -205,7 +205,7 @@ describe('Assignments workspace source contracts', () => {
 
     // bank exemption filtering and bankRecStatus edit logic
     expect(drawerSource).toMatch(
-      /if\s*\(\s*assignment\.bankStatementRequired\s*===\s*false\s*\)\s*\{[\s\S]*?milestones\.filter\([\s\S]*?bank statement[\s\S]*?bank reconciliation[\s\S]*?\)/,
+      /if\s*\(\s*assignment\.bankStatementRequired\s*===\s*false\s*\)\s*\{[\s\S]*?(?:milestones|indexed)\.filter\([\s\S]*?bank statement[\s\S]*?bank reconciliation[\s\S]*?\)/,
     );
     expect(drawerSource).toMatch(
       /bankRecStatus:\s*editBankStatementReq\s*\?\s*\(assignment\.bankRecStatus\s*\|\|\s*['"]Awaited['"]\)\s*:\s*['"]Not applicable['"]/,
@@ -221,5 +221,48 @@ describe('Assignments workspace source contracts', () => {
     // working-paper toasts
     expect(drawerSource).toMatch(/onToast\(\s*`Downloaded \$\{paper\}`\s*\)/);
     expect(drawerSource).toMatch(/onToast\(\s*`Added working paper reference`\s*\)/);
+  });
+
+  it('verifies assignment edit form submits without redundant onClick double save', () => {
+    // Edit form retains onSubmit={handleSaveEdit}
+    expect(drawerSource).toMatch(
+      /<form\b[^>]*\bid="assignment-edit-form"[^>]*\bonSubmit=\{handleSaveEdit\}/,
+    );
+
+    // Footer submit button retains type="submit" and form="assignment-edit-form"
+    const footerSubmitMatch = drawerSource.match(
+      /<button\b[^>]*\bform="assignment-edit-form"[\s\S]*?>\s*<Check\b/,
+    );
+    expect(footerSubmitMatch).toBeTruthy();
+    expect(footerSubmitMatch![0]).toMatch(/\btype="submit"/);
+
+    // Submit button no longer has an onClick that invokes handleSaveEdit
+    expect(footerSubmitMatch![0]).not.toMatch(/\bonClick/);
+  });
+
+  it('verifies filtered milestone toggling targets original sourceIndex instead of local visible idx', () => {
+    // Rejects passing the filtered map's local idx to toggleMilestone
+    expect(drawerSource).not.toMatch(/toggleMilestone\(\s*idx\s*\)/);
+
+    // Derives visible milestone entries with their original source index before filtering
+    expect(drawerSource).toMatch(/milestones\.map\([^)]*sourceIndex[^)]*\)/);
+
+    // Passes sourceIndex to toggleMilestone
+    expect(drawerSource).toMatch(/toggleMilestone\(\s*sourceIndex\s*\)/);
+  });
+
+  it('verifies drawer uses semantic color tokens instead of hardcoded hex literals', () => {
+    // Drawer contains none of the hardcoded hex color literals
+    expect(drawerSource).not.toMatch(/#01b574/i);
+    expect(drawerSource).not.toMatch(/#f1f5f9/i);
+    expect(drawerSource).not.toMatch(/#64748b/i);
+
+    // Uses the existing semantic roles for these exact states
+    expect(drawerSource).toMatch(
+      /background:\s*['"]var\(--canvas\)['"],\s*color:\s*['"]var\(--ink-muted\)['"]/,
+    );
+    expect(drawerSource).toMatch(
+      /color:\s*['"]var\(--success\)['"],\s*fontWeight:\s*600/,
+    );
   });
 });
