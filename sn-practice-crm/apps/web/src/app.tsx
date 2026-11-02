@@ -40,7 +40,16 @@ import { BillingWorkspace } from './workspaces/billing/billing-workspace';
 import { AssignmentDetailDrawer } from './workspaces/assignments/assignment-detail-drawer';
 import { AssignmentsTable } from './workspaces/assignments/assignments-table';
 import { AssignmentsWorkspace } from './workspaces/assignments/assignments-workspace';
-import { resolveDrawerSave, syncDrawerAssignment, useAssignments } from './api';
+import {
+  resolveDrawerSave,
+  syncDrawerAssignment,
+  useAssignments,
+  useWorkItems,
+  getDelegationTargets,
+  getParentAssignmentOptions,
+  type CreateDelegatedInput,
+  type CreatePersonalInput,
+} from './api';
 import {
   ASSIGNMENTS,
   CLIENTS,
@@ -84,8 +93,20 @@ export function App() {
     cascadeClientFields,
     markAssignmentBilled,
   } = useAssignments(role, { onToast: setToast });
-  const [personalTasks, setPersonalTasks] = useState<PersonalTaskRecord[]>(PERSONAL_TASKS);
-  const [delegatedTasks, setDelegatedTasks] = useState<DelegatedTaskRecord[]>(DELEGATED_TASKS);
+  const {
+    personalTasks,
+    assignedToMe,
+    delegatedByMe,
+    reviewableTasks,
+    visibleDelegatedWork,
+    handleCreateDelegated,
+    handleCreatePersonal,
+    handleStart: handleStartTask,
+    handleSubmit: handleSubmitTaskForReview,
+    handleApprove: handleApproveDelegatedTask,
+    handleReopen: handleReopenDelegatedTask,
+    handleTogglePersonal: handleTogglePersonalTask,
+  } = useWorkItems(role, assignments, { onToast: setToast });
   const [selectedAssignmentForDrawer, setSelectedAssignmentForDrawer] = useState<AssignmentRow | null>(null);
   const [invoices, setInvoices] = useState<InvoiceRecord[]>(INVOICES);
   const [receipts, setReceipts] = useState<ReceiptRecord[]>(RECEIPTS);
@@ -133,7 +154,7 @@ export function App() {
   async function handleCreateAssignment(newAssignment: AssignmentRow): Promise<boolean> {
     try {
       const created = await createAssignmentLive(newAssignment);
-      return Boolean(created);
+      return Boolean(created && created.id);
     } catch {
       return false;
     }
@@ -170,47 +191,6 @@ export function App() {
     );
     cascadeClientFields(updated);
     setToast(`Client details updated for ${updated.name}`);
-  }
-
-  function handleCreatePersonalTask(newTask: PersonalTaskRecord) {
-    setPersonalTasks((prev) => [newTask, ...prev]);
-    setToast(`Personal task scheduled`);
-  }
-
-  function handleTogglePersonalTask(taskId: string) {
-    setPersonalTasks((prev) =>
-      prev.map((t) => (t.id === taskId ? { ...t, done: !t.done } : t))
-    );
-  }
-
-  function handleDelegateTask(newTask: DelegatedTaskRecord) {
-    setDelegatedTasks((prev) => [newTask, ...prev]);
-    setToast(`Subtask delegated to ${newTask.person}`);
-  }
-
-  function handleUpdateDelegatedTask(updated: DelegatedTaskRecord) {
-    setDelegatedTasks((prev) => prev.map((t) => (t.id === updated.id ? updated : t)));
-    setToast(`Updated task: ${updated.title}`);
-  }
-
-  function handleApproveDelegatedTask(task: DelegatedTaskRecord) {
-    const updated: DelegatedTaskRecord = {
-      ...task,
-      status: 'Completed',
-      progress: 100,
-    };
-    handleUpdateDelegatedTask(updated);
-    setToast(`Approved ${task.title}`);
-  }
-
-  function handleSubmitTaskForReview(task: DelegatedTaskRecord) {
-    const updated: DelegatedTaskRecord = {
-      ...task,
-      status: 'Pending Review',
-      progress: 100,
-    };
-    handleUpdateDelegatedTask(updated);
-    setToast(`Submitted ${task.title} for review`);
   }
 
   function handleOpenInvoiceForAssignment(asn: AssignmentRow) {
@@ -488,7 +468,7 @@ export function App() {
               invoices={invoices}
               assignments={assignments}
               personalTasks={personalTasks}
-              delegatedTasks={delegatedTasks}
+              delegatedTasks={visibleDelegatedWork}
               presetInvoice={presetInvoiceForReceipt}
               presetAssignment={presetAssignmentForInvoice}
               onClose={() => {
@@ -501,8 +481,8 @@ export function App() {
               onInvoiceCreated={handleCreateInvoice}
               onReceiptCreated={handleCreateReceipt}
               onAssignmentCreated={handleCreateAssignment}
-              onPersonalTaskCreated={handleCreatePersonalTask}
-              onDelegatedTaskCreated={handleDelegateTask}
+              onPersonalTaskCreated={handleCreatePersonal}
+              onDelegatedTaskCreated={handleCreateDelegated}
             />
           ) : null}
         </>
@@ -515,13 +495,16 @@ export function App() {
           schedules={schedules}
           invoices={invoices}
           personalTasks={personalTasks}
-          delegatedTasks={delegatedTasks}
+          delegatedTasks={visibleDelegatedWork}
+          assignedToMe={assignedToMe}
+          reviewableTasks={reviewableTasks}
           onCompose={setDialog}
           onToast={setToast}
           onSelectAssignment={setSelectedAssignmentForDrawer}
           onTogglePersonalTask={handleTogglePersonalTask}
-          onUpdateDelegatedTask={handleUpdateDelegatedTask}
+          onStartTask={handleStartTask}
           onApproveDelegatedTask={handleApproveDelegatedTask}
+          onReopenDelegatedTask={handleReopenDelegatedTask}
           onSubmitTaskForReview={handleSubmitTaskForReview}
           onNavigate={setActivePage}
         />
@@ -535,7 +518,9 @@ export function App() {
           invoices={invoices}
           receipts={receipts}
           personalTasks={personalTasks}
-          delegatedTasks={delegatedTasks}
+          delegatedTasks={visibleDelegatedWork}
+          assignedToMe={assignedToMe}
+          reviewableTasks={reviewableTasks}
           onCompose={setDialog}
           onToast={setToast}
           onUpdateSchedule={handleUpdateSchedule}
@@ -544,7 +529,10 @@ export function App() {
           onTogglePersonalTask={handleTogglePersonalTask}
           onRecordPaymentForInvoice={openReceiptModalForInvoice}
           onOpenInvoiceForAssignment={handleOpenInvoiceForAssignment}
+          onStartTask={handleStartTask}
           onSubmitTaskForReview={handleSubmitTaskForReview}
+          onApproveDelegatedTask={handleApproveDelegatedTask}
+          onReopenDelegatedTask={handleReopenDelegatedTask}
           onUpdateClient={handleUpdateClient}
         />
       )}
@@ -559,12 +547,15 @@ function RoleDashboard({
   invoices,
   personalTasks,
   delegatedTasks,
+  assignedToMe = [],
+  reviewableTasks = [],
   onCompose,
   onToast,
   onSelectAssignment,
   onTogglePersonalTask,
-  onUpdateDelegatedTask,
+  onStartTask,
   onApproveDelegatedTask,
+  onReopenDelegatedTask,
   onSubmitTaskForReview,
   onNavigate,
 }: {
@@ -574,13 +565,16 @@ function RoleDashboard({
   invoices: InvoiceRecord[];
   personalTasks: PersonalTaskRecord[];
   delegatedTasks: DelegatedTaskRecord[];
+  assignedToMe?: DelegatedTaskRecord[];
+  reviewableTasks?: DelegatedTaskRecord[];
   onCompose: (mode: DialogMode) => void;
   onToast: (message: string) => void;
   onSelectAssignment: (assignment: AssignmentRow) => void;
   onTogglePersonalTask: (taskId: string) => void;
-  onUpdateDelegatedTask: (updated: DelegatedTaskRecord) => void;
-  onApproveDelegatedTask: (task: DelegatedTaskRecord) => void;
-  onSubmitTaskForReview: (task: DelegatedTaskRecord) => void;
+  onStartTask?: (task: DelegatedTaskRecord) => void;
+  onApproveDelegatedTask?: (task: DelegatedTaskRecord) => void;
+  onReopenDelegatedTask?: (task: DelegatedTaskRecord) => void;
+  onSubmitTaskForReview?: (task: DelegatedTaskRecord) => void;
   onNavigate?: (page: PageKey) => void;
 }) {
   const copy = ROLE_COPY[role];
@@ -618,11 +612,13 @@ function RoleDashboard({
           assignments={assignments}
           personalTasks={personalTasks}
           delegatedTasks={delegatedTasks}
+          reviewableTasks={reviewableTasks}
           onCompose={onCompose}
           onToast={onToast}
           onSelectAssignment={onSelectAssignment}
           onTogglePersonalTask={onTogglePersonalTask}
           onApproveDelegatedTask={onApproveDelegatedTask}
+          onReopenDelegatedTask={onReopenDelegatedTask}
           onNavigate={onNavigate}
         />
       ) : null}
@@ -642,8 +638,10 @@ function RoleDashboard({
         <TraineeDashboard
           personalTasks={personalTasks}
           delegatedTasks={delegatedTasks}
+          assignedToMe={assignedToMe}
           onToast={onToast}
           onTogglePersonalTask={onTogglePersonalTask}
+          onStartTask={onStartTask}
           onSubmitTaskForReview={onSubmitTaskForReview}
           onNavigate={onNavigate}
         />
@@ -772,21 +770,25 @@ function SeniorDashboard({
   assignments,
   personalTasks,
   delegatedTasks,
+  reviewableTasks,
   onCompose,
   onToast,
   onSelectAssignment,
   onTogglePersonalTask,
   onApproveDelegatedTask,
+  onReopenDelegatedTask,
   onNavigate,
 }: {
   assignments: AssignmentRow[];
   personalTasks: PersonalTaskRecord[];
   delegatedTasks: DelegatedTaskRecord[];
+  reviewableTasks?: DelegatedTaskRecord[];
   onCompose: (mode: DialogMode) => void;
   onToast: (message: string) => void;
   onSelectAssignment: (assignment: AssignmentRow) => void;
   onTogglePersonalTask: (taskId: string) => void;
-  onApproveDelegatedTask: (task: DelegatedTaskRecord) => void;
+  onApproveDelegatedTask?: (task: DelegatedTaskRecord) => void;
+  onReopenDelegatedTask?: (task: DelegatedTaskRecord) => void;
   onNavigate?: (page: PageKey) => void;
 }) {
   const visible = assignments.filter((a) => a.owner === 'Priya Desai' || a.reviewer === 'Priya Desai');
@@ -816,8 +818,9 @@ function SeniorDashboard({
           onAdd={() => onCompose('personal')}
         />
         <ReviewQueue
-          delegatedTasks={delegatedTasks}
+          delegatedTasks={reviewableTasks ?? delegatedTasks}
           onApprove={onApproveDelegatedTask}
+          onReopen={onReopenDelegatedTask}
           onToast={onToast}
         />
       </div>
@@ -878,17 +881,21 @@ function StaffDashboard({
 
 function TraineeDashboard({
   personalTasks,
-  delegatedTasks,
+  delegatedTasks: _delegatedTasks,
+  assignedToMe = [],
   onToast,
   onTogglePersonalTask,
+  onStartTask,
   onSubmitTaskForReview,
   onNavigate,
 }: {
   personalTasks: PersonalTaskRecord[];
   delegatedTasks: DelegatedTaskRecord[];
+  assignedToMe?: DelegatedTaskRecord[];
   onToast: (message: string) => void;
   onTogglePersonalTask: (taskId: string) => void;
-  onSubmitTaskForReview: (task: DelegatedTaskRecord) => void;
+  onStartTask?: (task: DelegatedTaskRecord) => void;
+  onSubmitTaskForReview?: (task: DelegatedTaskRecord) => void;
   onNavigate?: (page: PageKey) => void;
 }) {
   return (
@@ -896,7 +903,8 @@ function TraineeDashboard({
       <MetricStrip variant="trainee" />
       <div className="dashboard-grid operations-top trainee-top">
         <TaskQueue
-          tasks={delegatedTasks}
+          tasks={assignedToMe}
+          onStartTask={onStartTask}
           onSubmitForReview={onSubmitTaskForReview}
           onToast={onToast}
           onNavigate={onNavigate}
@@ -1148,7 +1156,7 @@ function OperationalTriage() {
   );
 }
 
-function DelegatedWork({
+export function DelegatedWork({
   tasks,
   onAdd,
   role,
@@ -1157,11 +1165,10 @@ function DelegatedWork({
   onAdd: () => void;
   role?: 'senior_staff' | 'staff';
 }) {
-  const visibleTasks = role === 'staff' ? tasks.filter((task) => task.person === 'Neha Kapoor') : tasks;
   return (
     <Card title="Delegated work" description="Sub-tasks delegated under your Assignments" action={<button className="mini-add" type="button" onClick={onAdd}><Plus aria-hidden="true" /> Delegate</button>} className="compact-card">
       <div className="list-stack task-list">
-        {visibleTasks.map((task) => (
+        {tasks.map((task) => (
           <div className="task-row" key={task.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
             <span><strong>{task.title}</strong><small>{task.parent}</small></span>
             <span style={{ textAlign: 'right' }}>
@@ -1177,7 +1184,7 @@ function DelegatedWork({
   );
 }
 
-function PersonalTasks({
+export function PersonalTasks({
   tasks,
   onToggle,
   onAdd,
@@ -1205,13 +1212,15 @@ function PersonalTasks({
   );
 }
 
-function ReviewQueue({
+export function ReviewQueue({
   delegatedTasks = [],
   onApprove,
+  onReopen,
   onToast,
 }: {
   delegatedTasks?: DelegatedTaskRecord[];
   onApprove?: (task: DelegatedTaskRecord) => void;
+  onReopen?: (task: DelegatedTaskRecord) => void;
   onToast?: (msg: string) => void;
 }) {
   const pending = delegatedTasks.filter((t) => t.status === 'Pending Review');
@@ -1228,16 +1237,28 @@ function ReviewQueue({
                 <i className="dot-warning" />
                 {t.title} <b>{t.person}</b>
               </span>
-              {onApprove ? (
-                <button
-                  className="soft-button"
-                  type="button"
-                  style={{ fontSize: 10, padding: '2px 8px' }}
-                  onClick={() => onApprove(t)}
-                >
-                  Approve
-                </button>
-              ) : null}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                {onApprove ? (
+                  <button
+                    className="soft-button"
+                    type="button"
+                    style={{ fontSize: 10, padding: '2px 8px' }}
+                    onClick={() => onApprove(t)}
+                  >
+                    Approve
+                  </button>
+                ) : null}
+                {onReopen ? (
+                  <button
+                    className="soft-button"
+                    type="button"
+                    style={{ fontSize: 10, padding: '2px 8px' }}
+                    onClick={() => onReopen(t)}
+                  >
+                    Request changes
+                  </button>
+                ) : null}
+              </div>
             </div>
           ))
         )}
@@ -1255,18 +1276,19 @@ function DocumentRequests() {
   );
 }
 
-function TaskQueue({
+export function TaskQueue({
   tasks,
+  onStartTask,
   onSubmitForReview,
   onToast,
   onNavigate,
 }: {
   tasks: DelegatedTaskRecord[];
+  onStartTask?: (task: DelegatedTaskRecord) => void;
   onSubmitForReview?: (task: DelegatedTaskRecord) => void;
   onToast: (message: string) => void;
   onNavigate?: (page: PageKey) => void;
 }) {
-  const traineeTasks = tasks.filter((t) => t.person === 'Neha Kapoor');
   return (
     <Card
       title="My task queue"
@@ -1283,7 +1305,7 @@ function TaskQueue({
       className="task-queue"
     >
       <div className="queue-list">
-        {traineeTasks.map((task, index) => (
+        {tasks.map((task, index) => (
           <div className="queue-row" key={task.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 14px' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
               <span className="queue-priority">{index + 1}</span>
@@ -1300,14 +1322,24 @@ function TaskQueue({
                 </Status>
                 <small style={{ display: 'block' }}>{task.due}</small>
               </div>
-              {task.status !== 'Completed' && task.status !== 'Pending Review' && onSubmitForReview ? (
+              {task.status === 'To Do' && onStartTask ? (
+                <button
+                  className="primary-button"
+                  type="button"
+                  style={{ fontSize: 11, padding: '4px 10px', height: 'auto' }}
+                  onClick={() => onStartTask(task)}
+                >
+                  Start task
+                </button>
+              ) : null}
+              {task.status === 'In Progress' && onSubmitForReview ? (
                 <button
                   className="primary-button"
                   type="button"
                   style={{ fontSize: 11, padding: '4px 10px', height: 'auto' }}
                   onClick={() => onSubmitForReview(task)}
                 >
-                  Submit for Review
+                  Submit for review
                 </button>
               ) : null}
             </div>
@@ -1346,6 +1378,8 @@ function ModuleWorkspace({
   receipts,
   personalTasks,
   delegatedTasks,
+  assignedToMe = [],
+  reviewableTasks = [],
   onCompose,
   onToast,
   onUpdateSchedule,
@@ -1354,7 +1388,10 @@ function ModuleWorkspace({
   onTogglePersonalTask,
   onRecordPaymentForInvoice,
   onOpenInvoiceForAssignment,
+  onStartTask,
   onSubmitTaskForReview,
+  onApproveDelegatedTask,
+  onReopenDelegatedTask,
   onUpdateClient,
 }: {
   page: PageKey;
@@ -1366,6 +1403,8 @@ function ModuleWorkspace({
   receipts: ReceiptRecord[];
   personalTasks: PersonalTaskRecord[];
   delegatedTasks: DelegatedTaskRecord[];
+  assignedToMe?: DelegatedTaskRecord[];
+  reviewableTasks?: DelegatedTaskRecord[];
   onCompose: (mode: DialogMode) => void;
   onToast: (message: string) => void;
   onUpdateSchedule: (updated: RecurringScheduleRecord) => void;
@@ -1374,7 +1413,10 @@ function ModuleWorkspace({
   onTogglePersonalTask: (id: string) => void;
   onRecordPaymentForInvoice: (inv: InvoiceRecord) => void;
   onOpenInvoiceForAssignment: (asn: AssignmentRow) => void;
+  onStartTask?: (task: DelegatedTaskRecord) => void;
   onSubmitTaskForReview?: (task: DelegatedTaskRecord) => void;
+  onApproveDelegatedTask?: (task: DelegatedTaskRecord) => void;
+  onReopenDelegatedTask?: (task: DelegatedTaskRecord) => void;
   onUpdateClient?: (updated: ClientRecord) => void;
 }) {
   const leadership = role === 'founder' || role === 'manager';
@@ -1459,19 +1501,27 @@ function ModuleWorkspace({
             onToggle={onTogglePersonalTask}
             onAdd={() => onCompose('personal')}
           />
-          {role === 'trainee' ? (
-            <TaskQueue
-              tasks={delegatedTasks}
-              onSubmitForReview={onSubmitTaskForReview}
-              onToast={onToast}
-            />
-          ) : (
+          <TaskQueue
+            tasks={assignedToMe}
+            onStartTask={onStartTask}
+            onSubmitForReview={onSubmitTaskForReview}
+            onToast={onToast}
+          />
+          {role !== 'trainee' ? (
             <DelegatedWork
               tasks={delegatedTasks}
               role={role === 'staff' ? 'staff' : role === 'senior_staff' ? 'senior_staff' : undefined}
               onAdd={() => onCompose('delegated')}
             />
-          )}
+          ) : null}
+          {role === 'founder' || role === 'manager' || role === 'senior_staff' || reviewableTasks.length > 0 ? (
+            <ReviewQueue
+              delegatedTasks={reviewableTasks}
+              onApprove={onApproveDelegatedTask}
+              onReopen={onReopenDelegatedTask}
+              onToast={onToast}
+            />
+          ) : null}
         </div>
       ) : null}
       {page === 'Office Accounts' ? <AccountsWorkspace /> : null}
@@ -1555,9 +1605,9 @@ export function ComposerDialog({
   onClientCreated: (client: ClientRecord, services: string[], owner: string) => void;
   onInvoiceCreated: (invoice: InvoiceRecord) => void;
   onReceiptCreated: (receipt: ReceiptRecord) => void;
-  onAssignmentCreated: (assignment: AssignmentRow) => Promise<boolean> | void;
-  onPersonalTaskCreated: (task: PersonalTaskRecord) => void;
-  onDelegatedTaskCreated: (task: DelegatedTaskRecord) => void;
+  onAssignmentCreated: (assignment: AssignmentRow) => Promise<boolean>;
+  onPersonalTaskCreated: (input: CreatePersonalInput | any) => Promise<boolean> | void;
+  onDelegatedTaskCreated: (input: CreateDelegatedInput | any) => Promise<boolean> | void;
 }) {
   const isMountedRef = useRef(true);
   const closedRef = useRef(false);
@@ -1701,7 +1751,7 @@ export function ComposerDialog({
         if (!isMountedRef.current || closedRef.current) {
           return;
         }
-        if (ok !== false) {
+        if (ok === true) {
           handleClose();
           return;
         }
@@ -1713,39 +1763,61 @@ export function ComposerDialog({
       }
       return;
     } else if (mode === 'personal') {
-      const title = (fd.get('title') as string) || 'Personal reminder';
-      const context = (fd.get('context') as string) || 'Personal';
-      const time = (fd.get('time') as string) || 'Today · 16:30';
-      const newTsk: PersonalTaskRecord = {
-        id: `TSK-P-0${personalTasks.length + 1}`,
-        title,
-        context,
-        time,
-        done: false,
-        ownerRole: role,
-      };
-      onPersonalTaskCreated(newTsk);
-    } else if (mode === 'delegated') {
-      const parent = (fd.get('parent') as string) || 'ASN-0001 · Aster Foods';
-      const childTitle = (fd.get('title') as string) || 'Verification sub-task';
-      const delegateTo = (fd.get('delegateTo') as string) || 'Neha Kapoor';
-      const firstDel = delegateTo.split('—')[0] ?? '';
-      const person = (firstDel.split('·')[0] ?? '').trim() || 'Neha Kapoor';
-      const due = (fd.get('due') as string) || 'Tomorrow';
-      const instructions = (fd.get('instructions') as string) || '';
+      const title = ((fd.get('title') as string) || 'Personal reminder').trim();
+      const context = ((fd.get('context') as string) || 'Personal').trim();
+      const time = ((fd.get('time') as string) || 'Today · 16:30').trim();
 
-      const newDel: DelegatedTaskRecord = {
-        id: `TSK-D-0${delegatedTasks.length + 1}`,
-        title: childTitle,
-        parent,
-        person,
-        assignedBy: ROLE_PEOPLE[role].name,
-        due,
-        progress: 0,
-        status: 'In Progress',
-        instructions,
-      };
-      onDelegatedTaskCreated(newDel);
+      setSubmitting(true);
+      try {
+        const ok = await onPersonalTaskCreated({
+          title,
+          context,
+          time,
+        });
+        if (!isMountedRef.current || closedRef.current) {
+          return;
+        }
+        if (ok === true) {
+          handleClose();
+          return;
+        }
+      } catch {
+        // Prevent unhandled promise rejection
+      }
+      if (isMountedRef.current && !closedRef.current) {
+        setSubmitting(false);
+      }
+      return;
+    } else if (mode === 'delegated') {
+      const assignmentId = (fd.get('assignmentId') as string) || (fd.get('parent') as string) || '';
+      const assigneeId = (fd.get('assigneeId') as string) || (fd.get('delegateTo') as string) || '';
+      const childTitle = ((fd.get('title') as string) || 'Verification sub-task').trim();
+      const due = ((fd.get('due') as string) || 'Tomorrow').trim();
+      const instructions = ((fd.get('instructions') as string) || '').trim();
+
+      setSubmitting(true);
+      try {
+        const ok = await onDelegatedTaskCreated({
+          assignmentId,
+          assigneeId,
+          title: childTitle,
+          due,
+          instructions,
+        });
+        if (!isMountedRef.current || closedRef.current) {
+          return;
+        }
+        if (ok === true) {
+          handleClose();
+          return;
+        }
+      } catch {
+        // Prevent unhandled promise rejection
+      }
+      if (isMountedRef.current && !closedRef.current) {
+        setSubmitting(false);
+      }
+      return;
     } else if (mode === 'invoice') {
       const clientId = fd.get('clientId') as string;
       const targetClient = clients.find((c) => c.id === clientId);
@@ -2298,13 +2370,24 @@ function PersonalTaskFields() {
 }
 
 function DelegationFields({ role, assignments }: { role: CompanyRole; assignments: AssignmentRow[] }) {
-  const targets = role === 'staff' ? ['Neha Kapoor — Trainee'] : ['Rohan Mehta — Staff', 'Neha Kapoor — Trainee'];
+  const parentOptions = useMemo(() => {
+    return getParentAssignmentOptions(role, assignments);
+  }, [role, assignments]);
+
+  const targets = useMemo(() => {
+    return getDelegationTargets(role);
+  }, [role]);
+
   return (
     <>
       <Field label="Parent Assignment" full>
-        <select name="parent" required defaultValue={assignments[0] ? `${assignments[0].id} · ${assignments[0].title}` : ''}>
-          {assignments.map((assignment) => (
-            <option key={assignment.id} value={`${assignment.id} · ${assignment.title}`}>
+        <select
+          name="assignmentId"
+          required
+          defaultValue={parentOptions[0]?.id || ''}
+        >
+          {parentOptions.map((assignment) => (
+            <option key={assignment.id} value={assignment.id}>
               {assignment.id} · {assignment.title} ({assignment.client})
             </option>
           ))}
@@ -2314,10 +2397,10 @@ function DelegationFields({ role, assignments }: { role: CompanyRole; assignment
         <input name="title" required autoFocus placeholder="e.g. Verify portal sales totals against books" />
       </Field>
       <Field label="Delegate to">
-        <select name="delegateTo" required defaultValue={targets[0]}>
+        <select name="assigneeId" required defaultValue={targets[0]?.id || ''}>
           {targets.map((target) => (
-            <option key={target} value={target}>
-              {target}
+            <option key={target.id} value={target.id}>
+              {target.label}
             </option>
           ))}
         </select>

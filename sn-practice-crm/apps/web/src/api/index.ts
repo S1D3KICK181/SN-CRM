@@ -5,3 +5,8 @@ export * from './mapper';
 export * from './http-adapter';
 export * from './coordinator';
 export * from './use-assignments';
+export * from './work-items-types';
+export * from './work-items-mapper';
+export * from './http-work-items-adapter';
+export * from './work-items-coordinator';
+export * from './use-work-items';

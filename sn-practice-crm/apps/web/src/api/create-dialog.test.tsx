@@ -494,4 +494,224 @@ describe('ComposerDialog create-assignment submit lifecycle', () => {
     expect(onCloseSpy).toHaveBeenCalledTimes(2);
     expect(screen.queryByRole('dialog')).toBeNull();
   });
+
+  it('delegated sub-task dialog preserves inputs on creation failure, disables button while pending, and closes on success', async () => {
+    let resolveDelegation: (ok: boolean) => void = () => {};
+    const onDelegatedTaskCreated = vi.fn().mockImplementation(() => {
+      return new Promise<boolean>((resolve) => {
+        resolveDelegation = resolve;
+      });
+    });
+
+    const onClose = vi.fn();
+
+    render(
+      <ComposerDialog
+        mode="delegated"
+        role="senior_staff"
+        clients={CLIENTS}
+        invoices={[]}
+        assignments={[
+          {
+            id: 'ASN-0001',
+            title: 'October GST return',
+            client: 'Aster Foods Private Limited',
+            service: 'GST Compliance',
+            due: '11/11/2026',
+            owner: 'Priya Desai',
+            reviewer: 'Ananya Rao',
+            status: 'In progress',
+            progress: 70,
+            tone: 'default',
+          },
+        ]}
+        personalTasks={[]}
+        delegatedTasks={[]}
+        presetInvoice={null}
+        onClose={onClose}
+        onCreated={vi.fn()}
+        onClientCreated={vi.fn()}
+        onInvoiceCreated={vi.fn()}
+        onReceiptCreated={vi.fn()}
+        onAssignmentCreated={vi.fn()}
+        onPersonalTaskCreated={vi.fn()}
+        onDelegatedTaskCreated={onDelegatedTaskCreated}
+      />,
+    );
+
+    expect(screen.getByRole('dialog')).toBeDefined();
+
+    const titleInput = screen.getByPlaceholderText(/Verify portal sales totals/i) as HTMLInputElement;
+    fireEvent.change(titleInput, { target: { value: 'Reconcile 2B invoices' } });
+
+    const submitButton = screen.getByRole('button', { name: /Delegate task/i }) as HTMLButtonElement;
+    expect(submitButton.disabled).toBe(false);
+
+    // Submit
+    fireEvent.click(submitButton);
+    expect(onDelegatedTaskCreated).toHaveBeenCalledTimes(1);
+    expect(submitButton.disabled).toBe(true);
+
+    // First attempt fails (e.g. 422 deadline or 403)
+    await act(async () => {
+      resolveDelegation(false);
+      await Promise.resolve();
+    });
+
+    // Dialog stays open, values preserved, button re-enabled
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.getByRole('dialog')).toBeDefined();
+    expect(titleInput.value).toBe('Reconcile 2B invoices');
+    expect(submitButton.disabled).toBe(false);
+
+    // Retry
+    fireEvent.click(submitButton);
+    expect(onDelegatedTaskCreated).toHaveBeenCalledTimes(2);
+
+    // Success
+    await act(async () => {
+      resolveDelegation(true);
+      await Promise.resolve();
+    });
+
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('personal task dialog preserves inputs on failure, disables button while pending, and closes on success', async () => {
+    let resolvePersonal: (ok: boolean) => void = () => {};
+    const onPersonalTaskCreated = vi.fn().mockImplementation(() => {
+      return new Promise<boolean>((resolve) => {
+        resolvePersonal = resolve;
+      });
+    });
+
+    const onClose = vi.fn();
+
+    render(
+      <ComposerDialog
+        mode="personal"
+        role="staff"
+        clients={CLIENTS}
+        invoices={[]}
+        assignments={[]}
+        personalTasks={[]}
+        delegatedTasks={[]}
+        presetInvoice={null}
+        onClose={onClose}
+        onCreated={vi.fn()}
+        onClientCreated={vi.fn()}
+        onInvoiceCreated={vi.fn()}
+        onReceiptCreated={vi.fn()}
+        onAssignmentCreated={vi.fn()}
+        onPersonalTaskCreated={onPersonalTaskCreated}
+        onDelegatedTaskCreated={vi.fn()}
+      />,
+    );
+
+    const titleInput = screen.getByPlaceholderText(/Call Aster Foods accountant/i) as HTMLInputElement;
+    fireEvent.change(titleInput, { target: { value: 'Call client about TDS certificate' } });
+
+    const submitButton = screen.getByRole('button', { name: /Schedule task/i }) as HTMLButtonElement;
+    expect(submitButton.disabled).toBe(false);
+
+    fireEvent.click(submitButton);
+    expect(onPersonalTaskCreated).toHaveBeenCalledTimes(1);
+    expect(submitButton.disabled).toBe(true);
+
+    // Failure
+    await act(async () => {
+      resolvePersonal(false);
+      await Promise.resolve();
+    });
+
+    expect(onClose).not.toHaveBeenCalled();
+    expect(titleInput.value).toBe('Call client about TDS certificate');
+    expect(submitButton.disabled).toBe(false);
+
+    // Retry succeeds
+    fireEvent.click(submitButton);
+    expect(onPersonalTaskCreated).toHaveBeenCalledTimes(2);
+
+    await act(async () => {
+      resolvePersonal(true);
+      await Promise.resolve();
+    });
+
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('assignment dialog stays open when callback resolves undefined, preserves title and fee, enables retry, and closes once on retry success', async () => {
+    let resolveCreation: (value: any) => void = () => {};
+    const onAssignmentCreated = vi.fn().mockImplementation(() => {
+      return new Promise<any>((resolve) => {
+        resolveCreation = resolve;
+      });
+    });
+
+    const onClose = vi.fn();
+
+    render(
+      <ComposerDialog
+        mode="assignment"
+        role="founder"
+        clients={CLIENTS}
+        invoices={[]}
+        assignments={[]}
+        personalTasks={[]}
+        delegatedTasks={[]}
+        presetInvoice={null}
+        onClose={onClose}
+        onCreated={vi.fn()}
+        onClientCreated={vi.fn()}
+        onInvoiceCreated={vi.fn()}
+        onReceiptCreated={vi.fn()}
+        onAssignmentCreated={onAssignmentCreated}
+        onPersonalTaskCreated={vi.fn()}
+        onDelegatedTaskCreated={vi.fn()}
+      />,
+    );
+
+    const titleInput = screen.getByPlaceholderText(/Income Tax Return & Tax Audit Report/i) as HTMLInputElement;
+    fireEvent.change(titleInput, { target: { value: 'ITR Filing and Scrutiny' } });
+
+    const feeInput = screen.getByDisplayValue('35000') as HTMLInputElement;
+    fireEvent.change(feeInput, { target: { value: '50000' } });
+
+    const submitButton = screen.getByRole('button', { name: /Create draft/i }) as HTMLButtonElement;
+    fireEvent.click(submitButton);
+
+    expect(onAssignmentCreated).toHaveBeenCalledTimes(1);
+    expect(submitButton.disabled).toBe(true);
+
+    // Assignment callback resolves undefined (failure/empty result from data layer)
+    await act(async () => {
+      resolveCreation(undefined);
+      await Promise.resolve();
+    });
+
+    // DIALOG MUST STAY OPEN on undefined result!
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.getByRole('dialog')).toBeDefined();
+
+    // Entered values remain preserved
+    expect(titleInput.value).toBe('ITR Filing and Scrutiny');
+    expect(feeInput.value).toBe('50000');
+
+    // Button re-enabled for retry
+    expect(submitButton.disabled).toBe(false);
+
+    // User retries submit
+    fireEvent.click(submitButton);
+    expect(onAssignmentCreated).toHaveBeenCalledTimes(2);
+    expect(submitButton.disabled).toBe(true);
+
+    // Retry resolves true (successful save)
+    await act(async () => {
+      resolveCreation(true);
+      await Promise.resolve();
+    });
+
+    // Successfully closes exactly once
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
 });

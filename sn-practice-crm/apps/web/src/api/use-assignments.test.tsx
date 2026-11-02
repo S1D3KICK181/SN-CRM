@@ -180,4 +180,48 @@ describe('useAssignments React hook integration', () => {
     expect(toasts).toHaveLength(0);
     expect(errors).toHaveLength(0);
   });
+
+  it('guarantees zero-frame role privacy: synchronously exposes zero rows when role prop changes before fetch settles', async () => {
+    const adapter = new DeterministicTestAssignmentsAdapter();
+    adapter.setListResponse('founder', [ROW_FOUNDER]);
+
+    let resolveStaff: (rows: AssignmentRow[]) => void = () => {};
+    const staffDeferred = new Promise<AssignmentRow[]>((resolve) => {
+      resolveStaff = resolve;
+    });
+    adapter.setDeferredList('staff', staffDeferred);
+
+    const renderFrames: Array<{ role: CompanyRole; rows: AssignmentRow[]; loading: boolean }> = [];
+
+    const { result, rerender } = renderHook(
+      ({ role }: { role: CompanyRole }) => {
+        const hook = useAssignments(role, {
+          port: adapter,
+          initialRows: [ROW_FOUNDER],
+        });
+        renderFrames.push({ role, rows: [...hook.assignments], loading: hook.loading });
+        return hook;
+      },
+      {
+        initialProps: { role: 'founder' as CompanyRole },
+      },
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(result.current.assignments).toEqual([ROW_FOUNDER]);
+
+    // Clear history to inspect only the frames during switch to staff
+    renderFrames.length = 0;
+
+    // Rerender with 'staff' while staff fetch is deferred
+    rerender({ role: 'staff' });
+
+    // The VERY FIRST frame rendered with role='staff' (before effects ran)
+    // MUST have empty rows and loading=true!
+    expect(renderFrames[0]?.role).toBe('staff');
+    expect(renderFrames[0]?.rows).toEqual([]);
+    expect(renderFrames[0]?.loading).toBe(true);
+  });
 });

@@ -123,10 +123,12 @@ export function useAssignments(role: CompanyRole, options: UseAssignmentsOptions
     }
   }, [coordinator]);
 
+  const isRoleStale = state.role !== role;
+
   return {
-    assignments: state.assignments,
-    loading: state.loading,
-    error: state.error,
+    assignments: isRoleStale ? [] : state.assignments,
+    loading: isRoleStale ? true : state.loading,
+    error: isRoleStale ? null : state.error,
     handleCreateAssignment,
     handleUpdateAssignment,
     cascadeClientFields,

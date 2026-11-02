@@ -208,16 +208,21 @@ export const PERSONAL_TASKS: PersonalTaskRecord[] = [
   { id: 'TSK-P-03', title: 'Prepare tomorrow’s filing list', context: 'Personal', time: 'Today · 17:15', done: true },
 ];
 
+export type DelegatedTaskStatus = 'To Do' | 'In Progress' | 'Pending Review' | 'Completed';
+
 export interface DelegatedTaskRecord {
   id: string;
   title: string;
   parent: string;
   parentAssignmentId?: string;
   person: string;
+  assigneeId?: string;
   assignedBy: string;
+  createdById?: string;
   due: string;
   progress: number;
-  status: 'In Progress' | 'Pending Review' | 'Completed';
+  status: DelegatedTaskStatus;
+  tone?: 'default' | 'danger' | 'warning' | 'success';
   instructions?: string;
 }
 
