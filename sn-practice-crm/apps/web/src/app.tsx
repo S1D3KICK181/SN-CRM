@@ -30,7 +30,7 @@ import {
   WalletCards,
   X,
 } from 'lucide-react';
-import { useEffect, useMemo, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { authorize, type CompanyRole } from '@sn/domain';
 import { ApplicationChrome } from './shell/application-chrome';
 import { MODULE_DESCRIPTIONS, type PageKey } from './shell/navigation';
@@ -40,6 +40,7 @@ import { BillingWorkspace } from './workspaces/billing/billing-workspace';
 import { AssignmentDetailDrawer } from './workspaces/assignments/assignment-detail-drawer';
 import { AssignmentsTable } from './workspaces/assignments/assignments-table';
 import { AssignmentsWorkspace } from './workspaces/assignments/assignments-workspace';
+import { resolveDrawerSave, syncDrawerAssignment, useAssignments } from './api';
 import {
   ASSIGNMENTS,
   CLIENTS,
@@ -76,7 +77,13 @@ export function App() {
   const [dialog, setDialog] = useState<DialogMode>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [schedules, setSchedules] = useState<RecurringScheduleRecord[]>(RECURRING_SCHEDULES);
-  const [assignments, setAssignments] = useState<AssignmentRow[]>(ASSIGNMENTS);
+  const {
+    assignments,
+    handleCreateAssignment: createAssignmentLive,
+    handleUpdateAssignment: updateAssignmentLive,
+    cascadeClientFields,
+    markAssignmentBilled,
+  } = useAssignments(role, { onToast: setToast });
   const [personalTasks, setPersonalTasks] = useState<PersonalTaskRecord[]>(PERSONAL_TASKS);
   const [delegatedTasks, setDelegatedTasks] = useState<DelegatedTaskRecord[]>(DELEGATED_TASKS);
   const [selectedAssignmentForDrawer, setSelectedAssignmentForDrawer] = useState<AssignmentRow | null>(null);
@@ -96,7 +103,19 @@ export function App() {
     return () => window.clearTimeout(timer);
   }, [toast]);
 
+  useEffect(() => {
+    if (selectedAssignmentForDrawer) {
+      const next = syncDrawerAssignment(selectedAssignmentForDrawer, assignments);
+      if (next !== selectedAssignmentForDrawer) {
+        setSelectedAssignmentForDrawer(next);
+      }
+    }
+  }, [assignments, selectedAssignmentForDrawer]);
+
   function switchRole(nextRole: CompanyRole) {
+    if (nextRole !== role) {
+      setSelectedAssignmentForDrawer(null);
+    }
     setRole(nextRole);
     setActivePage('Dashboard');
     setToast(`Preview switched to ${ROLE_LABELS[nextRole]}`);
@@ -111,17 +130,24 @@ export function App() {
     setToast(`Updated ${updated.title} (${updated.clientName})`);
   }
 
-  function handleCreateAssignment(newAssignment: AssignmentRow) {
-    setAssignments((prev) => [newAssignment, ...prev]);
-    setToast(`Assignment ${newAssignment.id} (${newAssignment.title}) created`);
+  async function handleCreateAssignment(newAssignment: AssignmentRow): Promise<boolean> {
+    try {
+      const created = await createAssignmentLive(newAssignment);
+      return Boolean(created);
+    } catch {
+      return false;
+    }
   }
 
   function handleUpdateAssignment(updated: AssignmentRow) {
-    setAssignments((prev) => prev.map((a) => (a.id === updated.id ? updated : a)));
-    if (selectedAssignmentForDrawer?.id === updated.id) {
-      setSelectedAssignmentForDrawer(updated);
-    }
-    setToast(`Updated ${updated.id} (${updated.title})`);
+    void (async () => {
+      try {
+        const saved = await updateAssignmentLive(updated);
+        setSelectedAssignmentForDrawer((current) => resolveDrawerSave(current, saved, updated.id));
+      } catch {
+        // Prevent unhandled rejection escaping event handlers
+      }
+    })();
   }
 
   function handleUpdateClient(updated: ClientRecord) {
@@ -142,18 +168,7 @@ export function App() {
         return s;
       })
     );
-    setAssignments((prev) =>
-      prev.map((a) => {
-        if (a.clientId === updated.id || a.client.toLowerCase() === updated.name.toLowerCase() || a.client.toLowerCase() === updated.tradeName.toLowerCase()) {
-          return {
-            ...a,
-            bankStatementRequired: updated.bankStatementRequired,
-            bankRecStatus: updated.bankStatementRequired === false ? 'Not applicable' : a.bankRecStatus,
-          };
-        }
-        return a;
-      })
-    );
+    cascadeClientFields(updated);
     setToast(`Client details updated for ${updated.name}`);
   }
 
@@ -393,9 +408,7 @@ export function App() {
   function handleCreateInvoice(newInvoice: InvoiceRecord) {
     setInvoices((prev) => [newInvoice, ...prev]);
     if (presetAssignmentForInvoice) {
-      setAssignments((prev) =>
-        prev.map((a) => (a.id === presetAssignmentForInvoice.id ? { ...a, billed: true } : a))
-      );
+      markAssignmentBilled(presetAssignmentForInvoice.id);
       setPresetAssignmentForInvoice(null);
     }
     setToast(`Invoice ${newInvoice.invoiceNumber} raised for ${newInvoice.clientName}`);
@@ -466,29 +479,32 @@ export function App() {
               onOpenInvoice={handleOpenInvoiceForAssignment}
             />
           ) : null}
-          <ComposerDialog
-            mode={dialog}
-            role={role}
-            clients={clients}
-            invoices={invoices}
-            assignments={assignments}
-            personalTasks={personalTasks}
-            delegatedTasks={delegatedTasks}
-            presetInvoice={presetInvoiceForReceipt}
-            presetAssignment={presetAssignmentForInvoice}
-            onClose={() => {
-              setDialog(null);
-              setPresetInvoiceForReceipt(null);
-              setPresetAssignmentForInvoice(null);
-            }}
-            onCreated={setToast}
-            onClientCreated={handleCreateClient}
-            onInvoiceCreated={handleCreateInvoice}
-            onReceiptCreated={handleCreateReceipt}
-            onAssignmentCreated={handleCreateAssignment}
-            onPersonalTaskCreated={handleCreatePersonalTask}
-            onDelegatedTaskCreated={handleDelegateTask}
-          />
+          {dialog ? (
+            <ComposerDialog
+              key={dialog}
+              mode={dialog}
+              role={role}
+              clients={clients}
+              invoices={invoices}
+              assignments={assignments}
+              personalTasks={personalTasks}
+              delegatedTasks={delegatedTasks}
+              presetInvoice={presetInvoiceForReceipt}
+              presetAssignment={presetAssignmentForInvoice}
+              onClose={() => {
+                setDialog(null);
+                setPresetInvoiceForReceipt(null);
+                setPresetAssignmentForInvoice(null);
+              }}
+              onCreated={setToast}
+              onClientCreated={handleCreateClient}
+              onInvoiceCreated={handleCreateInvoice}
+              onReceiptCreated={handleCreateReceipt}
+              onAssignmentCreated={handleCreateAssignment}
+              onPersonalTaskCreated={handleCreatePersonalTask}
+              onDelegatedTaskCreated={handleDelegateTask}
+            />
+          ) : null}
         </>
       }
     >
@@ -1506,7 +1522,7 @@ function TeamWorkspace({ role }: { role: CompanyRole }) {
   return <div className="dashboard-grid team-layout"><Card title="Reporting structure" description="Every non-Founder reports to Founder or Manager" action={<UsersRound aria-hidden="true" />}><div className="org-tree"><div className="org-founder"><span>SN</span><strong>S. Narayanan</strong><small>Founder</small></div><div className="org-branch"><div><span>AR</span><strong>Ananya Rao</strong><small>Manager · reports to Founder</small></div><div><span>PD</span><strong>Priya Desai</strong><small>Senior Staff · reports to Manager</small></div><div><span>RM</span><strong>Rohan Mehta</strong><small>Staff · reports to Manager</small></div><div><span>NK</span><strong>Neha Kapoor</strong><small>Trainee · reports to Manager</small></div></div></div></Card><Card title="Authority guardrails" description={`Visible while previewing as ${ROLE_LABELS[role]}`} action={<ShieldCheck aria-hidden="true" />}><div className="authority-list"><span><CheckCircle2 />Founder and Manager create Assignments</span><span><CheckCircle2 />Senior Staff delegate to Staff or Trainee</span><span><CheckCircle2 />Staff delegate only to Trainee</span><span><CheckCircle2 />Every role creates Personal Tasks for self</span><span><CheckCircle2 />Manager operates Office Accounts</span></div></Card></div>;
 }
 
-function ComposerDialog({
+export function ComposerDialog({
   mode,
   role,
   clients,
@@ -1539,13 +1555,37 @@ function ComposerDialog({
   onClientCreated: (client: ClientRecord, services: string[], owner: string) => void;
   onInvoiceCreated: (invoice: InvoiceRecord) => void;
   onReceiptCreated: (receipt: ReceiptRecord) => void;
-  onAssignmentCreated: (assignment: AssignmentRow) => void;
+  onAssignmentCreated: (assignment: AssignmentRow) => Promise<boolean> | void;
   onPersonalTaskCreated: (task: PersonalTaskRecord) => void;
   onDelegatedTaskCreated: (task: DelegatedTaskRecord) => void;
 }) {
+  const isMountedRef = useRef(true);
+  const closedRef = useRef(false);
+  const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (mode) {
+      closedRef.current = false;
+      setSubmitting(false);
+    }
+  }, [mode]);
+
+  const handleClose = () => {
+    if (closedRef.current) return;
+    closedRef.current = true;
+    onClose();
+  };
+
   useEffect(() => {
     if (!mode) return;
-    function onKeyDown(event: KeyboardEvent) { if (event.key === 'Escape') onClose(); }
+    function onKeyDown(event: KeyboardEvent) { if (event.key === 'Escape') handleClose(); }
     document.addEventListener('keydown', onKeyDown);
     return () => document.removeEventListener('keydown', onKeyDown);
   }, [mode, onClose]);
@@ -1562,8 +1602,9 @@ function ComposerDialog({
   };
   const [title, description] = titles[mode];
 
-  function submit(event: FormEvent<HTMLFormElement>) {
+  async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (submitting) return;
     const fd = new FormData(event.currentTarget);
 
     if (mode === 'client') {
@@ -1625,11 +1666,17 @@ function ComposerDialog({
       const scope = (fd.get('scope') as string) || 'Standard audit and compliance fieldwork.';
       const fee = Number(fd.get('fee')) || 25000;
 
+      const matchedClient = clients.find(
+        (c) => c.name.toLowerCase() === clientName.toLowerCase(),
+      );
+      const clientId = matchedClient?.id;
+
       const nextId = `ASN-000${assignments.length + 1}`;
       const newAsn: AssignmentRow = {
         id: nextId,
         title,
         client: clientName,
+        clientId,
         service,
         due,
         owner,
@@ -1647,7 +1694,24 @@ function ComposerDialog({
           { title: 'Partner final sign-off & dispatch', done: false },
         ],
       };
-      onAssignmentCreated(newAsn);
+
+      setSubmitting(true);
+      try {
+        const ok = await onAssignmentCreated(newAsn);
+        if (!isMountedRef.current || closedRef.current) {
+          return;
+        }
+        if (ok !== false) {
+          handleClose();
+          return;
+        }
+      } catch {
+        // Prevent unhandled promise rejection
+      }
+      if (isMountedRef.current && !closedRef.current) {
+        setSubmitting(false);
+      }
+      return;
     } else if (mode === 'personal') {
       const title = (fd.get('title') as string) || 'Personal reminder';
       const context = (fd.get('context') as string) || 'Personal';
@@ -1740,11 +1804,11 @@ function ComposerDialog({
       onCreated('Compliance item scheduled');
     }
 
-    onClose();
+    handleClose();
   }
 
   return (
-    <div className="dialog-layer" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+    <div className="dialog-layer" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && handleClose()}>
       <section className="dialog" role="dialog" aria-modal="true" aria-labelledby="dialog-title">
         <div className="dialog-header">
           <div>
@@ -1770,7 +1834,7 @@ function ComposerDialog({
               <p>{description}</p>
             </div>
           </div>
-          <button className="icon-button" type="button" onClick={onClose} aria-label="Close">
+          <button className="icon-button" type="button" onClick={handleClose} aria-label="Close">
             <X />
           </button>
         </div>
@@ -1793,10 +1857,10 @@ function ComposerDialog({
             )}
           </div>
           <div className="dialog-footer">
-            <button className="soft-button" type="button" onClick={onClose}>
+            <button className="soft-button" type="button" onClick={handleClose}>
               Cancel
             </button>
-            <button className="primary-button" type="submit">
+            <button className="primary-button" type="submit" disabled={submitting}>
               {mode === 'assignment'
                 ? 'Create draft'
                 : mode === 'delegated'

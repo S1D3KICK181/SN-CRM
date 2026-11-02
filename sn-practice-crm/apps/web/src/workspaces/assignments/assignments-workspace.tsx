@@ -399,7 +399,7 @@ export function AssignmentsWorkspace({
       ) : (
         <AssignmentsTable
           title={leadership ? 'All open practice assignments' : 'Assignments visible to me'}
-          rows={leadership ? assignments : assignments.filter((a) => a.owner === myAssignedStaffName || a.reviewer === myAssignedStaffName)}
+          rows={assignments}
           onToast={onToast}
           onSelectAssignment={onSelectAssignment}
           canEdit={leadership}

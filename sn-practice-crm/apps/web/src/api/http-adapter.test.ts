@@ -1,0 +1,356 @@
+import { describe, expect, it } from 'vitest';
+import type { AssignmentDto } from '@sn/contracts';
+import { HttpAssignmentsAdapter } from './http-adapter';
+import {
+  mapDtoToAssignmentRow,
+  mapStatusTransitionToAction,
+  normalizeLifecycleStage,
+} from './mapper';
+import { AssignmentOperationError } from './types';
+
+function createMockFetch(
+  handler: (url: string, init?: RequestInit) => Promise<Response> | Response,
+): typeof fetch {
+  return ((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === 'string' ? input : input.toString();
+    return Promise.resolve(handler(url, init));
+  }) as typeof fetch;
+}
+
+function jsonResponse(data: unknown, status = 200, requestId = 'req-test-123'): Response {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: {
+      'content-type': 'application/json',
+      'x-request-id': requestId,
+    },
+  });
+}
+
+const SAMPLE_DTO: AssignmentDto = {
+  id: 'asg_gst_october',
+  code: 'ASN-2026-0108',
+  clientId: 'cli_mehta',
+  clientName: 'Mehta Industries Pvt Ltd',
+  title: 'October GST return',
+  service: 'GST compliance',
+  ownerId: 'usr_senior',
+  reviewerIds: ['usr_manager'],
+  status: 'in_progress',
+  dueAt: '2026-11-11T12:30:00.000Z',
+  recurringScheduleId: 'sch_mehta_gst',
+  createdById: 'usr_manager',
+  createdAt: '2026-10-01T04:30:00.000Z',
+  updatedAt: '2026-10-29T09:15:00.000Z',
+};
+
+describe('HttpAssignmentsAdapter', () => {
+  it('maps all five actor roles to exact insecure dev x-demo-user-id headers', async () => {
+    const recordedHeaders: Record<string, string | null | undefined> = {};
+
+    const mockFetch = createMockFetch((_url, init) => {
+      const headers = new Headers(init?.headers);
+      recordedHeaders['lastRole'] = headers.get('x-demo-user-id');
+      return jsonResponse({ data: [SAMPLE_DTO], requestId: 'req-actors' });
+    });
+
+    const adapter = new HttpAssignmentsAdapter({ fetchFn: mockFetch });
+
+    await adapter.list('founder');
+    expect(recordedHeaders['lastRole']).toBe('usr_founder');
+
+    await adapter.list('manager');
+    expect(recordedHeaders['lastRole']).toBe('usr_manager');
+
+    await adapter.list('senior_staff');
+    expect(recordedHeaders['lastRole']).toBe('usr_senior');
+
+    await adapter.list('staff');
+    expect(recordedHeaders['lastRole']).toBe('usr_staff');
+
+    await adapter.list('trainee');
+    expect(recordedHeaders['lastRole']).toBe('usr_trainee');
+  });
+
+  it('unwraps response envelopes and deterministically maps AssignmentDto to AssignmentRow', async () => {
+    const mockFetch = createMockFetch((url) => {
+      expect(url).toBe('/api/v1/assignments');
+      return jsonResponse({ data: [SAMPLE_DTO], requestId: 'req-map' });
+    });
+
+    const adapter = new HttpAssignmentsAdapter({ fetchFn: mockFetch });
+    const rows = await adapter.list('senior_staff');
+
+    expect(rows).toHaveLength(1);
+    const row = rows[0]!;
+    expect(row.id).toBe('asg_gst_october');
+    expect(row.title).toBe('October GST return');
+    expect(row.client).toBe('Mehta Industries Pvt Ltd');
+    expect(row.clientId).toBe('cli_mehta');
+    expect(row.service).toBe('GST compliance');
+    expect(row.owner).toBe('Priya Desai');
+    expect(row.reviewer).toBe('Ananya Rao');
+    expect(row.status).toBe('In progress');
+    expect(row.progress).toBe(50);
+    expect(row.tone).toBe('default');
+    expect(row.due).toBe('11/11/2026');
+  });
+
+  it('converts create command to contract payload and returns authoritative row', async () => {
+    let capturedBody: any = null;
+    let capturedUrl = '';
+    let capturedMethod = '';
+
+    const mockFetch = createMockFetch((url, init) => {
+      capturedUrl = url;
+      capturedMethod = init?.method ?? 'GET';
+      capturedBody = JSON.parse(init?.body as string);
+      return jsonResponse({ data: SAMPLE_DTO, requestId: 'req-create' }, 201);
+    });
+
+    const adapter = new HttpAssignmentsAdapter({ fetchFn: mockFetch });
+    const created = await adapter.create('founder', {
+      clientId: 'cli_mehta',
+      clientName: 'Mehta Industries Pvt Ltd',
+      title: 'October GST return',
+      service: 'GST compliance',
+      ownerNameOrId: 'Priya Desai',
+      reviewerNameOrId: 'Ananya Rao',
+      dueDate: '11/11/2026',
+    });
+
+    expect(capturedUrl).toBe('/api/v1/assignments');
+    expect(capturedMethod).toBe('POST');
+    expect(capturedBody.clientId).toBe('cli_mehta');
+    expect(capturedBody.clientName).toBe('Mehta Industries Pvt Ltd');
+    expect(capturedBody.title).toBe('October GST return');
+    expect(capturedBody.service).toBe('GST compliance');
+    expect(capturedBody.ownerId).toBe('usr_senior');
+    expect(capturedBody.reviewerIds).toEqual(['usr_manager']);
+    expect(capturedBody.dueAt).toContain('2026-11-11');
+    expect(created.id).toBe('asg_gst_october');
+  });
+
+  it('executes status transition against exact path, body, and actor authority', async () => {
+    let capturedUrl = '';
+    let capturedMethod = '';
+    let capturedBody: any = null;
+
+    const mockFetch = createMockFetch((url, init) => {
+      capturedUrl = url;
+      capturedMethod = init?.method ?? 'GET';
+      capturedBody = JSON.parse(init?.body as string);
+      return jsonResponse({
+        data: { ...SAMPLE_DTO, status: 'ready_for_review' },
+        requestId: 'req-trans',
+      });
+    });
+
+    const adapter = new HttpAssignmentsAdapter({ fetchFn: mockFetch });
+    const updated = await adapter.transition('senior_staff', 'asg_gst_october', 'submit');
+
+    expect(capturedUrl).toBe('/api/v1/assignments/asg_gst_october/transitions');
+    expect(capturedMethod).toBe('POST');
+    expect(capturedBody).toEqual({ action: 'submit' });
+    expect(updated.status).toBe('Pending review');
+    expect(updated.tone).toBe('warning');
+  });
+
+  it('normalizes HTTP 401 to typed AssignmentOperationError with unauthorized code', async () => {
+    const mockFetch = createMockFetch(() =>
+      jsonResponse(
+        { error: { code: 'demo_session_required', message: 'Choose a demo user' }, requestId: 'req-401' },
+        401,
+      ),
+    );
+
+    const adapter = new HttpAssignmentsAdapter({ fetchFn: mockFetch });
+    await expect(adapter.list('founder')).rejects.toSatisfy((err: unknown) => {
+      expect(err).toBeInstanceOf(AssignmentOperationError);
+      const opErr = err as AssignmentOperationError;
+      expect(opErr.code).toBe('unauthorized');
+      expect(opErr.requestId).toBe('req-401');
+      expect(opErr.status).toBe(401);
+      return true;
+    });
+  });
+
+  it('normalizes HTTP 403 to forbidden', async () => {
+    const mockFetch = createMockFetch(() =>
+      jsonResponse(
+        { error: { code: 'forbidden', message: 'Authority denied' }, requestId: 'req-403' },
+        403,
+      ),
+    );
+
+    const adapter = new HttpAssignmentsAdapter({ fetchFn: mockFetch });
+    await expect(adapter.list('trainee')).rejects.toSatisfy((err: unknown) => {
+      const opErr = err as AssignmentOperationError;
+      expect(opErr.code).toBe('forbidden');
+      expect(opErr.requestId).toBe('req-403');
+      return true;
+    });
+  });
+
+  it('normalizes HTTP 404 to not_found', async () => {
+    const mockFetch = createMockFetch(() =>
+      jsonResponse(
+        { error: { code: 'not_found', message: 'No assignment found' }, requestId: 'req-404' },
+        404,
+      ),
+    );
+
+    const adapter = new HttpAssignmentsAdapter({ fetchFn: mockFetch });
+    await expect(adapter.transition('founder', 'asg_missing', 'start')).rejects.toSatisfy((err: unknown) => {
+      const opErr = err as AssignmentOperationError;
+      expect(opErr.code).toBe('not_found');
+      expect(opErr.requestId).toBe('req-404');
+      return true;
+    });
+  });
+
+  it('normalizes HTTP 409 to conflict', async () => {
+    const mockFetch = createMockFetch(() =>
+      jsonResponse(
+        { error: { code: 'invalid_state_transition', message: 'Only an open Assignment can be started.' }, requestId: 'req-409' },
+        409,
+      ),
+    );
+
+    const adapter = new HttpAssignmentsAdapter({ fetchFn: mockFetch });
+    await expect(adapter.transition('founder', 'asg_gst_october', 'start')).rejects.toSatisfy((err: unknown) => {
+      const opErr = err as AssignmentOperationError;
+      expect(opErr.code).toBe('conflict');
+      expect(opErr.requestId).toBe('req-409');
+      return true;
+    });
+  });
+
+  it('normalizes HTTP 422 to validation', async () => {
+    const mockFetch = createMockFetch(() =>
+      jsonResponse(
+        { error: { code: 'validation_failed', message: 'Validation failed' }, requestId: 'req-422' },
+        422,
+      ),
+    );
+
+    const adapter = new HttpAssignmentsAdapter({ fetchFn: mockFetch });
+    await expect(
+      adapter.create('founder', {
+        clientName: '',
+        title: '',
+        service: '',
+        ownerNameOrId: '',
+        dueDate: '',
+      }),
+    ).rejects.toSatisfy((err: unknown) => {
+      const opErr = err as AssignmentOperationError;
+      expect(opErr.code).toBe('validation');
+      expect(opErr.requestId).toBe('req-422');
+      return true;
+    });
+  });
+
+  it('normalizes malformed response to unexpected', async () => {
+    const mockFetch = createMockFetch(() => new Response('Internal error text', { status: 500 }));
+
+    const adapter = new HttpAssignmentsAdapter({ fetchFn: mockFetch });
+    await expect(adapter.list('founder')).rejects.toSatisfy((err: unknown) => {
+      const opErr = err as AssignmentOperationError;
+      expect(opErr.code).toBe('unexpected');
+      return true;
+    });
+  });
+
+  it('normalizes network errors to network', async () => {
+    const mockFetch = createMockFetch(() => {
+      throw new TypeError('Failed to fetch');
+    });
+
+    const adapter = new HttpAssignmentsAdapter({ fetchFn: mockFetch });
+    await expect(adapter.list('founder')).rejects.toSatisfy((err: unknown) => {
+      const opErr = err as AssignmentOperationError;
+      expect(opErr.code).toBe('network');
+      return true;
+    });
+  });
+
+  it('propagates AbortSignal and normalizes to aborted code', async () => {
+    const controller = new AbortController();
+    const mockFetch = createMockFetch((_url, init) => {
+      if (init?.signal?.aborted) {
+        const error = new Error('The operation was aborted');
+        error.name = 'AbortError';
+        throw error;
+      }
+      return jsonResponse({ data: [SAMPLE_DTO] });
+    });
+
+    const adapter = new HttpAssignmentsAdapter({ fetchFn: mockFetch });
+    controller.abort();
+
+    await expect(adapter.list('founder', { signal: controller.signal })).rejects.toSatisfy((err: unknown) => {
+      const opErr = err as AssignmentOperationError;
+      expect(opErr.code).toBe('aborted');
+      return true;
+    });
+  });
+
+  describe('Finding 4: lifecycle normalization & drawer vocabulary mapping', () => {
+    it('maps wire status "open" to UI "Awaiting documents"', () => {
+      const openDto: AssignmentDto = {
+        ...SAMPLE_DTO,
+        id: 'asg_open_sample',
+        status: 'open',
+      };
+      const row = mapDtoToAssignmentRow(openDto);
+      expect(row.status).toBe('Awaiting documents');
+      expect(row.progress).toBe(15);
+      expect(row.tone).toBe('default');
+    });
+
+    it('normalizes lifecycle aliases consistently without string duplication', () => {
+      expect(normalizeLifecycleStage('open')).toBe('open');
+      expect(normalizeLifecycleStage('Open')).toBe('open');
+      expect(normalizeLifecycleStage('Awaiting documents')).toBe('open');
+
+      expect(normalizeLifecycleStage('in_progress')).toBe('in_progress');
+      expect(normalizeLifecycleStage('In progress')).toBe('in_progress');
+      expect(normalizeLifecycleStage('On track')).toBe('in_progress');
+
+      expect(normalizeLifecycleStage('ready_for_review')).toBe('ready_for_review');
+      expect(normalizeLifecycleStage('Pending review')).toBe('ready_for_review');
+
+      expect(normalizeLifecycleStage('completed')).toBe('completed');
+      expect(normalizeLifecycleStage('Completed')).toBe('completed');
+
+      expect(normalizeLifecycleStage(undefined)).toBe('unknown');
+      expect(normalizeLifecycleStage('nonexistent')).toBe('unknown');
+    });
+
+    it('identifies valid contract transitions across alias representations', () => {
+      // Wire open / Awaiting documents -> in_progress
+      expect(mapStatusTransitionToAction('Awaiting documents', 'In progress')).toBe('start');
+      expect(mapStatusTransitionToAction('Open', 'In progress')).toBe('start');
+      expect(mapStatusTransitionToAction('Open', 'On track')).toBe('start');
+
+      // In progress -> Pending review
+      expect(mapStatusTransitionToAction('In progress', 'Pending review')).toBe('submit');
+      expect(mapStatusTransitionToAction('On track', 'Pending review')).toBe('submit');
+
+      // Pending review -> Completed
+      expect(mapStatusTransitionToAction('Pending review', 'Completed')).toBe('complete');
+
+      // Completed -> In progress
+      expect(mapStatusTransitionToAction('Completed', 'In progress')).toBe('reopen');
+
+      // Same-stage aliases return null (handled locally)
+      expect(mapStatusTransitionToAction('Open', 'Awaiting documents')).toBeNull();
+      expect(mapStatusTransitionToAction('In progress', 'On track')).toBeNull();
+
+      // Illegal jumps return null
+      expect(mapStatusTransitionToAction('Awaiting documents', 'Completed')).toBeNull();
+      expect(mapStatusTransitionToAction('Open', 'Completed')).toBeNull();
+    });
+  });
+});
