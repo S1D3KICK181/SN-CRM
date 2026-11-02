@@ -212,6 +212,7 @@ export type DelegatedTaskStatus = 'To Do' | 'In Progress' | 'Pending Review' | '
 
 export interface DelegatedTaskRecord {
   id: string;
+  kind: 'delegated' | 'internal';
   title: string;
   parent: string;
   parentAssignmentId?: string;
@@ -229,6 +230,7 @@ export interface DelegatedTaskRecord {
 export const DELEGATED_TASKS: DelegatedTaskRecord[] = [
   {
     id: 'TSK-D-01',
+    kind: 'delegated',
     title: 'Reconcile portal sales totals with books',
     parent: 'ASN-0001 · Aster Foods',
     parentAssignmentId: 'ASN-0001',
@@ -241,6 +243,7 @@ export const DELEGATED_TASKS: DelegatedTaskRecord[] = [
   },
   {
     id: 'TSK-D-02',
+    kind: 'delegated',
     title: 'Index supporting invoices for sample testing',
     parent: 'ASN-0001 · Aster Foods',
     parentAssignmentId: 'ASN-0001',
@@ -253,6 +256,7 @@ export const DELEGATED_TASKS: DelegatedTaskRecord[] = [
   },
   {
     id: 'TSK-D-03',
+    kind: 'delegated',
     title: 'Prepare audit evidence register',
     parent: 'ASN-0002 · BluePeak',
     parentAssignmentId: 'ASN-0002',

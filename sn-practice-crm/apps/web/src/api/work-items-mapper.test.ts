@@ -457,4 +457,101 @@ describe('work-items-mapper', () => {
       expect(getParentAssignmentOptions('trainee', assignments)).toEqual([]);
     });
   });
+
+  describe('Slice 1C: Internal Office Task Mapping and View Grouping', () => {
+    const internalDto: WorkItemDto = {
+      id: 'wrk_int_01',
+      kind: 'internal',
+      title: 'File November purchase bills in the blue cardboard file',
+      notes: 'Cabinet A, shelf 2',
+      assignmentId: null,
+      relatedClientId: null,
+      relatedPartyName: null,
+      assigneeId: 'usr_staff',
+      createdById: 'usr_manager',
+      status: 'todo',
+      dueAt: '2026-11-03T12:30:00.000Z',
+      reminderAt: null,
+      createdAt: '2026-11-02T04:00:00.000Z',
+      updatedAt: '2026-11-02T04:00:00.000Z',
+    };
+
+    it('maps internal WorkItemDto to DelegatedTaskRecord with kind="internal", parent="Internal Office Work", and parentAssignmentId=undefined (no "General" fallback)', () => {
+      const record = mapDtoToDelegatedTaskRecord(internalDto, [SAMPLE_ASSIGNMENT_1]);
+      expect(record.kind).toBe('internal');
+      expect(record.parent).toBe('Internal Office Work');
+      expect(record.parentAssignmentId).toBeUndefined();
+      expect(record.instructions).toBe('Cabinet A, shelf 2');
+      expect(record.status).toBe('To Do');
+    });
+
+    it('routes internal task to assignedToMe when assigneeId matches current actor', () => {
+      const groups = deriveWorkItemViewGroups([internalDto], [SAMPLE_ASSIGNMENT_1], 'staff');
+      expect(groups.assignedToMe.map((t) => t.id)).toEqual(['wrk_int_01']);
+      expect(groups.assignedToMe[0]?.parent).toBe('Internal Office Work');
+      expect(groups.assignedToMe[0]?.kind).toBe('internal');
+    });
+
+    it('routes internal task to delegatedByMe when createdById matches current actor', () => {
+      const groups = deriveWorkItemViewGroups([internalDto], [SAMPLE_ASSIGNMENT_1], 'manager');
+      expect(groups.delegatedByMe.map((t) => t.id)).toEqual(['wrk_int_01']);
+      expect(groups.delegatedByMe[0]?.parent).toBe('Internal Office Work');
+      expect(groups.delegatedByMe[0]?.kind).toBe('internal');
+    });
+
+    it('routes ready_for_review internal task to reviewableTasks for leadership (founder/manager) regardless of creator', () => {
+      const readyInternal: WorkItemDto = {
+        ...internalDto,
+        id: 'wrk_int_ready',
+        status: 'ready_for_review',
+        createdById: 'usr_senior',
+      };
+      const founderGroups = deriveWorkItemViewGroups([readyInternal], [], 'founder');
+      const managerGroups = deriveWorkItemViewGroups([readyInternal], [], 'manager');
+      expect(founderGroups.reviewableTasks.map((t) => t.id)).toEqual(['wrk_int_ready']);
+      expect(founderGroups.visibleDelegatedWork.map((t) => t.id)).toEqual(['wrk_int_ready']);
+      expect(managerGroups.reviewableTasks.map((t) => t.id)).toEqual(['wrk_int_ready']);
+    });
+
+    it('routes ready_for_review internal task to reviewableTasks for Senior Staff or Staff ONLY when they are the creator', () => {
+      const seniorCreated: WorkItemDto = {
+        ...internalDto,
+        id: 'wrk_senior_cr',
+        status: 'ready_for_review',
+        createdById: 'usr_senior',
+        assigneeId: 'usr_staff',
+      };
+      const managerCreated: WorkItemDto = {
+        ...internalDto,
+        id: 'wrk_mgr_cr',
+        status: 'ready_for_review',
+        createdById: 'usr_manager',
+        assigneeId: 'usr_staff',
+      };
+
+      // Senior staff created wrk_senior_cr, but did NOT create wrk_mgr_cr
+      const seniorGroups = deriveWorkItemViewGroups([seniorCreated, managerCreated], [], 'senior_staff');
+      expect(seniorGroups.reviewableTasks.map((t) => t.id)).toEqual(['wrk_senior_cr']);
+      expect(seniorGroups.visibleDelegatedWork.map((t) => t.id)).toEqual(['wrk_senior_cr']);
+
+      // Staff created neither -> 0 reviewable
+      const staffGroups = deriveWorkItemViewGroups([seniorCreated, managerCreated], [], 'staff');
+      expect(staffGroups.reviewableTasks).toHaveLength(0);
+    });
+
+    it('isolates trainee: trainee sees assigned internal tasks in assignedToMe, but has zero reviewableTasks or visibleDelegatedWork', () => {
+      const traineeAssigned: WorkItemDto = {
+        ...internalDto,
+        id: 'wrk_trainee_int',
+        assigneeId: 'usr_trainee',
+        createdById: 'usr_staff',
+        status: 'ready_for_review',
+      };
+      const traineeGroups = deriveWorkItemViewGroups([traineeAssigned], [], 'trainee');
+      expect(traineeGroups.assignedToMe.map((t) => t.id)).toEqual(['wrk_trainee_int']);
+      expect(traineeGroups.reviewableTasks).toHaveLength(0);
+      expect(traineeGroups.visibleDelegatedWork).toHaveLength(0);
+      expect(traineeGroups.delegatedByMe).toHaveLength(0);
+    });
+  });
 });

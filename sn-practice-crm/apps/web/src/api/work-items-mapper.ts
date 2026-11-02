@@ -279,12 +279,16 @@ export function mapDtoToDelegatedTaskRecord(
   const statusView = mapWorkItemStatusToView(dto.status);
   const person = DEMO_ACTOR_ID_TO_NAME[dto.assigneeId] ?? dto.assigneeId;
   const assignedBy = DEMO_ACTOR_ID_TO_NAME[dto.createdById] ?? dto.createdById;
+  const isInternal = dto.kind === 'internal';
 
   return {
     id: dto.id,
+    kind: dto.kind as 'delegated' | 'internal',
     title: dto.title,
-    parent: resolveParentLabel(dto.assignmentId, assignments, dto.relatedPartyName),
-    parentAssignmentId: dto.assignmentId ?? undefined,
+    parent: isInternal
+      ? 'Internal Office Work'
+      : resolveParentLabel(dto.assignmentId, assignments, dto.relatedPartyName),
+    parentAssignmentId: isInternal ? undefined : (dto.assignmentId ?? undefined),
     person,
     assigneeId: dto.assigneeId,
     assignedBy,
@@ -343,7 +347,7 @@ export function deriveWorkItemViewGroups(
       continue;
     }
 
-    if (item.kind === 'delegated') {
+    if (item.kind === 'delegated' || item.kind === 'internal') {
       const record = mapDtoToDelegatedTaskRecord(item, assignments, role, clock);
 
       if (item.assigneeId === currentActorId) {

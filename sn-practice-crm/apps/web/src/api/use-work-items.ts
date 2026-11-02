@@ -38,6 +38,13 @@ export interface CreatePersonalInput {
   time?: string;
 }
 
+export interface CreateInternalInput {
+  title: string;
+  assigneeId: string;
+  due: string;
+  instructions?: string;
+}
+
 export function useWorkItems(
   role: CompanyRole,
   assignments: AssignmentRow[],
@@ -191,6 +198,35 @@ export function useWorkItems(
     [coordinator, clock],
   );
 
+  const handleCreateInternal = useCallback(
+    async (input: CreateInternalInput): Promise<boolean> => {
+      try {
+        const dueAtIso = parseDisplayDateToKolkataIso(input.due, clock);
+        const res = await coordinator.handleCreateWorkItem({
+          kind: 'internal',
+          title: input.title,
+          assigneeId: input.assigneeId,
+          dueAt: dueAtIso,
+          notes: input.instructions || undefined,
+        });
+        return res.success;
+      } catch (err: unknown) {
+        const opError =
+          err instanceof WorkItemOperationError
+            ? err
+            : new WorkItemOperationError({
+                code: 'validation',
+                message: err instanceof Error ? err.message : 'Invalid internal task details.',
+                cause: err,
+              });
+        onErrorRef.current?.(opError);
+        onToastRef.current?.(`Validation error: ${opError.message}`);
+        return false;
+      }
+    },
+    [coordinator, clock],
+  );
+
   const handleStart = useCallback(
     async (taskIdOrRecord: string | { id: string }): Promise<boolean> => {
       const id = typeof taskIdOrRecord === 'string' ? taskIdOrRecord : taskIdOrRecord.id;
@@ -258,6 +294,7 @@ export function useWorkItems(
     visibleDelegatedWork: viewGroups.visibleDelegatedWork,
     handleCreateDelegated,
     handleCreatePersonal,
+    handleCreateInternal,
     handleStart,
     handleSubmit,
     handleApprove,

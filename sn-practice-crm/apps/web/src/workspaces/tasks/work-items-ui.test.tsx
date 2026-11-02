@@ -11,6 +11,7 @@ afterEach(() => {
 
 const TODO_TASK: DelegatedTaskRecord = {
   id: 'wrk_todo_1',
+  kind: 'delegated',
   title: 'Check vendor purchase vouchers',
   parent: 'ASN-0001 · October GST',
   parentAssignmentId: 'ASN-0001',
@@ -27,6 +28,7 @@ const TODO_TASK: DelegatedTaskRecord = {
 
 const IN_PROGRESS_TASK: DelegatedTaskRecord = {
   id: 'wrk_prog_1',
+  kind: 'delegated',
   title: 'Vouch petty cash expenses',
   parent: 'ASN-0002 · Q2 Audit',
   parentAssignmentId: 'ASN-0002',
@@ -42,6 +44,7 @@ const IN_PROGRESS_TASK: DelegatedTaskRecord = {
 
 const PENDING_REVIEW_TASK: DelegatedTaskRecord = {
   id: 'wrk_review_1',
+  kind: 'delegated',
   title: 'Draft fixed asset reconciliation',
   parent: 'ASN-0002 · Q2 Audit',
   parentAssignmentId: 'ASN-0002',
@@ -57,6 +60,7 @@ const PENDING_REVIEW_TASK: DelegatedTaskRecord = {
 
 const COMPLETED_TASK: DelegatedTaskRecord = {
   id: 'wrk_done_1',
+  kind: 'delegated',
   title: 'Download October GSTR-2B JSON',
   parent: 'ASN-0001 · October GST',
   parentAssignmentId: 'ASN-0001',
@@ -195,6 +199,161 @@ describe('Work Items UI components', () => {
 
       expect(screen.getByText('Check vendor purchase vouchers')).toBeDefined();
       expect(screen.getByText('Vouch petty cash expenses')).toBeDefined();
+    });
+  });
+
+  describe('Slice 1C: Internal Office Tasks UI rendering and actions', () => {
+    const INTERNAL_TODO_TASK: DelegatedTaskRecord = {
+      id: 'wrk_int_ui_1',
+      kind: 'internal',
+      title: 'Sort physical vendor vouchers in cabinet A',
+      parent: 'Internal Office Work',
+      person: 'Rohan Mehta',
+      assigneeId: 'usr_staff',
+      assignedBy: 'Ananya Rao',
+      createdById: 'usr_manager',
+      due: 'Tomorrow',
+      progress: 0,
+      status: 'To Do',
+      tone: 'default',
+      instructions: 'Sort by date ascending',
+    };
+
+    const INTERNAL_IN_PROGRESS_TASK: DelegatedTaskRecord = {
+      ...INTERNAL_TODO_TASK,
+      id: 'wrk_int_ui_2',
+      status: 'In Progress',
+      progress: 50,
+    };
+
+    const INTERNAL_PENDING_REVIEW_TASK: DelegatedTaskRecord = {
+      ...INTERNAL_TODO_TASK,
+      id: 'wrk_int_ui_3',
+      status: 'Pending Review',
+      progress: 90,
+      tone: 'warning',
+    };
+
+    it('renders internal task in TaskQueue with "Internal Office Work" and "Office" badge', () => {
+      render(<TaskQueue tasks={[INTERNAL_TODO_TASK]} onToast={vi.fn()} />);
+
+      expect(screen.getByText('Sort physical vendor vouchers in cabinet A')).toBeDefined();
+      expect(screen.getByText(/Internal Office Work/i)).toBeDefined();
+      expect(screen.getByText('Office')).toBeDefined();
+    });
+
+    it('executes start and submit actions on internal task in TaskQueue', () => {
+      const onStartTask = vi.fn();
+      const onSubmitForReview = vi.fn();
+
+      const { rerender } = render(
+        <TaskQueue
+          tasks={[INTERNAL_TODO_TASK]}
+          onStartTask={onStartTask}
+          onSubmitForReview={onSubmitForReview}
+          onToast={vi.fn()}
+        />,
+      );
+
+      const startBtn = screen.getByRole('button', { name: /Start task/i });
+      fireEvent.click(startBtn);
+      expect(onStartTask).toHaveBeenCalledWith(INTERNAL_TODO_TASK);
+
+      rerender(
+        <TaskQueue
+          tasks={[INTERNAL_IN_PROGRESS_TASK]}
+          onStartTask={onStartTask}
+          onSubmitForReview={onSubmitForReview}
+          onToast={vi.fn()}
+        />,
+      );
+
+      const submitBtn = screen.getByRole('button', { name: /Submit for review/i });
+      fireEvent.click(submitBtn);
+      expect(onSubmitForReview).toHaveBeenCalledWith(INTERNAL_IN_PROGRESS_TASK);
+    });
+
+    it('renders submitted internal task in ReviewQueue and supports Approve and Request changes', () => {
+      const onApprove = vi.fn();
+      const onReopen = vi.fn();
+
+      render(
+        <ReviewQueue
+          delegatedTasks={[INTERNAL_PENDING_REVIEW_TASK]}
+          onApprove={onApprove}
+          onReopen={onReopen}
+          onToast={vi.fn()}
+        />,
+      );
+
+      expect(screen.getByText('Sort physical vendor vouchers in cabinet A')).toBeDefined();
+
+      const approveBtn = screen.getByRole('button', { name: /Approve/i });
+      fireEvent.click(approveBtn);
+      expect(onApprove).toHaveBeenCalledWith(INTERNAL_PENDING_REVIEW_TASK);
+
+      const requestChangesBtn = screen.getByRole('button', { name: /Request changes/i });
+      fireEvent.click(requestChangesBtn);
+      expect(onReopen).toHaveBeenCalledWith(INTERNAL_PENDING_REVIEW_TASK);
+    });
+
+    it('renders updated DelegatedWork description covering sub-tasks and office operations', () => {
+      render(
+        <DelegatedWork
+          tasks={[INTERNAL_TODO_TASK]}
+          onAdd={vi.fn()}
+        />,
+      );
+
+      expect(
+        screen.getByText(/Sub-tasks and office operations delegated to team/i),
+      ).toBeDefined();
+    });
+
+    it('renders "+ Office task" button in DelegatedWork for non-trainee roles and calls onAddInternal', () => {
+      const onAdd = vi.fn();
+      const onAddInternal = vi.fn();
+
+      render(
+        <DelegatedWork
+          tasks={[INTERNAL_TODO_TASK]}
+          onAdd={onAdd}
+          onAddInternal={onAddInternal}
+          role="manager"
+        />,
+      );
+
+      const subTaskBtn = screen.getByRole('button', { name: /Sub-task/i });
+      expect(subTaskBtn).toBeDefined();
+
+      const officeTaskBtn = screen.getByRole('button', { name: /Office task/i });
+      expect(officeTaskBtn).toBeDefined();
+      fireEvent.click(officeTaskBtn);
+      expect(onAddInternal).toHaveBeenCalledTimes(1);
+    });
+
+    it('hides "+ Office task" button in DelegatedWork when onAddInternal is omitted or role is trainee', () => {
+      const onAdd = vi.fn();
+
+      const { rerender } = render(
+        <DelegatedWork
+          tasks={[INTERNAL_TODO_TASK]}
+          onAdd={onAdd}
+        />,
+      );
+
+      expect(screen.queryByRole('button', { name: /Office task/i })).toBeNull();
+
+      rerender(
+        <DelegatedWork
+          tasks={[INTERNAL_TODO_TASK]}
+          onAdd={onAdd}
+          onAddInternal={vi.fn()}
+          role="trainee"
+        />,
+      );
+
+      expect(screen.queryByRole('button', { name: /Office task/i })).toBeNull();
     });
   });
 });

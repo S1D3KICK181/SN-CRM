@@ -714,4 +714,148 @@ describe('ComposerDialog create-assignment submit lifecycle', () => {
     // Successfully closes exactly once
     expect(onClose).toHaveBeenCalledTimes(1);
   });
+
+  describe('Slice 1C: ComposerDialog mode="internal" (Delegate Office Task)', () => {
+    it('renders mode="internal" with title "Delegate Office Task", explanatory copy, downward-authorized assignees, and NO parent assignment selector', () => {
+      const onClose = vi.fn();
+      render(
+        <ComposerDialog
+          mode={'internal' as any}
+          role="manager"
+          clients={CLIENTS}
+          invoices={[]}
+          assignments={[]}
+          personalTasks={[]}
+          delegatedTasks={[]}
+          presetInvoice={null}
+          onClose={onClose}
+          onCreated={vi.fn()}
+          onClientCreated={vi.fn()}
+          onInvoiceCreated={vi.fn()}
+          onReceiptCreated={vi.fn()}
+          onAssignmentCreated={vi.fn()}
+          onPersonalTaskCreated={vi.fn()}
+          onDelegatedTaskCreated={vi.fn()}
+          {...({ onInternalTaskCreated: vi.fn() } as any)}
+        />,
+      );
+
+      // Verify Title & Subtitle
+      expect(screen.getByText('Delegate Office Task')).toBeDefined();
+      expect(
+        screen.getByText(/Assign non-client administrative or menial office operations within your downward authority/i),
+      ).toBeDefined();
+
+      // Fields: task title input
+      const titleInput = screen.getByPlaceholderText(
+        /File November purchase bills in the blue cardboard file/i,
+      ) as HTMLInputElement;
+      expect(titleInput).toBeDefined();
+      expect(titleInput.name).toBe('title');
+
+      // Fields: assignee select with downward targets for manager (Senior, Staff, Trainee; no Founder)
+      const assigneeSelect = screen.getByRole('combobox') as HTMLSelectElement;
+      expect(assigneeSelect.name).toBe('assigneeId');
+      const optionTexts = Array.from(assigneeSelect.options).map((o) => o.textContent);
+      expect(optionTexts.some((t) => t?.includes('Priya Desai'))).toBe(true);
+      expect(optionTexts.some((t) => t?.includes('Rohan Mehta'))).toBe(true);
+      expect(optionTexts.some((t) => t?.includes('Neha Kapoor'))).toBe(true);
+      expect(optionTexts.some((t) => t?.includes('Narayanan'))).toBe(false);
+
+      // Target completion date
+      const dueInput = screen.getByDisplayValue('Tomorrow') as HTMLInputElement;
+      expect(dueInput.name).toBe('due');
+
+      // Instructions textarea
+      const instructions = screen.getByPlaceholderText(
+        /Specific filing instructions, records cabinet, or administrative steps/i,
+      ) as HTMLTextAreaElement;
+      expect(instructions.name).toBe('instructions');
+
+      // ABSOLUTELY NO parent assignment selector or client selector
+      expect(screen.queryByLabelText(/^Parent Assignment/i)).toBeNull();
+      expect(screen.queryByLabelText(/^Client/i)).toBeNull();
+      expect(document.querySelector('select[name="assignmentId"]')).toBeNull();
+      expect(document.querySelector('select[name="clientId"]')).toBeNull();
+    });
+
+    it('disables submit button while pending, keeps dialog open and preserves entered values on creation failure, and closes on retry success', async () => {
+      let resolveCreation: (value: boolean) => void = () => {};
+      const onInternalTaskCreated = vi.fn().mockImplementation(() => {
+        return new Promise<boolean>((resolve) => {
+          resolveCreation = resolve;
+        });
+      });
+      const onClose = vi.fn();
+
+      render(
+        <ComposerDialog
+          mode={'internal' as any}
+          role="manager"
+          clients={CLIENTS}
+          invoices={[]}
+          assignments={[]}
+          personalTasks={[]}
+          delegatedTasks={[]}
+          presetInvoice={null}
+          onClose={onClose}
+          onCreated={vi.fn()}
+          onClientCreated={vi.fn()}
+          onInvoiceCreated={vi.fn()}
+          onReceiptCreated={vi.fn()}
+          onAssignmentCreated={vi.fn()}
+          onPersonalTaskCreated={vi.fn()}
+          onDelegatedTaskCreated={vi.fn()}
+          {...({ onInternalTaskCreated } as any)}
+        />,
+      );
+
+      const titleInput = screen.getByPlaceholderText(
+        /File November purchase bills in the blue cardboard file/i,
+      ) as HTMLInputElement;
+      fireEvent.change(titleInput, { target: { value: 'Archive FY25 physical vouchers' } });
+
+      const instructions = screen.getByPlaceholderText(
+        /Specific filing instructions, records cabinet, or administrative steps/i,
+      ) as HTMLTextAreaElement;
+      fireEvent.change(instructions, { target: { value: 'Stack in Box 12 on top shelf' } });
+
+      const submitButton = screen.getByRole('button', { name: /Delegate task/i }) as HTMLButtonElement;
+      expect(submitButton.disabled).toBe(false);
+
+      // First submit: pending
+      fireEvent.click(submitButton);
+      expect(onInternalTaskCreated).toHaveBeenCalledTimes(1);
+      expect(submitButton.disabled).toBe(true);
+
+      // Failure
+      await act(async () => {
+        resolveCreation(false);
+        await Promise.resolve();
+      });
+
+      // Dialog remains open
+      expect(onClose).not.toHaveBeenCalled();
+      expect(screen.getByRole('dialog')).toBeDefined();
+      expect(submitButton.disabled).toBe(false);
+
+      // Values preserved
+      expect(titleInput.value).toBe('Archive FY25 physical vouchers');
+      expect(instructions.value).toBe('Stack in Box 12 on top shelf');
+
+      // Retry
+      fireEvent.click(submitButton);
+      expect(onInternalTaskCreated).toHaveBeenCalledTimes(2);
+      expect(submitButton.disabled).toBe(true);
+
+      // Success
+      await act(async () => {
+        resolveCreation(true);
+        await Promise.resolve();
+      });
+
+      // Closes
+      expect(onClose).toHaveBeenCalledTimes(1);
+    });
+  });
 });

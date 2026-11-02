@@ -235,4 +235,156 @@ describe('useWorkItems React hook integration', () => {
     expect(toasts).toHaveLength(0);
     expect(errors).toHaveLength(0);
   });
+
+  describe('Slice 1C: handleCreateInternal and internal items in hook', () => {
+    it('handleCreateInternal constructs strict payload {kind:"internal", title, assigneeId, dueAt, notes} without assignmentId or client context keys', async () => {
+      const adapter = new DeterministicTestWorkItemsAdapter();
+      adapter.setCreateHandler((_role, input) => {
+        return {
+          id: 'wrk_int_created_1',
+          kind: 'internal',
+          title: input.title,
+          notes: input.notes ?? null,
+          assignmentId: null,
+          relatedClientId: null,
+          relatedPartyName: null,
+          assigneeId: (input as any).assigneeId,
+          createdById: 'usr_manager',
+          status: 'todo',
+          dueAt: input.dueAt,
+          reminderAt: null,
+          createdAt: '2026-11-02T04:00:00.000Z',
+          updatedAt: '2026-11-02T04:00:00.000Z',
+        };
+      });
+
+      const { result } = renderHook(() =>
+        useWorkItems('manager', [], {
+          port: adapter,
+          clock: new Date('2026-11-02T06:30:00.000Z'),
+        }),
+      );
+
+      let success: boolean = false;
+      await act(async () => {
+        success = await (result.current as any).handleCreateInternal({
+          title: 'File purchase vouchers in blue box',
+          assigneeId: 'usr_staff',
+          due: 'Tomorrow',
+          instructions: 'Box 4',
+        });
+      });
+
+      expect(success).toBe(true);
+      const createCalls = adapter.calls.filter((c) => c.action === 'create');
+      expect(createCalls).toHaveLength(1);
+      expect(createCalls[0]?.input).toEqual({
+        kind: 'internal',
+        title: 'File purchase vouchers in blue box',
+        assigneeId: 'usr_staff',
+        dueAt: expect.stringMatching(/2026-11-03/),
+        notes: 'Box 4',
+      });
+      expect((createCalls[0]?.input as any).assignmentId).toBeUndefined();
+      expect((createCalls[0]?.input as any).relatedClientId).toBeUndefined();
+    });
+
+    it('handleCreateInternal rejects invalid date string, raises toast, and avoids port create mutation', async () => {
+      const adapter = new DeterministicTestWorkItemsAdapter();
+      const toasts: string[] = [];
+      const errors: any[] = [];
+      const { result } = renderHook(() =>
+        useWorkItems('manager', [], {
+          port: adapter,
+          onToast: (msg) => toasts.push(msg),
+          onError: (err) => errors.push(err),
+        }),
+      );
+
+      let success: boolean = true;
+      await act(async () => {
+        success = await (result.current as any).handleCreateInternal({
+          title: 'Bad date task',
+          assigneeId: 'usr_staff',
+          due: 'not-a-valid-date-ever',
+        });
+      });
+
+      expect(success).toBe(false);
+      expect(toasts.some((t) => t.includes('Validation error'))).toBe(true);
+      expect(adapter.calls.filter((c) => c.action === 'create')).toHaveLength(0);
+    });
+
+    it('handleCreateInternal maintains stable callback identity across rerenders', async () => {
+      const adapter = new DeterministicTestWorkItemsAdapter();
+      const { result, rerender } = renderHook(
+        ({ assignments }) => useWorkItems('manager', assignments, { port: adapter }),
+        { initialProps: { assignments: [] as AssignmentRow[] } },
+      );
+
+      const initialHandleCreateInternal = (result.current as any).handleCreateInternal;
+      rerender({ assignments: [SAMPLE_ASSIGNMENT] });
+      expect((result.current as any).handleCreateInternal).toBe(initialHandleCreateInternal);
+    });
+
+    it('zero-frame role privacy guard synchronously clears internal items on role change', async () => {
+      const internalItem: WorkItemDto = {
+        id: 'wrk_int_founder',
+        kind: 'internal',
+        title: 'Founder Internal Work',
+        notes: null,
+        assignmentId: null,
+        relatedClientId: null,
+        relatedPartyName: null,
+        assigneeId: 'usr_manager',
+        createdById: 'usr_founder',
+        status: 'todo',
+        dueAt: '2026-11-04T12:30:00.000Z',
+        reminderAt: null,
+        createdAt: '2026-11-01T04:00:00.000Z',
+        updatedAt: '2026-11-01T04:00:00.000Z',
+      };
+      const adapter = new DeterministicTestWorkItemsAdapter();
+      adapter.setListResponse('founder', [internalItem]);
+
+      let resolveStaff: (items: WorkItemDto[]) => void = () => {};
+      const staffDeferred = new Promise<WorkItemDto[]>((resolve) => {
+        resolveStaff = resolve;
+      });
+      adapter.setDeferredList('staff', staffDeferred);
+
+      const renderFrames: Array<{ role: CompanyRole; visibleDelegatedCount: number; loading: boolean }> = [];
+
+      const { result, rerender } = renderHook(
+        ({ role }: { role: CompanyRole }) => {
+          const hook = useWorkItems(role, [], { port: adapter });
+          renderFrames.push({
+            role,
+            visibleDelegatedCount: hook.visibleDelegatedWork.length,
+            loading: hook.loading,
+          });
+          return hook;
+        },
+        { initialProps: { role: 'founder' as CompanyRole } },
+      );
+
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(result.current.visibleDelegatedWork).toHaveLength(1);
+
+      renderFrames.length = 0;
+      rerender({ role: 'staff' });
+
+      // Synchronous zero-frame privacy guard check
+      expect(renderFrames[0]?.role).toBe('staff');
+      expect(renderFrames[0]?.visibleDelegatedCount).toBe(0);
+      expect(renderFrames[0]?.loading).toBe(true);
+
+      await act(async () => {
+        resolveStaff([]);
+        await Promise.resolve();
+      });
+    });
+  });
 });

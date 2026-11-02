@@ -49,6 +49,7 @@ import {
   getParentAssignmentOptions,
   type CreateDelegatedInput,
   type CreatePersonalInput,
+  type CreateInternalInput,
 } from './api';
 import {
   ASSIGNMENTS,
@@ -78,7 +79,7 @@ import {
   type ScheduleCadence,
 } from './data';
 
-type DialogMode = 'assignment' | 'personal' | 'delegated' | 'client' | 'schedule' | 'invoice' | 'receipt' | null;
+type DialogMode = 'assignment' | 'personal' | 'delegated' | 'internal' | 'client' | 'schedule' | 'invoice' | 'receipt' | null;
 
 export function App() {
   const [role, setRole] = useState<CompanyRole>('founder');
@@ -101,6 +102,7 @@ export function App() {
     visibleDelegatedWork,
     handleCreateDelegated,
     handleCreatePersonal,
+    handleCreateInternal,
     handleStart: handleStartTask,
     handleSubmit: handleSubmitTaskForReview,
     handleApprove: handleApproveDelegatedTask,
@@ -483,6 +485,7 @@ export function App() {
               onAssignmentCreated={handleCreateAssignment}
               onPersonalTaskCreated={handleCreatePersonal}
               onDelegatedTaskCreated={handleCreateDelegated}
+              onInternalTaskCreated={handleCreateInternal}
             />
           ) : null}
         </>
@@ -811,6 +814,7 @@ function SeniorDashboard({
           tasks={delegatedTasks}
           role="senior_staff"
           onAdd={() => onCompose('delegated')}
+          onAddInternal={() => onCompose('internal')}
         />
         <PersonalTasks
           tasks={personalTasks}
@@ -871,6 +875,7 @@ function StaffDashboard({
           tasks={delegatedTasks}
           role="staff"
           onAdd={() => onCompose('delegated')}
+          onAddInternal={() => onCompose('internal')}
         />
         <DeadlineRadar assignments={assignments} />
         <DocumentRequests />
@@ -1159,14 +1164,34 @@ function OperationalTriage() {
 export function DelegatedWork({
   tasks,
   onAdd,
+  onAddInternal,
   role,
 }: {
   tasks: DelegatedTaskRecord[];
   onAdd: () => void;
-  role?: 'senior_staff' | 'staff';
+  onAddInternal?: () => void;
+  role?: CompanyRole | 'senior_staff' | 'staff';
 }) {
+  const canAddOffice = role !== 'trainee' && Boolean(onAddInternal);
+
   return (
-    <Card title="Delegated work" description="Sub-tasks delegated under your Assignments" action={<button className="mini-add" type="button" onClick={onAdd}><Plus aria-hidden="true" /> Delegate</button>} className="compact-card">
+    <Card
+      title="Delegated work"
+      description="Sub-tasks and office operations delegated to team"
+      action={
+        <div style={{ display: 'flex', gap: 6 }}>
+          <button className="mini-add" type="button" onClick={onAdd}>
+            <Plus aria-hidden="true" /> Sub-task
+          </button>
+          {canAddOffice ? (
+            <button className="mini-add" type="button" onClick={onAddInternal}>
+              <Plus aria-hidden="true" /> Office task
+            </button>
+          ) : null}
+        </div>
+      }
+      className="compact-card"
+    >
       <div className="list-stack task-list">
         {tasks.map((task) => (
           <div className="task-row" key={task.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -1310,7 +1335,10 @@ export function TaskQueue({
             <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
               <span className="queue-priority">{index + 1}</span>
               <div>
-                <strong>{task.title}</strong>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <strong>{task.title}</strong>
+                  {task.kind === 'internal' ? <Status tone="default">Office</Status> : null}
+                </div>
                 <small style={{ display: 'block', color: 'var(--ink-muted)' }}>{task.parent} · Assigned by {task.assignedBy}</small>
                 {task.instructions ? <p style={{ fontSize: 11, color: 'var(--ink-muted)', margin: '4px 0 0' }}>{task.instructions}</p> : null}
               </div>
@@ -1510,8 +1538,9 @@ function ModuleWorkspace({
           {role !== 'trainee' ? (
             <DelegatedWork
               tasks={delegatedTasks}
-              role={role === 'staff' ? 'staff' : role === 'senior_staff' ? 'senior_staff' : undefined}
+              role={role}
               onAdd={() => onCompose('delegated')}
+              onAddInternal={() => onCompose('internal')}
             />
           ) : null}
           {role === 'founder' || role === 'manager' || role === 'senior_staff' || reviewableTasks.length > 0 ? (
@@ -1590,6 +1619,7 @@ export function ComposerDialog({
   onAssignmentCreated,
   onPersonalTaskCreated,
   onDelegatedTaskCreated,
+  onInternalTaskCreated,
 }: {
   mode: DialogMode;
   role: CompanyRole;
@@ -1608,6 +1638,7 @@ export function ComposerDialog({
   onAssignmentCreated: (assignment: AssignmentRow) => Promise<boolean>;
   onPersonalTaskCreated: (input: CreatePersonalInput | any) => Promise<boolean> | void;
   onDelegatedTaskCreated: (input: CreateDelegatedInput | any) => Promise<boolean> | void;
+  onInternalTaskCreated?: (input: CreateInternalInput | any) => Promise<boolean> | void;
 }) {
   const isMountedRef = useRef(true);
   const closedRef = useRef(false);
@@ -1645,6 +1676,7 @@ export function ComposerDialog({
     assignment: ['Create assignment', 'Create a controlled client obligation with a clear owner and review gate.'],
     personal: ['New personal task', 'Plan a private reminder for yourself without creating practice-level work.'],
     delegated: ['Delegate Sub-Task', 'Break down an existing Assignment into operational verification steps while retaining owner accountability.'],
+    internal: ['Delegate Office Task', 'Assign non-client administrative or menial office operations within your downward authority.'],
     client: ['New client record', 'Onboard a corporate, LLP, or individual client with Indian tax registrations.'],
     schedule: ['New Recurring Schedule', 'Configure an automated compliance cycle for GST, TDS, bookkeeping, or ROC.'],
     invoice: ['Raise Tax Invoice', 'Generate a professional fee invoice with standard 18% GST (CGST 9% + SGST 9%).'],
@@ -1818,6 +1850,34 @@ export function ComposerDialog({
         setSubmitting(false);
       }
       return;
+    } else if (mode === 'internal') {
+      const title = ((fd.get('title') as string) || '').trim();
+      const assigneeId = (fd.get('assigneeId') as string) || '';
+      const due = ((fd.get('due') as string) || 'Tomorrow').trim();
+      const instructions = ((fd.get('instructions') as string) || '').trim();
+
+      setSubmitting(true);
+      try {
+        const ok = await onInternalTaskCreated?.({
+          title,
+          assigneeId,
+          due,
+          instructions,
+        });
+        if (!isMountedRef.current || closedRef.current) {
+          return;
+        }
+        if (ok === true) {
+          handleClose();
+          return;
+        }
+      } catch {
+        // Prevent unhandled promise rejection
+      }
+      if (isMountedRef.current && !closedRef.current) {
+        setSubmitting(false);
+      }
+      return;
     } else if (mode === 'invoice') {
       const clientId = fd.get('clientId') as string;
       const targetClient = clients.find((c) => c.id === clientId);
@@ -1889,6 +1949,8 @@ export function ComposerDialog({
                 <BriefcaseBusiness />
               ) : mode === 'delegated' ? (
                 <UserRoundCheck />
+              ) : mode === 'internal' ? (
+                <FileStack />
               ) : mode === 'client' ? (
                 <Building2 />
               ) : mode === 'schedule' ? (
@@ -1916,6 +1978,8 @@ export function ComposerDialog({
               <AssignmentFields clients={clients} role={role} />
             ) : mode === 'delegated' ? (
               <DelegationFields role={role} assignments={assignments} />
+            ) : mode === 'internal' ? (
+              <InternalTaskFields role={role} />
             ) : mode === 'client' ? (
               <NewClientFields />
             ) : mode === 'schedule' ? (
@@ -1935,7 +1999,7 @@ export function ComposerDialog({
             <button className="primary-button" type="submit" disabled={submitting}>
               {mode === 'assignment'
                 ? 'Create draft'
-                : mode === 'delegated'
+                : mode === 'delegated' || mode === 'internal'
                 ? 'Delegate task'
                 : mode === 'client'
                 ? 'Create client & activate schedules'
@@ -2410,6 +2474,48 @@ function DelegationFields({ role, assignments }: { role: CompanyRole; assignment
       </Field>
       <Field label="Instructions & Evidence checklist" full hint="The Assignment Owner remains accountable for final delivery.">
         <textarea name="instructions" rows={3} placeholder="Expected output, evidence required, and verification criteria" />
+      </Field>
+    </>
+  );
+}
+
+function InternalTaskFields({ role }: { role: CompanyRole }) {
+  const targets = useMemo(() => {
+    return getDelegationTargets(role);
+  }, [role]);
+
+  return (
+    <>
+      <Field label="Task description" full>
+        <input
+          name="title"
+          required
+          autoFocus
+          placeholder="e.g. File November purchase bills in the blue cardboard file"
+        />
+      </Field>
+      <Field label="Delegate to">
+        <select name="assigneeId" required defaultValue={targets[0]?.id || ''}>
+          {targets.map((target) => (
+            <option key={target.id} value={target.id}>
+              {target.label}
+            </option>
+          ))}
+        </select>
+      </Field>
+      <Field label="Target completion date">
+        <input name="due" type="text" defaultValue="Tomorrow" required />
+      </Field>
+      <Field
+        label="Instructions & Location notes"
+        full
+        hint="Internal tasks do not link to client assignments or create billing scope."
+      >
+        <textarea
+          name="instructions"
+          rows={3}
+          placeholder="Specific filing instructions, records cabinet, or administrative steps"
+        />
       </Field>
     </>
   );
