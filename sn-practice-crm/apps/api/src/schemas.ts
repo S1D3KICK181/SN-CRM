@@ -1,10 +1,33 @@
 import { z } from 'zod';
+import { ApiError } from './errors';
 
 const id = z.string().trim().min(1).max(100).regex(/^[a-zA-Z0-9_-]+$/);
 const title = z.string().trim().min(2).max(160);
 const notes = z.string().trim().max(2000).optional();
-const instant = z.string().datetime({ offset: true });
+export const isoInstantSchema = z
+  .string()
+  .datetime({ offset: true })
+  .refine(
+    (value) => {
+      const parsed = Date.parse(value);
+      return Number.isFinite(parsed) && !Number.isNaN(parsed);
+    },
+    { message: 'Work item timestamps must be valid ISO date-time strings.' },
+  );
+const instant = isoInstantSchema;
 const localDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+
+export function parseIsoInstant(value: unknown): number {
+  const result = isoInstantSchema.safeParse(value);
+  if (!result.success) {
+    throw new ApiError(422, 'invalid_timestamp', 'Work item timestamps must be valid ISO date-time strings.');
+  }
+  const time = Date.parse(result.data);
+  if (!Number.isFinite(time) || Number.isNaN(time)) {
+    throw new ApiError(422, 'invalid_timestamp', 'Work item timestamps must be valid ISO date-time strings.');
+  }
+  return time;
+}
 
 export const createAssignmentSchema = z
   .object({
@@ -48,7 +71,7 @@ const workItemBase = {
   title,
   notes,
   dueAt: instant,
-  reminderAt: instant.optional(),
+  reminderAt: instant.nullable().optional(),
 };
 
 export const createWorkItemSchema = z.discriminatedUnion('kind', [

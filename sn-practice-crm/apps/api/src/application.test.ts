@@ -285,4 +285,344 @@ describe("CrmApplication authority and workflow rules", () => {
       }
     },
   );
+
+  it("rejects reopening a completed Assignment as a terminal audit artifact (409)", async () => {
+    const { application } = createFixture();
+    const founder = await application.requireActor(DEMO_ACTOR_IDS.founder);
+    const senior = await application.requireActor(DEMO_ACTOR_IDS.senior);
+
+    // asg_gst_october starts as in_progress (owner is senior, reviewers include founder)
+    // submit -> complete
+    await application.transitionAssignment(senior, "asg_gst_october", "submit");
+    const completed = await application.transitionAssignment(founder, "asg_gst_october", "complete");
+    expect(completed.status).toBe("completed");
+
+    await expect(
+      application.transitionAssignment(founder, "asg_gst_october", "reopen"),
+    ).rejects.toMatchObject({
+      status: 409,
+      code: "invalid_state_transition",
+      message: "An approved Assignment is a terminal immutable audit artifact and cannot be reopened.",
+    });
+  });
+
+  it("allows reopening a submitted Assignment prior to approval (Request changes)", async () => {
+    const { application } = createFixture();
+    const founder = await application.requireActor(DEMO_ACTOR_IDS.founder);
+    const senior = await application.requireActor(DEMO_ACTOR_IDS.senior);
+
+    // asg_gst_october starts as in_progress
+    await application.transitionAssignment(senior, "asg_gst_october", "submit");
+
+    const reopened = await application.transitionAssignment(founder, "asg_gst_october", "reopen");
+    expect(reopened.status).toBe("in_progress");
+  });
+
+  it("rejects reopening a completed Work Item as a terminal audit artifact (409)", async () => {
+    const { application } = createFixture();
+    const senior = await application.requireActor(DEMO_ACTOR_IDS.senior);
+    const trainee = await application.requireActor(DEMO_ACTOR_IDS.trainee);
+
+    const item = await application.createWorkItem(senior, {
+      kind: "delegated",
+      title: "Verify e-way bills",
+      assignmentId: "asg_gst_october",
+      assigneeId: DEMO_ACTOR_IDS.trainee,
+      dueAt: "2026-11-02T12:30:00.000Z",
+    });
+
+    await application.transitionWorkItem(trainee, item.id, "submit");
+    const completed = await application.transitionWorkItem(senior, item.id, "complete");
+    expect(completed.status).toBe("done");
+
+    await expect(
+      application.transitionWorkItem(senior, item.id, "reopen"),
+    ).rejects.toMatchObject({
+      status: 409,
+      code: "invalid_state_transition",
+      message: "A completed Work Item is a terminal immutable audit artifact and cannot be reopened.",
+    });
+  });
+
+  it("allows reopening a submitted Work Item prior to approval (Request changes)", async () => {
+    const { application } = createFixture();
+    const senior = await application.requireActor(DEMO_ACTOR_IDS.senior);
+    const trainee = await application.requireActor(DEMO_ACTOR_IDS.trainee);
+
+    const item = await application.createWorkItem(senior, {
+      kind: "delegated",
+      title: "Verify invoice sequences",
+      assignmentId: "asg_gst_october",
+      assigneeId: DEMO_ACTOR_IDS.trainee,
+      dueAt: "2026-11-02T12:30:00.000Z",
+    });
+
+    await application.transitionWorkItem(trainee, item.id, "submit");
+    const changesRequested = await application.transitionWorkItem(senior, item.id, "reopen");
+    expect(changesRequested.status).toBe("in_progress");
+  });
+
+  describe("reminder domain validation", () => {
+    it("rejects delegated task creation when reminderAt is after dueAt (422 reminder_after_due_time)", async () => {
+      const { application } = createFixture();
+      const senior = await application.requireActor(DEMO_ACTOR_IDS.senior);
+
+      await expect(
+        application.createWorkItem(senior, {
+          kind: "delegated",
+          title: "Verify bank statement entries",
+          assignmentId: "asg_gst_october",
+          assigneeId: DEMO_ACTOR_IDS.trainee,
+          dueAt: "2026-11-02T12:00:00.000Z",
+          reminderAt: "2026-11-02T12:00:01.000Z",
+        }),
+      ).rejects.toMatchObject({
+        status: 422,
+        code: "reminder_after_due_time",
+      });
+    });
+
+    it("rejects internal task creation when reminderAt is after dueAt (422 reminder_after_due_time)", async () => {
+      const { application } = createFixture();
+      const manager = await application.requireActor(DEMO_ACTOR_IDS.manager);
+
+      await expect(
+        application.createWorkItem(manager, {
+          kind: "internal",
+          title: "Quarterly file indexing",
+          assigneeId: DEMO_ACTOR_IDS.staff,
+          dueAt: "2026-11-02T10:00:00.000Z",
+          reminderAt: "2026-11-02T11:00:00.000Z",
+        }),
+      ).rejects.toMatchObject({
+        status: 422,
+        code: "reminder_after_due_time",
+      });
+    });
+
+    it("rejects personal task creation when reminderAt is after dueAt across timezones (422 reminder_after_due_time)", async () => {
+      const { application } = createFixture();
+      const trainee = await application.requireActor(DEMO_ACTOR_IDS.trainee);
+
+      // 08:00 +05:30 is 02:30 UTC. dueAt is 02:00 UTC. Reminder is after due!
+      // Simple string comparison might fail if not parsed strictly.
+      await expect(
+        application.createWorkItem(trainee, {
+          kind: "personal",
+          title: "Follow up with courier",
+          dueAt: "2026-11-01T02:00:00.000Z",
+          reminderAt: "2026-11-01T08:00:00+05:30",
+        }),
+      ).rejects.toMatchObject({
+        status: 422,
+        code: "reminder_after_due_time",
+      });
+    });
+
+    it("rejects owner reopening a done personal work item as a terminal audit artifact (409)", async () => {
+      const { application } = createFixture();
+      const trainee = await application.requireActor(DEMO_ACTOR_IDS.trainee);
+
+      const item = await application.createWorkItem(trainee, {
+        kind: "personal",
+        title: "File quarterly travel expense report",
+        dueAt: "2026-11-02T12:30:00.000Z",
+      });
+
+      const completed = await application.transitionWorkItem(trainee, item.id, "complete");
+      expect(completed.status).toBe("done");
+
+      await expect(
+        application.transitionWorkItem(trainee, item.id, "reopen"),
+      ).rejects.toMatchObject({
+        status: 409,
+        code: "invalid_state_transition",
+        message: "A completed Work Item is a terminal immutable audit artifact and cannot be reopened.",
+      });
+    });
+
+    it("accepts task creation when reminderAt is equal to dueAt or earlier", async () => {
+      const { application } = createFixture();
+      const trainee = await application.requireActor(DEMO_ACTOR_IDS.trainee);
+
+      const created = await application.createWorkItem(trainee, {
+        kind: "personal",
+        title: "Submit travel receipts",
+        dueAt: "2026-11-01T12:00:00.000Z",
+        reminderAt: "2026-11-01T12:00:00.000Z",
+      });
+      expect(created.reminderAt).toBe("2026-11-01T12:00:00.000Z");
+    });
+
+    it("unconditionally rejects task creation when dueAt is invalid, malformed, or impossible calendar even if reminderAt is omitted (422 invalid_timestamp)", async () => {
+      const { application } = createFixture();
+      const trainee = await application.requireActor(DEMO_ACTOR_IDS.trainee);
+
+      const invalidDueCases = [
+        "not-a-date",
+        "",
+        "2026-02-31T00:00:00Z",
+        "2026-04-31T12:00:00Z",
+        "2026/11/02",
+        "Nov 2, 2026",
+        "NaN",
+      ];
+
+      for (const dueAt of invalidDueCases) {
+        await expect(
+          application.createWorkItem(trainee, {
+            kind: "personal",
+            title: `Task with invalid dueAt ${dueAt}`,
+            dueAt,
+          }),
+        ).rejects.toMatchObject({
+          status: 422,
+          code: "invalid_timestamp",
+          message: "Work item timestamps must be valid ISO date-time strings.",
+        });
+      }
+    });
+
+    it("rejects task creation when reminderAt is explicitly empty string, impossible calendar, non-ISO, or NaN (422 invalid_timestamp)", async () => {
+      const { application } = createFixture();
+      const trainee = await application.requireActor(DEMO_ACTOR_IDS.trainee);
+
+      const invalidReminderCases = [
+        "",
+        "2026-02-31T00:00:00Z",
+        "2026-04-31T12:00:00Z",
+        "2026/11/02",
+        "Nov 2, 2026",
+        "NaN",
+      ];
+
+      for (const reminderAt of invalidReminderCases) {
+        await expect(
+          application.createWorkItem(trainee, {
+            kind: "personal",
+            title: `Task with invalid reminderAt ${reminderAt}`,
+            dueAt: "2026-11-02T12:00:00.000Z",
+            reminderAt,
+          }),
+        ).rejects.toMatchObject({
+          status: 422,
+          code: "invalid_timestamp",
+          message: "Work item timestamps must be valid ISO date-time strings.",
+        });
+      }
+    });
+
+    it("accepts task creation when reminderAt is omitted or explicit null and persists as null", async () => {
+      const { application } = createFixture();
+      const trainee = await application.requireActor(DEMO_ACTOR_IDS.trainee);
+
+      const omittedReminder = await application.createWorkItem(trainee, {
+        kind: "personal",
+        title: "Task with omitted reminder",
+        dueAt: "2026-11-02T12:00:00.000Z",
+      });
+      expect(omittedReminder.reminderAt).toBeNull();
+
+      const nullReminder = await application.createWorkItem(trainee, {
+        kind: "personal",
+        title: "Task with null reminder",
+        dueAt: "2026-11-02T12:00:00.000Z",
+        reminderAt: null,
+      });
+      expect(nullReminder.reminderAt).toBeNull();
+    });
+
+    it("rejects invalid timezone offsets accepted by naive ISO regex (+25:00, +05:99, +99:99)", async () => {
+      const { application } = createFixture();
+      const trainee = await application.requireActor(DEMO_ACTOR_IDS.trainee);
+      const invalidOffsets = [
+        "2026-11-02T12:30:00+25:00",
+        "2026-11-02T12:30:00+05:99",
+        "2026-11-02T12:30:00+99:99",
+      ];
+
+      for (const invalidOffset of invalidOffsets) {
+        // As reminderAt
+        await expect(
+          application.createWorkItem(trainee, {
+            kind: "personal",
+            title: `Task with invalid reminderAt offset ${invalidOffset}`,
+            dueAt: "2026-11-02T12:00:00.000Z",
+            reminderAt: invalidOffset,
+          }),
+        ).rejects.toMatchObject({
+          status: 422,
+          code: "invalid_timestamp",
+          message: "Work item timestamps must be valid ISO date-time strings.",
+        });
+
+        // As dueAt
+        await expect(
+          application.createWorkItem(trainee, {
+            kind: "personal",
+            title: `Task with invalid dueAt offset ${invalidOffset}`,
+            dueAt: invalidOffset,
+          }),
+        ).rejects.toMatchObject({
+          status: 422,
+          code: "invalid_timestamp",
+          message: "Work item timestamps must be valid ISO date-time strings.",
+        });
+      }
+    });
+
+    it("evaluates delegated due-boundary by instant epoch across offsets, not lexical strings", async () => {
+      const { application } = createFixture();
+      const senior = await application.requireActor(DEMO_ACTOR_IDS.senior);
+      // asg_gst_october dueAt is 2026-11-11T12:30:00.000Z (12:30 UTC)
+
+      // 1. Equivalent instant with lexically larger representation (18:00+05:30 == 12:30 UTC, 'T18' > 'T12')
+      const equalItem = await application.createWorkItem(senior, {
+        kind: "delegated",
+        title: "Delegated task with equal instant in +05:30",
+        assignmentId: "asg_gst_october",
+        assigneeId: DEMO_ACTOR_IDS.trainee,
+        dueAt: "2026-11-11T18:00:00+05:30",
+      });
+      expect(equalItem.dueAt).toBe("2026-11-11T18:00:00+05:30");
+
+      // 2. Before instant with lexically larger representation (17:30+05:30 == 12:00 UTC, 'T17' > 'T12')
+      const beforeItem = await application.createWorkItem(senior, {
+        kind: "delegated",
+        title: "Delegated task with earlier instant in +05:30",
+        assignmentId: "asg_gst_october",
+        assigneeId: DEMO_ACTOR_IDS.trainee,
+        dueAt: "2026-11-11T17:30:00+05:30",
+      });
+      expect(beforeItem.dueAt).toBe("2026-11-11T17:30:00+05:30");
+
+      // 3. Truly later instant with lexically smaller representation (08:00-06:00 == 14:00 UTC, 'T08' < 'T12')
+      await expect(
+        application.createWorkItem(senior, {
+          kind: "delegated",
+          title: "Delegated task with later instant in -06:00",
+          assignmentId: "asg_gst_october",
+          assigneeId: DEMO_ACTOR_IDS.trainee,
+          dueAt: "2026-11-11T08:00:00-06:00",
+        }),
+      ).rejects.toMatchObject({
+        status: 422,
+        code: "task_due_after_assignment",
+        message: "Delegated work must be due no later than its parent Assignment.",
+      });
+    });
+
+    it("accepts valid ISO-8601 instants with Z and explicit offsets", async () => {
+      const { application } = createFixture();
+      const trainee = await application.requireActor(DEMO_ACTOR_IDS.trainee);
+
+      const item = await application.createWorkItem(trainee, {
+        kind: "personal",
+        title: "Cross timezone matching task",
+        dueAt: "2026-11-02T18:00:00+05:30",
+        reminderAt: "2026-11-02T12:30:00.000Z",
+      });
+      expect(item.reminderAt).toBe("2026-11-02T12:30:00.000Z");
+    });
+  });
 });

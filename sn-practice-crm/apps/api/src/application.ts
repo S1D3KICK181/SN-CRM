@@ -16,6 +16,7 @@ import type {
 } from '@sn/contracts';
 import { ApiError, forbidden, notFound } from './errors';
 import type { CrmRepository, EmployeeRecord } from './repository';
+import { parseIsoInstant } from './schemas';
 
 export interface ApplicationOptions {
   now?: () => Date;
@@ -49,6 +50,12 @@ function unique(values: readonly string[]): string[] {
 function invalidTransition(message: string): never {
   throw new ApiError(409, 'invalid_state_transition', message);
 }
+
+export type CreateWorkItemServiceInput = CreateWorkItemInput extends infer T
+  ? T extends { kind: string }
+    ? Omit<T, 'reminderAt'> & { reminderAt?: string | null }
+    : never
+  : never;
 
 export class CrmApplication {
   private readonly now: () => Date;
@@ -172,8 +179,11 @@ export class CrmApplication {
         break;
       case 'reopen':
         requireAuthority({ action: 'assignment.reassign', actor: asActor(actor) });
-        if (assignment.status !== 'completed' && assignment.status !== 'ready_for_review') {
-          invalidTransition('Only a completed or submitted Assignment can be reopened.');
+        if (assignment.status === 'completed') {
+          invalidTransition('An approved Assignment is a terminal immutable audit artifact and cannot be reopened.');
+        }
+        if (assignment.status !== 'ready_for_review') {
+          invalidTransition('Only a submitted Assignment can be reopened (request changes).');
         }
         assignment.status = 'in_progress';
         break;
@@ -256,7 +266,11 @@ export class CrmApplication {
       .sort((left, right) => left.dueAt.localeCompare(right.dueAt));
   }
 
-  async createWorkItem(actor: SessionActor, input: CreateWorkItemInput): Promise<WorkItemDto> {
+  async createWorkItem(
+    actor: SessionActor,
+    input: CreateWorkItemServiceInput,
+  ): Promise<WorkItemDto> {
+    const dueTime = parseIsoInstant(input.dueAt);
     let assignmentId: string | null = null;
     let relatedClientId: string | null = null;
     let relatedPartyName: string | null = null;
@@ -274,7 +288,8 @@ export class CrmApplication {
         assignmentOwnerId: assignment.ownerId,
         reviewerIds: assignment.reviewerIds,
       });
-      if (input.dueAt > assignment.dueAt) {
+      const assignmentDueTime = parseIsoInstant(assignment.dueAt);
+      if (dueTime > assignmentDueTime) {
         throw new ApiError(422, 'task_due_after_assignment', 'Delegated work must be due no later than its parent Assignment.');
       }
       assignmentId = assignment.id;
@@ -292,8 +307,13 @@ export class CrmApplication {
       relatedPartyName = input.relatedPartyName ?? null;
     }
 
-    if (input.reminderAt && input.reminderAt > input.dueAt) {
-      throw new ApiError(422, 'reminder_after_due_time', 'A reminder must occur on or before the task due time.');
+    let reminderAt: string | null = null;
+    if (input.reminderAt !== undefined && input.reminderAt !== null) {
+      const reminderTime = parseIsoInstant(input.reminderAt);
+      if (reminderTime > dueTime) {
+        throw new ApiError(422, 'reminder_after_due_time', 'A reminder must occur on or before the task due time.');
+      }
+      reminderAt = input.reminderAt;
     }
 
     const timestamp = this.now().toISOString();
@@ -309,7 +329,7 @@ export class CrmApplication {
       createdById: actor.id,
       status: 'todo',
       dueAt: input.dueAt,
-      reminderAt: input.reminderAt ?? null,
+      reminderAt,
       createdAt: timestamp,
       updatedAt: timestamp,
     };
@@ -368,8 +388,11 @@ export class CrmApplication {
         if (item.kind === 'personal' ? !actorIsAssignee : !actorCanReview) {
           throw forbidden('not_work_item_reviewer', 'You do not have authority to reopen this Work Item.');
         }
-        if (item.status !== 'ready_for_review' && item.status !== 'done') {
-          invalidTransition('Only a submitted or completed Work Item can be reopened.');
+        if (item.status === 'done') {
+          invalidTransition('A completed Work Item is a terminal immutable audit artifact and cannot be reopened.');
+        }
+        if (item.status !== 'ready_for_review') {
+          invalidTransition('Only a submitted Work Item can be reopened (request changes).');
         }
         item.status = 'in_progress';
         break;

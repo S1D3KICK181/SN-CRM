@@ -32,10 +32,31 @@ interface Logger {
   error(message: string, metadata?: unknown): void;
 }
 
+export interface AuthConfig {
+  readonly allowDevActorHeader: boolean;
+}
+
+export function isProductionEnvironment(nodeEnv: string | undefined): boolean {
+  return typeof nodeEnv === 'string' && nodeEnv.trim().toLowerCase() === 'production';
+}
+
+export function resolveAuthConfig(env: NodeJS.ProcessEnv = process.env): AuthConfig {
+  const isProduction = isProductionEnvironment(env['NODE_ENV']);
+  const allowDev = env['ALLOW_DEV_ACTOR_HEADER']?.trim().toLowerCase() === 'true';
+
+  if (isProduction && allowDev) {
+    throw new Error(
+      'FATAL CONFIGURATION ERROR: ALLOW_DEV_ACTOR_HEADER cannot be enabled when NODE_ENV is production.',
+    );
+  }
+  return { allowDevActorHeader: allowDev };
+}
+
 export interface ApiServerOptions {
   allowedOrigins?: readonly string[];
   logger?: Logger;
   createRequestId?: () => string;
+  allowDevActorHeader?: boolean;
 }
 
 interface RequestContext {
@@ -150,6 +171,7 @@ export function createApiServer(application: CrmApplication, options: ApiServerO
   const allowedOrigins = new Set(options.allowedOrigins ?? DEFAULT_LOCAL_ORIGINS);
   const logger = options.logger ?? console;
   const createRequestId = options.createRequestId ?? randomUUID;
+  const allowDevActorHeader = options.allowDevActorHeader ?? false;
 
   return createServer(async (request, response) => {
     const context: RequestContext = {
@@ -180,6 +202,10 @@ export function createApiServer(application: CrmApplication, options: ApiServerO
           timestamp: new Date().toISOString(),
         });
         return;
+      }
+
+      if (!allowDevActorHeader) {
+        throw new ApiError(401, 'dev_auth_disabled', 'Development header authentication is disabled.');
       }
 
       if (request.method === 'GET' && pathname === '/api/v1/demo/actors') {

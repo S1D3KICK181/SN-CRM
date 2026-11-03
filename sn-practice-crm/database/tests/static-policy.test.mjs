@@ -1,11 +1,19 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import test from 'node:test';
 
 const migration = readFileSync(
   new URL('../migrations/0001_practice_core.sql', import.meta.url),
   'utf8',
 ).replaceAll('\r\n', '\n');
+
+const migration0002Path = new URL('../migrations/0002_work_item_reminder.sql', import.meta.url);
+function readMigration0002() {
+  if (!existsSync(migration0002Path)) {
+    throw new Error(`Migration 0002 not found at ${migration0002Path.pathname}`);
+  }
+  return readFileSync(migration0002Path, 'utf8').replaceAll('\r\n', '\n');
+}
 
 const expectedRoles = ['founder', 'manager', 'senior_staff', 'staff', 'trainee'];
 const rlsTables = [
@@ -207,5 +215,67 @@ test('privileged jobs and derived-value functions are not client executable', ()
   expectSql(
     /grant execute on function public\.materialize_due_recurring_assignments\(date\) to service_role;/i,
     'Only the trusted recurring job should receive materialization EXECUTE',
+  );
+});
+
+test('migration 0002 defines reminder_at column, named check constraint, and partial index', () => {
+  const sql0002 = readMigration0002();
+
+  assert.match(
+    sql0002,
+    /alter\s+table\s+public\.work_items\s+add\s+column\s+if\s+not\s+exists\s+reminder_at\s+timestamptz;/i,
+    '0002 must add reminder_at timestamptz to public.work_items',
+  );
+
+  assert.match(
+    sql0002,
+    /add\s+constraint\s+work_items_reminder_before_or_at_due\s+check\s*\(\s*reminder_at\s+is\s+null\s+or\s+due_at\s+is\s+null\s+or\s+reminder_at\s*<=\s*due_at\s*\)/i,
+    '0002 must add named check constraint work_items_reminder_before_or_at_due with whitespace flexibility',
+  );
+
+  assert.match(
+    sql0002,
+    /create\s+index\s+if\s+not\s+exists\s+work_items_reminder_open_idx\s+on\s+public\.work_items\s*\(reminder_at\)\s+where\s+status\s+not\s+in\s*\('completed',\s*'cancelled'\)\s+and\s+archived_at\s+is\s+null\s+and\s+reminder_at\s+is\s+not\s+null;/i,
+    '0002 must create partial index work_items_reminder_open_idx on reminder_at for open active items',
+  );
+
+  assert.match(
+    sql0002,
+    /comment\s+on\s+column\s+public\.work_items\.reminder_at\s+is\s+'Scheduled notification timestamp for the work item\. Must be on or before due_at\.'/i,
+    '0002 must add column comment on reminder_at',
+  );
+});
+
+test('migration 0002 enforces terminal immutability on reminder_at via trigger', () => {
+  const sql0002 = readMigration0002();
+
+  assert.match(
+    sql0002,
+    /create\s+or\s+replace\s+function\s+public\.guard_work_item_reminder_immutability\(\)/i,
+    '0002 must define guard_work_item_reminder_immutability function',
+  );
+
+  assert.match(
+    sql0002,
+    /security\s+definer[\s\S]*set\s+search_path\s*=\s*public,\s*pg_temp/i,
+    'guard_work_item_reminder_immutability must be security definer with pinned search_path',
+  );
+
+  assert.match(
+    sql0002,
+    /old\.status\s+in\s*\('completed',\s*'cancelled'\)[\s\S]*new\.reminder_at\s+is\s+distinct\s+from\s+old\.reminder_at/i,
+    'guard_work_item_reminder_immutability must check old status is completed or cancelled and reminder_at changed',
+  );
+
+  assert.match(
+    sql0002,
+    /raise\s+exception\s+'Completed and cancelled Work Items are immutable except for archiving\.'[\s\S]*using\s+errcode\s*=\s*'23514'/i,
+    'guard_work_item_reminder_immutability must match 0001 error semantics and errcode 23514',
+  );
+
+  assert.match(
+    sql0002,
+    /create\s+trigger\s+guard_work_item_reminder_immutability[\s\S]*before\s+update\s+of\s+reminder_at\s+on\s+public\.work_items[\s\S]*for\s+each\s+row\s+execute\s+function\s+public\.guard_work_item_reminder_immutability\(\)/i,
+    '0002 must create guard_work_item_reminder_immutability trigger before update of reminder_at',
   );
 });

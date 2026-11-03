@@ -18,7 +18,7 @@ describe('Vite Proxy & Live API Smoke', () => {
     // 1. Start the actual CRM API server bound to an ephemeral port (port 0)
     const repository = new InMemoryCrmRepository(createDemoSeed());
     const application = new CrmApplication(repository);
-    apiServer = createApiServer(application);
+    apiServer = createApiServer(application, { allowDevActorHeader: true });
 
     await new Promise<void>((resolve, reject) => {
       apiServer.listen(0, '127.0.0.1', () => resolve());
