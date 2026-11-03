@@ -15,7 +15,11 @@ import type {
   WorkItemTransition,
 } from '@sn/contracts';
 import { ApiError, forbidden, notFound } from './errors';
-import type { CrmRepository, EmployeeRecord } from './repository';
+import type {
+  CrmApplicationDependencies,
+  EmployeeRecord,
+  RepositoryContext,
+} from './repository';
 import { parseIsoInstant } from './schemas';
 
 export interface ApplicationOptions {
@@ -62,7 +66,7 @@ export class CrmApplication {
   private readonly createId: (prefix: string) => string;
 
   constructor(
-    private readonly repository: CrmRepository,
+    private readonly repository: CrmApplicationDependencies,
     options: ApplicationOptions = {},
   ) {
     this.now = options.now ?? (() => new Date());
@@ -70,7 +74,7 @@ export class CrmApplication {
   }
 
   async listDemoActors(): Promise<SessionActor[]> {
-    const employees = await this.repository.listEmployees();
+    const employees = await this.repository.listDevActors();
     return employees
       .filter((employee) => employee.active)
       .map(asSession)
@@ -82,7 +86,7 @@ export class CrmApplication {
       throw new ApiError(401, 'demo_session_required', 'Choose a demo user and send its id in the x-demo-user-id header.');
     }
 
-    const employee = await this.repository.getEmployee(id);
+    const employee = await this.repository.resolveDevActor(id);
     if (!employee?.active) {
       throw new ApiError(401, 'invalid_demo_session', 'The selected demo user does not exist or is inactive.');
     }
@@ -90,9 +94,10 @@ export class CrmApplication {
   }
 
   async listAssignments(actor: SessionActor): Promise<AssignmentDto[]> {
+    const ctx: RepositoryContext = { actorId: actor.id };
     const [assignments, workItems] = await Promise.all([
-      this.repository.listAssignments(),
-      this.repository.listWorkItems(),
+      this.repository.listAssignments(ctx),
+      this.repository.listWorkItems(ctx),
     ]);
 
     const involvedAssignmentIds = new Set(
@@ -113,12 +118,13 @@ export class CrmApplication {
   }
 
   async createAssignment(actor: SessionActor, input: CreateAssignmentInput): Promise<AssignmentDto> {
+    const ctx: RepositoryContext = { actorId: actor.id };
     requireAuthority({ action: 'assignment.create', actor: asActor(actor) });
-    const owner = await this.getActiveEmployee(input.ownerId);
+    const owner = await this.getActiveEmployee(ctx, input.ownerId);
     requireAuthority({ action: 'assignment.assign', actor: asActor(actor), target: owner });
-    const reviewerIds = await this.validateReviewerIds(input.reviewerIds ?? []);
+    const reviewerIds = await this.validateReviewerIds(ctx, input.reviewerIds ?? []);
     const timestamp = this.now().toISOString();
-    const existingCount = (await this.repository.listAssignments()).length;
+    const existingCount = (await this.repository.listAssignments(ctx)).length;
 
     const assignment: AssignmentDto = {
       id: this.createId('asg'),
@@ -137,8 +143,7 @@ export class CrmApplication {
       updatedAt: timestamp,
     };
 
-    await this.repository.saveAssignment(assignment);
-    return assignment;
+    return await this.repository.saveAssignment(ctx, assignment);
   }
 
   async transitionAssignment(
@@ -146,7 +151,8 @@ export class CrmApplication {
     assignmentId: string,
     transition: AssignmentTransition,
   ): Promise<AssignmentDto> {
-    const assignment = await this.getAssignment(assignmentId);
+    const ctx: RepositoryContext = { actorId: actor.id };
+    const assignment = await this.getAssignment(ctx, assignmentId);
 
     switch (transition) {
       case 'start':
@@ -190,12 +196,12 @@ export class CrmApplication {
     }
 
     assignment.updatedAt = this.now().toISOString();
-    await this.repository.saveAssignment(assignment);
-    return assignment;
+    return await this.repository.saveAssignment(ctx, assignment);
   }
 
   async listRecurringSchedules(actor: SessionActor): Promise<RecurringScheduleDto[]> {
-    const schedules = await this.repository.listRecurringSchedules();
+    const ctx: RepositoryContext = { actorId: actor.id };
+    const schedules = await this.repository.listRecurringSchedules(ctx);
     return schedules
       .filter(
         (schedule) =>
@@ -208,8 +214,9 @@ export class CrmApplication {
     actor: SessionActor,
     input: CreateRecurringScheduleInput,
   ): Promise<RecurringScheduleDto> {
+    const ctx: RepositoryContext = { actorId: actor.id };
     requireAuthority({ action: 'schedule.manage', actor: asActor(actor) });
-    const owner = await this.getActiveEmployee(input.ownerId);
+    const owner = await this.getActiveEmployee(ctx, input.ownerId);
     requireAuthority({ action: 'assignment.assign', actor: asActor(actor), target: owner });
     const timestamp = this.now().toISOString();
     const schedule: RecurringScheduleDto = {
@@ -220,7 +227,7 @@ export class CrmApplication {
       service: input.service,
       cadence: input.cadence,
       ownerId: owner.id,
-      reviewerIds: await this.validateReviewerIds(input.reviewerIds ?? []),
+      reviewerIds: await this.validateReviewerIds(ctx, input.reviewerIds ?? []),
       nextOccurrenceOn: input.nextOccurrenceOn,
       dueDay: input.dueDay,
       active: true,
@@ -229,8 +236,7 @@ export class CrmApplication {
       updatedAt: timestamp,
     };
 
-    await this.repository.saveRecurringSchedule(schedule);
-    return schedule;
+    return await this.repository.saveRecurringSchedule(ctx, schedule);
   }
 
   async updateRecurringSchedule(
@@ -238,21 +244,22 @@ export class CrmApplication {
     scheduleId: string,
     patch: { active?: boolean; nextOccurrenceOn?: string },
   ): Promise<RecurringScheduleDto> {
+    const ctx: RepositoryContext = { actorId: actor.id };
     requireAuthority({ action: 'schedule.manage', actor: asActor(actor) });
-    const schedule = await this.repository.getRecurringSchedule(scheduleId);
+    const schedule = await this.repository.getRecurringSchedule(ctx, scheduleId);
     if (!schedule) throw notFound('Recurring Schedule');
 
     if (patch.active !== undefined) schedule.active = patch.active;
     if (patch.nextOccurrenceOn !== undefined) schedule.nextOccurrenceOn = patch.nextOccurrenceOn;
     schedule.updatedAt = this.now().toISOString();
-    await this.repository.saveRecurringSchedule(schedule);
-    return schedule;
+    return await this.repository.saveRecurringSchedule(ctx, schedule);
   }
 
   async listWorkItems(actor: SessionActor): Promise<WorkItemDto[]> {
+    const ctx: RepositoryContext = { actorId: actor.id };
     const [items, assignments] = await Promise.all([
-      this.repository.listWorkItems(),
-      this.repository.listAssignments(),
+      this.repository.listWorkItems(ctx),
+      this.repository.listAssignments(ctx),
     ]);
     const assignmentsById = new Map(assignments.map((assignment) => [assignment.id, assignment]));
 
@@ -270,6 +277,7 @@ export class CrmApplication {
     actor: SessionActor,
     input: CreateWorkItemServiceInput,
   ): Promise<WorkItemDto> {
+    const ctx: RepositoryContext = { actorId: actor.id };
     const dueTime = parseIsoInstant(input.dueAt);
     let assignmentId: string | null = null;
     let relatedClientId: string | null = null;
@@ -278,8 +286,8 @@ export class CrmApplication {
 
     if (input.kind === 'delegated') {
       const [assignment, assignee] = await Promise.all([
-        this.getAssignment(input.assignmentId),
-        this.getActiveEmployee(input.assigneeId),
+        this.getAssignment(ctx, input.assignmentId),
+        this.getActiveEmployee(ctx, input.assigneeId),
       ]);
       requireAuthority({
         action: 'task.delegate',
@@ -297,7 +305,7 @@ export class CrmApplication {
       relatedPartyName = assignment.clientName;
       assigneeId = assignee.id;
     } else if (input.kind === 'internal') {
-      const assignee = await this.getActiveEmployee(input.assigneeId);
+      const assignee = await this.getActiveEmployee(ctx, input.assigneeId);
       requireAuthority({ action: 'task.create_internal', actor: asActor(actor), target: assignee });
       assigneeId = assignee.id;
     } else {
@@ -334,8 +342,7 @@ export class CrmApplication {
       updatedAt: timestamp,
     };
 
-    await this.repository.saveWorkItem(item);
-    return item;
+    return await this.repository.saveWorkItem(ctx, item);
   }
 
   async transitionWorkItem(
@@ -343,7 +350,8 @@ export class CrmApplication {
     workItemId: string,
     transition: WorkItemTransition,
   ): Promise<WorkItemDto> {
-    const item = await this.repository.getWorkItem(workItemId);
+    const ctx: RepositoryContext = { actorId: actor.id };
+    const item = await this.repository.getWorkItem(ctx, workItemId);
     if (!item) throw notFound('Work Item');
     const actorIsAssignee = item.assigneeId === actor.id;
     const actorCanReview = isLeadership(actor.role) || item.createdById === actor.id;
@@ -399,12 +407,12 @@ export class CrmApplication {
     }
 
     item.updatedAt = this.now().toISOString();
-    await this.repository.saveWorkItem(item);
-    return item;
+    return await this.repository.saveWorkItem(ctx, item);
   }
 
-  async listReportingLines(_actor: SessionActor): Promise<ReportingLineDto[]> {
-    const employees = (await this.repository.listEmployees()).filter((employee) => employee.active);
+  async listReportingLines(actor: SessionActor): Promise<ReportingLineDto[]> {
+    const ctx: RepositoryContext = { actorId: actor.id };
+    const employees = (await this.repository.listEmployees(ctx)).filter((employee) => employee.active);
     const byId = new Map(employees.map((employee) => [employee.id, employee]));
     return employees
       .map((employee) => ({
@@ -419,8 +427,9 @@ export class CrmApplication {
     employeeId: string,
     managerId: string | null,
   ): Promise<ReportingLineDto> {
-    const subject = await this.getActiveEmployee(employeeId);
-    const manager = managerId ? await this.getActiveEmployee(managerId) : null;
+    const ctx: RepositoryContext = { actorId: actor.id };
+    const subject = await this.getActiveEmployee(ctx, employeeId);
+    const manager = managerId ? await this.getActiveEmployee(ctx, managerId) : null;
     requireAuthority({
       action: 'team.manage_reporting',
       actor: asActor(actor),
@@ -429,13 +438,14 @@ export class CrmApplication {
     });
 
     subject.reportsToId = manager?.id ?? null;
-    await this.repository.saveEmployee(subject);
-    return { employee: asSession(subject), manager: manager ? asSession(manager) : null };
+    const savedSubject = await this.repository.saveEmployee(ctx, subject);
+    return { employee: asSession(savedSubject), manager: manager ? asSession(manager) : null };
   }
 
   async getOfficeAccountsSummary(actor: SessionActor): Promise<OfficeAccountsSummaryDto> {
     this.requireFinanceAuthority(actor);
-    const entries = await this.repository.listLedgerEntries();
+    const ctx: RepositoryContext = { actorId: actor.id };
+    const entries = await this.repository.listLedgerEntries(ctx);
     const balanceFor = (account: 'cash' | 'bank') =>
       entries
         .filter((entry) => entry.account === account)
@@ -459,7 +469,8 @@ export class CrmApplication {
 
   async listLedgerEntries(actor: SessionActor): Promise<LedgerEntryDto[]> {
     this.requireFinanceAuthority(actor);
-    const entries = await this.repository.listLedgerEntries();
+    const ctx: RepositoryContext = { actorId: actor.id };
+    const entries = await this.repository.listLedgerEntries(ctx);
     return entries.sort(
       (left, right) => right.occurredOn.localeCompare(left.occurredOn) || right.createdAt.localeCompare(left.createdAt),
     );
@@ -467,6 +478,7 @@ export class CrmApplication {
 
   async createLedgerEntry(actor: SessionActor, input: CreateLedgerEntryInput): Promise<LedgerEntryDto> {
     this.requireFinanceAuthority(actor);
+    const ctx: RepositoryContext = { actorId: actor.id };
     const entry: LedgerEntryDto = {
       id: this.createId('led'),
       occurredOn: input.occurredOn,
@@ -478,29 +490,28 @@ export class CrmApplication {
       recordedById: actor.id,
       createdAt: this.now().toISOString(),
     };
-    await this.repository.saveLedgerEntry(entry);
-    return entry;
+    return await this.repository.saveLedgerEntry(ctx, entry);
   }
 
   private requireFinanceAuthority(actor: SessionActor): void {
     requireAuthority({ action: 'finance.manage', actor: asActor(actor) });
   }
 
-  private async getActiveEmployee(id: string): Promise<EmployeeRecord> {
-    const employee = await this.repository.getEmployee(id);
+  private async getActiveEmployee(ctx: RepositoryContext, id: string): Promise<EmployeeRecord> {
+    const employee = await this.repository.getEmployee(ctx, id);
     if (!employee?.active) throw notFound('Employee');
     return employee;
   }
 
-  private async getAssignment(id: string): Promise<AssignmentDto> {
-    const assignment = await this.repository.getAssignment(id);
+  private async getAssignment(ctx: RepositoryContext, id: string): Promise<AssignmentDto> {
+    const assignment = await this.repository.getAssignment(ctx, id);
     if (!assignment) throw notFound('Assignment');
     return assignment;
   }
 
-  private async validateReviewerIds(ids: readonly string[]): Promise<string[]> {
+  private async validateReviewerIds(ctx: RepositoryContext, ids: readonly string[]): Promise<string[]> {
     const reviewerIds = unique(ids);
-    const reviewers = await Promise.all(reviewerIds.map((id) => this.getActiveEmployee(id)));
+    const reviewers = await Promise.all(reviewerIds.map((id) => this.getActiveEmployee(ctx, id)));
     if (reviewers.some((reviewer) => !isLeadership(reviewer.role))) {
       throw new ApiError(422, 'invalid_assignment_reviewer', 'Assignment reviewers must be the Founder or Manager.');
     }

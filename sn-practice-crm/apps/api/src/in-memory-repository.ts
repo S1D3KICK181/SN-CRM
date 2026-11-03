@@ -4,7 +4,12 @@ import type {
   RecurringScheduleDto,
   WorkItemDto,
 } from '@sn/contracts';
-import type { CrmRepository, EmployeeRecord } from './repository';
+import type {
+  CrmRepository,
+  DevActorDirectory,
+  EmployeeRecord,
+  RepositoryContext,
+} from './repository';
 
 export interface DemoSeed {
   employees: EmployeeRecord[];
@@ -18,7 +23,7 @@ function copy<T>(value: T): T {
   return structuredClone(value);
 }
 
-export class InMemoryCrmRepository implements CrmRepository {
+export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
   private readonly employees = new Map<string, EmployeeRecord>();
   private readonly assignments = new Map<string, AssignmentDto>();
   private readonly schedules = new Map<string, RecurringScheduleDto>();
@@ -33,63 +38,91 @@ export class InMemoryCrmRepository implements CrmRepository {
     seed.ledgerEntries.forEach((value) => this.ledgerEntries.set(value.id, copy(value)));
   }
 
-  async getEmployee(id: string): Promise<EmployeeRecord | null> {
+  // --- DevActorDirectory (Bootstrap) ---
+
+  async resolveDevActor(id: string): Promise<EmployeeRecord | null> {
     const value = this.employees.get(id);
     return value ? copy(value) : null;
   }
 
-  async listEmployees(): Promise<EmployeeRecord[]> {
+  async listDevActors(): Promise<EmployeeRecord[]> {
     return copy([...this.employees.values()]);
   }
 
-  async saveEmployee(employee: EmployeeRecord): Promise<void> {
+  // --- Dev / Test Bootstrap Helper (Concrete InMemory only, uncontexted) ---
+
+  async upsertDevActor(employee: EmployeeRecord): Promise<EmployeeRecord> {
     this.employees.set(employee.id, copy(employee));
+    return copy(this.employees.get(employee.id)!);
   }
 
-  async getAssignment(id: string): Promise<AssignmentDto | null> {
+  // --- CrmRepository (Actor-Scoped Domain Methods) ---
+
+  async getEmployee(_ctx: RepositoryContext, id: string): Promise<EmployeeRecord | null> {
+    const value = this.employees.get(id);
+    return value ? copy(value) : null;
+  }
+
+  async listEmployees(_ctx: RepositoryContext): Promise<EmployeeRecord[]> {
+    return copy([...this.employees.values()]);
+  }
+
+  async saveEmployee(_ctx: RepositoryContext, employee: EmployeeRecord): Promise<EmployeeRecord> {
+    this.employees.set(employee.id, copy(employee));
+    return copy(this.employees.get(employee.id)!);
+  }
+
+  async getAssignment(_ctx: RepositoryContext, id: string): Promise<AssignmentDto | null> {
     const value = this.assignments.get(id);
     return value ? copy(value) : null;
   }
 
-  async listAssignments(): Promise<AssignmentDto[]> {
+  async listAssignments(_ctx: RepositoryContext): Promise<AssignmentDto[]> {
     return copy([...this.assignments.values()]);
   }
 
-  async saveAssignment(assignment: AssignmentDto): Promise<void> {
+  async saveAssignment(_ctx: RepositoryContext, assignment: AssignmentDto): Promise<AssignmentDto> {
     this.assignments.set(assignment.id, copy(assignment));
+    return copy(this.assignments.get(assignment.id)!);
   }
 
-  async getRecurringSchedule(id: string): Promise<RecurringScheduleDto | null> {
+  async getRecurringSchedule(_ctx: RepositoryContext, id: string): Promise<RecurringScheduleDto | null> {
     const value = this.schedules.get(id);
     return value ? copy(value) : null;
   }
 
-  async listRecurringSchedules(): Promise<RecurringScheduleDto[]> {
+  async listRecurringSchedules(_ctx: RepositoryContext): Promise<RecurringScheduleDto[]> {
     return copy([...this.schedules.values()]);
   }
 
-  async saveRecurringSchedule(schedule: RecurringScheduleDto): Promise<void> {
+  async saveRecurringSchedule(
+    _ctx: RepositoryContext,
+    schedule: RecurringScheduleDto,
+  ): Promise<RecurringScheduleDto> {
     this.schedules.set(schedule.id, copy(schedule));
+    return copy(this.schedules.get(schedule.id)!);
   }
 
-  async getWorkItem(id: string): Promise<WorkItemDto | null> {
+  async getWorkItem(_ctx: RepositoryContext, id: string): Promise<WorkItemDto | null> {
     const value = this.workItems.get(id);
     return value ? copy(value) : null;
   }
 
-  async listWorkItems(): Promise<WorkItemDto[]> {
+  async listWorkItems(_ctx: RepositoryContext): Promise<WorkItemDto[]> {
     return copy([...this.workItems.values()]);
   }
 
-  async saveWorkItem(workItem: WorkItemDto): Promise<void> {
+  async saveWorkItem(_ctx: RepositoryContext, workItem: WorkItemDto): Promise<WorkItemDto> {
     this.workItems.set(workItem.id, copy(workItem));
+    return copy(this.workItems.get(workItem.id)!);
   }
 
-  async listLedgerEntries(): Promise<LedgerEntryDto[]> {
+  async listLedgerEntries(_ctx: RepositoryContext): Promise<LedgerEntryDto[]> {
     return copy([...this.ledgerEntries.values()]);
   }
 
-  async saveLedgerEntry(entry: LedgerEntryDto): Promise<void> {
+  async saveLedgerEntry(_ctx: RepositoryContext, entry: LedgerEntryDto): Promise<LedgerEntryDto> {
     this.ledgerEntries.set(entry.id, copy(entry));
+    return copy(this.ledgerEntries.get(entry.id)!);
   }
 }

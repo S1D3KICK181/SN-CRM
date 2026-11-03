@@ -19,7 +19,7 @@ describe('Vite Proxy & Real Work Items API Smoke (Authentic Authority)', () => {
   beforeAll(async () => {
     // 1. Start the actual CRM API server bound to an ephemeral port (port 0)
     repository = new InMemoryCrmRepository(createDemoSeed());
-    await repository.saveEmployee({
+    await repository.upsertDevActor({
       id: 'usr_senior_2',
       name: 'Vikram Patel',
       role: 'senior_staff',

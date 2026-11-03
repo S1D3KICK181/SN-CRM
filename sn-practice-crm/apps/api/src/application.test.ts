@@ -1,7 +1,18 @@
 import { describe, expect, it } from "vitest";
+import type {
+  AssignmentDto,
+  LedgerEntryDto,
+  RecurringScheduleDto,
+  WorkItemDto,
+} from "@sn/contracts";
 import { CrmApplication } from "./application";
 import { createDemoSeed, DEMO_ACTOR_IDS } from "./demo-seed";
 import { InMemoryCrmRepository } from "./in-memory-repository";
+import type {
+  CrmApplicationDependencies,
+  EmployeeRecord,
+  RepositoryContext,
+} from "./repository";
 
 const ROLE_CASES = [
   ["founder", DEMO_ACTOR_IDS.founder],
@@ -77,7 +88,7 @@ describe("CrmApplication authority and workflow rules", () => {
       dueAt: "2026-11-03T12:30:00.000Z",
     });
     expect(delegated).toMatchObject({ kind: "delegated", assigneeId: DEMO_ACTOR_IDS.trainee });
-    expect((await repository.getAssignment("asg_tds_q2"))?.ownerId).toBe(DEMO_ACTOR_IDS.staff);
+    expect((await repository.getAssignment({ actorId: staff.id }, "asg_tds_q2"))?.ownerId).toBe(DEMO_ACTOR_IDS.staff);
 
     await expect(
       application.createWorkItem(staff, {
@@ -623,6 +634,323 @@ describe("CrmApplication authority and workflow rules", () => {
         reminderAt: "2026-11-02T12:30:00.000Z",
       });
       expect(item.reminderAt).toBe("2026-11-02T12:30:00.000Z");
+    });
+  });
+
+  describe("Slice 1P-Port: fail-closed context, bootstrap isolation, and canonical returns", () => {
+    function createTrackingRepository() {
+      const callLog: { method: string; actorId?: string; targetId?: string }[] = [];
+      const underlying = new InMemoryCrmRepository(createDemoSeed());
+
+      const trackingRepo: CrmApplicationDependencies = {
+        // DevActorDirectory
+        async resolveDevActor(id: string): Promise<EmployeeRecord | null> {
+          callLog.push({ method: "resolveDevActor", targetId: id });
+          return underlying.resolveDevActor(id);
+        },
+        async listDevActors(): Promise<EmployeeRecord[]> {
+          callLog.push({ method: "listDevActors" });
+          return underlying.listDevActors();
+        },
+
+        // Domain repository methods
+        async getEmployee(ctx: RepositoryContext, id: string): Promise<EmployeeRecord | null> {
+          callLog.push({ method: "getEmployee", actorId: ctx.actorId, targetId: id });
+          return underlying.getEmployee(ctx, id);
+        },
+        async listEmployees(ctx: RepositoryContext): Promise<EmployeeRecord[]> {
+          callLog.push({ method: "listEmployees", actorId: ctx.actorId });
+          return underlying.listEmployees(ctx);
+        },
+        async saveEmployee(ctx: RepositoryContext, employee: EmployeeRecord): Promise<EmployeeRecord> {
+          callLog.push({ method: "saveEmployee", actorId: ctx.actorId, targetId: employee.id });
+          const saved = await underlying.saveEmployee(ctx, employee);
+          return { ...saved, name: "CANONICAL-EMPLOYEE-PERSISTED" };
+        },
+
+        async getAssignment(ctx: RepositoryContext, id: string): Promise<AssignmentDto | null> {
+          callLog.push({ method: "getAssignment", actorId: ctx.actorId, targetId: id });
+          return underlying.getAssignment(ctx, id);
+        },
+        async listAssignments(ctx: RepositoryContext): Promise<AssignmentDto[]> {
+          callLog.push({ method: "listAssignments", actorId: ctx.actorId });
+          return underlying.listAssignments(ctx);
+        },
+        async saveAssignment(ctx: RepositoryContext, assignment: AssignmentDto): Promise<AssignmentDto> {
+          callLog.push({ method: "saveAssignment", actorId: ctx.actorId, targetId: assignment.id });
+          const saved = await underlying.saveAssignment(ctx, assignment);
+          return { ...saved, code: "AS-CANONICAL-001001" };
+        },
+
+        async getRecurringSchedule(ctx: RepositoryContext, id: string): Promise<RecurringScheduleDto | null> {
+          callLog.push({ method: "getRecurringSchedule", actorId: ctx.actorId, targetId: id });
+          return underlying.getRecurringSchedule(ctx, id);
+        },
+        async listRecurringSchedules(ctx: RepositoryContext): Promise<RecurringScheduleDto[]> {
+          callLog.push({ method: "listRecurringSchedules", actorId: ctx.actorId });
+          return underlying.listRecurringSchedules(ctx);
+        },
+        async saveRecurringSchedule(ctx: RepositoryContext, schedule: RecurringScheduleDto): Promise<RecurringScheduleDto> {
+          callLog.push({ method: "saveRecurringSchedule", actorId: ctx.actorId, targetId: schedule.id });
+          const saved = await underlying.saveRecurringSchedule(ctx, schedule);
+          return { ...saved, id: "sch_canonical_substituted_id" };
+        },
+
+        async getWorkItem(ctx: RepositoryContext, id: string): Promise<WorkItemDto | null> {
+          callLog.push({ method: "getWorkItem", actorId: ctx.actorId, targetId: id });
+          return underlying.getWorkItem(ctx, id);
+        },
+        async listWorkItems(ctx: RepositoryContext): Promise<WorkItemDto[]> {
+          callLog.push({ method: "listWorkItems", actorId: ctx.actorId });
+          return underlying.listWorkItems(ctx);
+        },
+        async saveWorkItem(ctx: RepositoryContext, item: WorkItemDto): Promise<WorkItemDto> {
+          callLog.push({ method: "saveWorkItem", actorId: ctx.actorId, targetId: item.id });
+          const saved = await underlying.saveWorkItem(ctx, item);
+          return { ...saved, notes: "CANONICAL-WORK-ITEM-PERSISTED-NOTE" };
+        },
+
+        async listLedgerEntries(ctx: RepositoryContext): Promise<LedgerEntryDto[]> {
+          callLog.push({ method: "listLedgerEntries", actorId: ctx.actorId });
+          return underlying.listLedgerEntries(ctx);
+        },
+        async saveLedgerEntry(ctx: RepositoryContext, entry: LedgerEntryDto): Promise<LedgerEntryDto> {
+          callLog.push({ method: "saveLedgerEntry", actorId: ctx.actorId, targetId: entry.id });
+          const saved = await underlying.saveLedgerEntry(ctx, entry);
+          return { ...saved, reference: "REF-CANONICAL-DB-GENERATED" };
+        },
+      };
+
+      const application = new CrmApplication(trackingRepo, {
+        now: () => new Date("2026-10-30T12:00:00.000Z"),
+        createId: (prefix) => `${prefix}_test_fixed`,
+      });
+
+      return { trackingRepo, application, callLog };
+    }
+
+    it("bootstrap actor listing and resolution use dev directory without calling domain methods", async () => {
+      const { application, callLog } = createTrackingRepository();
+
+      const demoActors = await application.listDemoActors();
+      expect(demoActors.length).toBeGreaterThan(0);
+      expect(callLog).toContainEqual({ method: "listDevActors" });
+      expect(callLog.some((c) => c.method === "listEmployees")).toBe(false);
+
+      callLog.length = 0;
+      const founder = await application.requireActor(DEMO_ACTOR_IDS.founder);
+      expect(founder.id).toBe(DEMO_ACTOR_IDS.founder);
+      expect(callLog).toContainEqual({ method: "resolveDevActor", targetId: DEMO_ACTOR_IDS.founder });
+      expect(callLog.some((c) => c.method === "getEmployee")).toBe(false);
+    });
+
+    it("passes initiating actorId on domain reads and writes across all workflows", async () => {
+      const { application, callLog } = createTrackingRepository();
+      const founder = await application.requireActor(DEMO_ACTOR_IDS.founder);
+      const manager = await application.requireActor(DEMO_ACTOR_IDS.manager);
+      const senior = await application.requireActor(DEMO_ACTOR_IDS.senior);
+      const staff = await application.requireActor(DEMO_ACTOR_IDS.staff);
+      const trainee = await application.requireActor(DEMO_ACTOR_IDS.trainee);
+
+      // 1. listAssignments passes initiating actorId to both listAssignments and listWorkItems
+      callLog.length = 0;
+      await application.listAssignments(senior);
+      expect(callLog).toEqual([
+        { method: "listAssignments", actorId: senior.id },
+        { method: "listWorkItems", actorId: senior.id },
+      ]);
+
+      // 2. createAssignment passes manager.id to getEmployee (owner, reviewers), listAssignments, and saveAssignment
+      callLog.length = 0;
+      await application.createAssignment(manager, {
+        clientId: "cli_mehta",
+        clientName: "Mehta Industries",
+        title: "Q3 Return",
+        service: "GST compliance",
+        ownerId: staff.id,
+        reviewerIds: [founder.id],
+        dueAt: "2026-11-20T12:00:00.000Z",
+      });
+      // All calls MUST have actorId: manager.id (never staff.id nor founder.id)
+      expect(callLog.length).toBeGreaterThanOrEqual(4);
+      for (const call of callLog) {
+        expect(call.actorId).toBe(manager.id);
+      }
+      const reviewerLookupCall = callLog.find(
+        (c) => c.method === "getEmployee" && c.targetId === founder.id,
+      );
+      expect(reviewerLookupCall).toBeDefined();
+      expect(reviewerLookupCall?.actorId).toBe(manager.id);
+      expect(reviewerLookupCall?.actorId).not.toBe(founder.id);
+      expect(callLog.some((c) => c.method === "saveAssignment")).toBe(true);
+
+      // 3. transitionAssignment passes initiating actorId
+      callLog.length = 0;
+      await application.transitionAssignment(staff, "asg_tds_q2", "start");
+      expect(callLog).toEqual([
+        { method: "getAssignment", actorId: staff.id, targetId: "asg_tds_q2" },
+        { method: "saveAssignment", actorId: staff.id, targetId: "asg_tds_q2" },
+      ]);
+
+      // 4. listRecurringSchedules passes initiating actorId
+      callLog.length = 0;
+      await application.listRecurringSchedules(founder);
+      expect(callLog).toEqual([{ method: "listRecurringSchedules", actorId: founder.id }]);
+
+      // 5. createRecurringSchedule passes initiating actorId to all calls
+      callLog.length = 0;
+      await application.createRecurringSchedule(founder, {
+        clientId: "cli_mehta",
+        clientName: "Mehta Industries",
+        title: "Monthly Audit",
+        service: "Statutory audit",
+        cadence: "monthly",
+        ownerId: senior.id,
+        reviewerIds: [manager.id],
+        nextOccurrenceOn: "2026-11-30",
+        dueDay: 30,
+      });
+      for (const call of callLog) {
+        expect(call.actorId).toBe(founder.id);
+      }
+      expect(callLog.some((c) => c.method === "saveRecurringSchedule")).toBe(true);
+
+      // 6. updateRecurringSchedule passes initiating actorId to get and save
+      callLog.length = 0;
+      await application.updateRecurringSchedule(founder, "sch_mehta_gst", { active: false });
+      expect(callLog).toEqual([
+        { method: "getRecurringSchedule", actorId: founder.id, targetId: "sch_mehta_gst" },
+        { method: "saveRecurringSchedule", actorId: founder.id, targetId: "sch_mehta_gst" },
+      ]);
+
+      // 7. listWorkItems passes initiating actorId to both listWorkItems and listAssignments
+      callLog.length = 0;
+      await application.listWorkItems(trainee);
+      expect(callLog).toEqual([
+        { method: "listWorkItems", actorId: trainee.id },
+        { method: "listAssignments", actorId: trainee.id },
+      ]);
+
+      // 8. createWorkItem (delegated) passes initiating actorId (senior) to parent assignment read, assignee read, and save
+      callLog.length = 0;
+      await application.createWorkItem(senior, {
+        kind: "delegated",
+        title: "Reconciliation subtask",
+        assignmentId: "asg_gst_october",
+        assigneeId: trainee.id,
+        dueAt: "2026-11-10T12:00:00.000Z",
+      });
+      for (const call of callLog) {
+        expect(call.actorId).toBe(senior.id);
+      }
+      expect(callLog.some((c) => c.method === "saveWorkItem")).toBe(true);
+
+      // 9. transitionWorkItem passes initiating actorId
+      callLog.length = 0;
+      await application.transitionWorkItem(trainee, "wrk_reconcile_gstr2b", "submit");
+      expect(callLog).toEqual([
+        { method: "getWorkItem", actorId: trainee.id, targetId: "wrk_reconcile_gstr2b" },
+        { method: "saveWorkItem", actorId: trainee.id, targetId: "wrk_reconcile_gstr2b" },
+      ]);
+
+      // 10. reporting lines (list and update)
+      callLog.length = 0;
+      await application.listReportingLines(founder);
+      expect(callLog).toEqual([{ method: "listEmployees", actorId: founder.id }]);
+
+      callLog.length = 0;
+      await application.updateReportingLine(founder, trainee.id, manager.id);
+      for (const call of callLog) {
+        expect(call.actorId).toBe(founder.id);
+      }
+      expect(callLog.some((c) => c.method === "saveEmployee")).toBe(true);
+
+      // 11. office accounts & ledger
+      callLog.length = 0;
+      await application.getOfficeAccountsSummary(manager);
+      expect(callLog).toEqual([{ method: "listLedgerEntries", actorId: manager.id }]);
+
+      callLog.length = 0;
+      await application.listLedgerEntries(manager);
+      expect(callLog).toEqual([{ method: "listLedgerEntries", actorId: manager.id }]);
+
+      callLog.length = 0;
+      await application.createLedgerEntry(founder, {
+        occurredOn: "2026-10-30",
+        account: "cash",
+        direction: "inflow",
+        amountPaise: 25000,
+        narration: "Direct inflow",
+      });
+      expect(callLog).toEqual([{ method: "saveLedgerEntry", actorId: founder.id, targetId: "led_test_fixed" }]);
+    });
+
+    it("returns canonical entities returned by save methods across all save families", async () => {
+      const { application } = createTrackingRepository();
+      const founder = await application.requireActor(DEMO_ACTOR_IDS.founder);
+      const manager = await application.requireActor(DEMO_ACTOR_IDS.manager);
+      const senior = await application.requireActor(DEMO_ACTOR_IDS.senior);
+      const staff = await application.requireActor(DEMO_ACTOR_IDS.staff);
+      const trainee = await application.requireActor(DEMO_ACTOR_IDS.trainee);
+
+      // Family 1: saveAssignment canonical return (create and transition)
+      const createdAssignment = await application.createAssignment(manager, {
+        clientId: "cli_mehta",
+        clientName: "Mehta Industries",
+        title: "Canonical Test",
+        service: "GST compliance",
+        ownerId: senior.id,
+        reviewerIds: [founder.id],
+        dueAt: "2026-11-20T12:00:00.000Z",
+      });
+      expect(createdAssignment.code).toBe("AS-CANONICAL-001001");
+
+      const transitionedAssignment = await application.transitionAssignment(staff, "asg_tds_q2", "start");
+      expect(transitionedAssignment.code).toBe("AS-CANONICAL-001001");
+
+      // Family 2: saveRecurringSchedule canonical return (create and update)
+      const createdSchedule = await application.createRecurringSchedule(founder, {
+        clientId: "cli_mehta",
+        clientName: "Mehta Industries",
+        title: "Canonical Schedule",
+        service: "Statutory audit",
+        cadence: "monthly",
+        ownerId: senior.id,
+        reviewerIds: [manager.id],
+        nextOccurrenceOn: "2026-11-30",
+        dueDay: 30,
+      });
+      expect(createdSchedule.id).toBe("sch_canonical_substituted_id");
+
+      const updatedSchedule = await application.updateRecurringSchedule(founder, "sch_mehta_gst", { active: false });
+      expect(updatedSchedule.id).toBe("sch_canonical_substituted_id");
+
+      // Family 3: saveWorkItem canonical return (create and transition)
+      const createdWorkItem = await application.createWorkItem(senior, {
+        kind: "delegated",
+        title: "Canonical Work Item",
+        assignmentId: "asg_gst_october",
+        assigneeId: trainee.id,
+        dueAt: "2026-11-10T12:00:00.000Z",
+      });
+      expect(createdWorkItem.notes).toBe("CANONICAL-WORK-ITEM-PERSISTED-NOTE");
+
+      const transitionedWorkItem = await application.transitionWorkItem(trainee, "wrk_reconcile_gstr2b", "submit");
+      expect(transitionedWorkItem.notes).toBe("CANONICAL-WORK-ITEM-PERSISTED-NOTE");
+
+      // Family 4: saveEmployee canonical return (updateReportingLine)
+      const reportingResult = await application.updateReportingLine(founder, trainee.id, manager.id);
+      expect(reportingResult.employee.name).toBe("CANONICAL-EMPLOYEE-PERSISTED");
+
+      // Family 5: saveLedgerEntry canonical return (createLedgerEntry)
+      const createdLedgerEntry = await application.createLedgerEntry(founder, {
+        occurredOn: "2026-10-30",
+        account: "cash",
+        direction: "inflow",
+        amountPaise: 10000,
+        narration: "Canonical ledger test",
+      });
+      expect(createdLedgerEntry.reference).toBe("REF-CANONICAL-DB-GENERATED");
     });
   });
 });
