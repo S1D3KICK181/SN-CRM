@@ -20,8 +20,9 @@ describe('Vite Proxy & Real Work Items API Smoke (Authentic Authority)', () => {
     // 1. Start the actual CRM API server bound to an ephemeral port (port 0)
     repository = new InMemoryCrmRepository(createDemoSeed());
     await repository.upsertDevActor({
-      id: 'usr_senior_2',
+      id: '00000000-0000-4000-a000-000000000022',
       name: 'Vikram Patel',
+      email: 'vikram.patel@sn-demo.local',
       role: 'senior_staff',
       reportsToId: DEMO_ACTOR_IDS.manager,
       active: true,
@@ -96,17 +97,18 @@ describe('Vite Proxy & Real Work Items API Smoke (Authentic Authority)', () => {
       baseUrl: `http://127.0.0.1:${vitePort}`,
     });
 
-    // asg_gst_october is owned by Priya Desai (DEMO_ACTOR_IDS.senior), due at 2026-11-11T12:30:00.000Z
     const created = await adapter.create('senior_staff', {
       kind: 'delegated',
       title: 'Audit sales registers vs GSTR-1',
-      assignmentId: 'asg_gst_october',
+      assignmentId: '30000000-0000-4000-a000-000000000001',
       assigneeId: DEMO_ACTOR_IDS.trainee,
       dueAt: '2026-11-05T12:30:00.000Z',
       notes: 'Check 2 debit notes mentioned in delivery notes',
     });
 
-    expect(created.id).toMatch(/^wrk_/);
+    expect(created.id).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+    );
     expect(created.title).toBe('Audit sales registers vs GSTR-1');
     expect(created.status).toBe('todo');
     expect(created.assigneeId).toBe(DEMO_ACTOR_IDS.trainee);
@@ -122,7 +124,7 @@ describe('Vite Proxy & Real Work Items API Smoke (Authentic Authority)', () => {
     const created = await adapter.create('senior_staff', {
       kind: 'delegated',
       title: 'Verify e-way bills for October',
-      assignmentId: 'asg_gst_october',
+      assignmentId: '30000000-0000-4000-a000-000000000001',
       assigneeId: DEMO_ACTOR_IDS.trainee,
       dueAt: '2026-11-06T12:30:00.000Z',
     });
@@ -142,7 +144,7 @@ describe('Vite Proxy & Real Work Items API Smoke (Authentic Authority)', () => {
     expect(submitted.status).toBe('ready_for_review');
   });
 
-  it('3. Senior list sees ready item and approves -> done', async () => {
+  it('3. Senior list sees ready item and approves -> completed', async () => {
     const adapter = new HttpWorkItemsAdapter({
       baseUrl: `http://127.0.0.1:${vitePort}`,
     });
@@ -150,7 +152,7 @@ describe('Vite Proxy & Real Work Items API Smoke (Authentic Authority)', () => {
     const item = await adapter.create('senior_staff', {
       kind: 'delegated',
       title: 'Prepare HSN summary table',
-      assignmentId: 'asg_gst_october',
+      assignmentId: '30000000-0000-4000-a000-000000000001',
       assigneeId: DEMO_ACTOR_IDS.trainee,
       dueAt: '2026-11-07T12:30:00.000Z',
     });
@@ -165,7 +167,7 @@ describe('Vite Proxy & Real Work Items API Smoke (Authentic Authority)', () => {
 
     // Senior approves it (transition 'complete')
     const completed = await adapter.transition('senior_staff', item.id, 'complete');
-    expect(completed.status).toBe('done');
+    expect(completed.status).toBe('completed');
   });
 
   it('4. Staff -> Senior delegation -> 403 forbidden', async () => {
@@ -173,13 +175,13 @@ describe('Vite Proxy & Real Work Items API Smoke (Authentic Authority)', () => {
       baseUrl: `http://127.0.0.1:${vitePort}`,
     });
 
-    // asg_tds_q2 is owned by Staff (DEMO_ACTOR_IDS.staff)
+    // CANONICAL_ASSIGNMENT_2 is owned by Staff (DEMO_ACTOR_IDS.staff)
     // Staff attempts to delegate to Senior (violates delegation hierarchy!)
     await expect(
       adapter.create('staff', {
         kind: 'delegated',
         title: 'Unauthorized upward delegation',
-        assignmentId: 'asg_tds_q2',
+        assignmentId: '30000000-0000-4000-a000-000000000002',
         assigneeId: DEMO_ACTOR_IDS.senior,
         dueAt: '2026-11-03T12:30:00.000Z',
       }),
@@ -202,7 +204,7 @@ describe('Vite Proxy & Real Work Items API Smoke (Authentic Authority)', () => {
       adapter.create('trainee', {
         kind: 'delegated',
         title: 'Trainee attempt to delegate',
-        assignmentId: 'asg_gst_october',
+        assignmentId: '30000000-0000-4000-a000-000000000001',
         assigneeId: DEMO_ACTOR_IDS.staff,
         dueAt: '2026-11-03T12:30:00.000Z',
       }),
@@ -220,13 +222,13 @@ describe('Vite Proxy & Real Work Items API Smoke (Authentic Authority)', () => {
       baseUrl: `http://127.0.0.1:${vitePort}`,
     });
 
-    // asg_gst_october is due at 2026-11-11T12:30:00.000Z
+    // CANONICAL_ASSIGNMENT_1 is due at 2026-11-11T12:30:00.000Z
     // Attempting due at 2026-11-15 (after parent) must fail with 422 task_due_after_assignment
     await expect(
       adapter.create('senior_staff', {
         kind: 'delegated',
         title: 'Late subtask',
-        assignmentId: 'asg_gst_october',
+        assignmentId: '30000000-0000-4000-a000-000000000001',
         assigneeId: DEMO_ACTOR_IDS.trainee,
         dueAt: '2026-11-15T12:30:00.000Z',
       }),
@@ -248,7 +250,7 @@ describe('Vite Proxy & Real Work Items API Smoke (Authentic Authority)', () => {
     const item = await adapter.create('senior_staff', {
       kind: 'delegated',
       title: 'Premature approval check',
-      assignmentId: 'asg_gst_october',
+      assignmentId: '30000000-0000-4000-a000-000000000001',
       assigneeId: DEMO_ACTOR_IDS.trainee,
       dueAt: '2026-11-08T12:30:00.000Z',
     });
@@ -277,7 +279,9 @@ describe('Vite Proxy & Real Work Items API Smoke (Authentic Authority)', () => {
       dueAt: '2026-11-04T10:00:00.000Z',
     });
 
-    expect(staffPersonal.id).toMatch(/^wrk_/);
+    expect(staffPersonal.id).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+    );
     expect(staffPersonal.kind).toBe('personal');
     expect(staffPersonal.assigneeId).toBe(DEMO_ACTOR_IDS.staff);
 
@@ -299,7 +303,7 @@ describe('Vite Proxy & Real Work Items API Smoke (Authentic Authority)', () => {
   });
 
   describe('Slice 1C: Standalone Internal Office Tasks Authentic Lifecycle & Authority', () => {
-    it('9. Manager creates internal for Staff (201, no assignment context), Staff starts/submits, Manager requests changes (ready_for_review -> in_progress), Staff resubmits, Manager completes -> done', async () => {
+    it('9. Manager creates internal for Staff (201, no assignment context), Staff starts/submits, Manager requests changes (ready_for_review -> changes_requested), Staff resubmits, Manager completes -> completed', async () => {
       const adapter = new HttpWorkItemsAdapter({
         baseUrl: `http://127.0.0.1:${vitePort}`,
       });
@@ -313,7 +317,9 @@ describe('Vite Proxy & Real Work Items API Smoke (Authentic Authority)', () => {
         notes: 'Blue folder shelf 3',
       });
 
-      expect(created.id).toMatch(/^wrk_/);
+      expect(created.id).toMatch(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+      );
       expect(created.kind).toBe('internal');
       expect(created.assignmentId).toBeNull();
       expect(created.relatedClientId).toBeNull();
@@ -336,17 +342,17 @@ describe('Vite Proxy & Real Work Items API Smoke (Authentic Authority)', () => {
       const submitted = await adapter.transition('staff', created.id, 'submit');
       expect(submitted.status).toBe('ready_for_review');
 
-      // Manager requests changes (reopen while ready_for_review -> in_progress)
+      // Manager requests changes (reopen while ready_for_review -> changes_requested)
       const requestedChanges = await adapter.transition('manager', created.id, 'reopen');
-      expect(requestedChanges.status).toBe('in_progress');
+      expect(requestedChanges.status).toBe('changes_requested');
 
       // Staff resubmits -> ready_for_review
       const resubmitted = await adapter.transition('staff', created.id, 'submit');
       expect(resubmitted.status).toBe('ready_for_review');
 
-      // Manager completes task -> done
+      // Manager completes task -> completed
       const completed = await adapter.transition('manager', created.id, 'complete');
-      expect(completed.status).toBe('done');
+      expect(completed.status).toBe('completed');
     });
 
     it('10. Senior -> Staff internal office task lifecycle with creator approval', async () => {
@@ -370,7 +376,7 @@ describe('Vite Proxy & Real Work Items API Smoke (Authentic Authority)', () => {
       await adapter.transition('staff', item.id, 'submit');
 
       const approved = await adapter.transition('senior_staff', item.id, 'complete');
-      expect(approved.status).toBe('done');
+      expect(approved.status).toBe('completed');
     });
 
     it('11. Downward delegation authority enforcement (upward, self, peer, and trainee delegation -> 403)', async () => {
@@ -525,12 +531,12 @@ describe('Vite Proxy & Real Work Items API Smoke (Authentic Authority)', () => {
         return true;
       });
 
-      // Unrelated Senior ('usr_senior_2') attempts to approve a task created by Priya Desai ('usr_senior')
+      // Unrelated Senior ('00000000-0000-4000-a000-000000000022') attempts to approve a task created by Ananya Rao
       const transRes = await fetch(`http://127.0.0.1:${vitePort}/api/v1/work-items/${task.id}/transitions`, {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
-          'x-demo-user-id': 'usr_senior_2',
+          'x-demo-user-id': '00000000-0000-4000-a000-000000000022',
         },
         body: JSON.stringify({ action: 'complete' }),
       });
@@ -577,7 +583,7 @@ describe('Vite Proxy & Real Work Items API Smoke (Authentic Authority)', () => {
           title: 'Illegally linked internal task',
           assigneeId: DEMO_ACTOR_IDS.staff,
           dueAt: '2026-11-05T12:30:00.000Z',
-          assignmentId: 'asg_gst_october',
+          assignmentId: '30000000-0000-4000-a000-000000000001',
         }),
       });
       expect([400, 422]).toContain(resWithAssignment.status);
@@ -596,7 +602,7 @@ describe('Vite Proxy & Real Work Items API Smoke (Authentic Authority)', () => {
           title: 'Illegally client-linked internal task',
           assigneeId: DEMO_ACTOR_IDS.staff,
           dueAt: '2026-11-05T12:30:00.000Z',
-          relatedClientId: 'cli_mehta',
+          relatedClientId: '10000000-0000-4000-a000-000000000001',
         }),
       });
       expect([400, 422]).toContain(resWithClient.status);
@@ -609,7 +615,7 @@ describe('Vite Proxy & Real Work Items API Smoke (Authentic Authority)', () => {
         baseUrl: `http://127.0.0.1:${vitePort}`,
       });
 
-      // Senior ('usr_senior') delegates to Staff ('usr_staff')
+      // Senior ('00000000-0000-4000-a000-000000000003') delegates to Staff ('00000000-0000-4000-a000-000000000004')
       const task = await adapter.create('senior_staff', {
         kind: 'internal',
         title: 'Confidential staff attendance register reconciliation',
@@ -629,9 +635,9 @@ describe('Vite Proxy & Real Work Items API Smoke (Authentic Authority)', () => {
       const traineeItems = await adapter.list('trainee');
       expect(traineeItems.some((i) => i.id === task.id)).toBe(false);
 
-      // 4. Unrelated Senior ('usr_senior_2') CANNOT see it
+      // 4. Unrelated Senior ('00000000-0000-4000-a000-000000000022') CANNOT see it
       const unrelatedSeniorRes = await fetch(`http://127.0.0.1:${vitePort}/api/v1/work-items`, {
-        headers: { 'x-demo-user-id': 'usr_senior_2' },
+        headers: { 'x-demo-user-id': '00000000-0000-4000-a000-000000000022' },
       });
       const unrelatedEnvelope = await unrelatedSeniorRes.json();
       expect(unrelatedEnvelope.data.some((i: any) => i.id === task.id)).toBe(false);

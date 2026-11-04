@@ -1,43 +1,170 @@
 import type {
   AssignmentDto,
+  AssignmentStatus,
+  CreateLedgerEntryInput,
+  CreateRecurringScheduleInput,
   LedgerEntryDto,
+  OfficeAccountsSummaryDto,
   RecurringScheduleDto,
+  ReportingLineDto,
   SessionActor,
+  UpdateRecurringScheduleInput,
   WorkItemDto,
+  WorkItemKind,
+  WorkItemStatus,
 } from '@sn/contracts';
 
 export interface EmployeeRecord extends SessionActor {
-  active: boolean;
+  readonly active: boolean;
+  readonly email: string;
 }
 
 export interface RepositoryContext {
-  readonly actorId: string;
+  readonly actorId: string; // Authenticated actor's RFC 4122 UUID
 }
 
 export interface DevActorDirectory {
-  resolveDevActor(id: string): Promise<EmployeeRecord | null>;
+  resolveDevActor(idOrAlias: string): Promise<EmployeeRecord | null>;
   listDevActors(): Promise<EmployeeRecord[]>;
 }
 
+// --- Reference Lookups ---
+
+export interface ClientReference {
+  readonly id: string; // RFC 4122 UUID
+  readonly code: string; // CL-xxxxxx
+  readonly name: string; // Legal/trade name
+}
+
+export interface ServiceReference {
+  readonly id: string; // RFC 4122 UUID
+  readonly name: string; // Catalog service name
+}
+
+// --- Granular Command Payloads ---
+
+export interface CreateAssignmentRecord {
+  readonly id: string; // RFC 4122 UUID (pre-generated)
+  readonly clientId: string; // RFC 4122 UUID
+  readonly clientName: string; // Resolved from repository reference
+  readonly serviceId: string; // RFC 4122 UUID
+  readonly service: string; // Resolved from catalog reference
+  readonly title: string;
+  readonly description?: string | null;
+  readonly ownerId: string; // RFC 4122 UUID
+  readonly reviewerIds: readonly string[]; // Atomically persisted
+  readonly status: 'assigned' | 'draft'; // Literal legal initial status
+  readonly dueAt: string; // ISO-8601 UTC
+  readonly recurringScheduleId?: string | null;
+  readonly periodStart?: string | null;
+  readonly periodEnd?: string | null;
+  readonly priority?: 'low' | 'normal' | 'high' | 'urgent';
+  readonly createdById: string; // RFC 4122 UUID
+  readonly createdAt: string; // ISO-8601 UTC
+  readonly updatedAt: string; // ISO-8601 UTC
+}
+
+export interface UpdateAssignmentStatusCommand {
+  readonly id: string; // RFC 4122 UUID
+  readonly status: AssignmentStatus;
+  readonly expectedUpdatedAt?: string; // Optimistic concurrency verification
+  readonly deliveryNotes?: string | null;
+  readonly reviewNotes?: string | null;
+  readonly progressPercent?: number;
+}
+
+export interface UpdateAssignmentReviewersCommand {
+  readonly id: string; // RFC 4122 UUID
+  readonly reviewerIds: readonly string[]; // RFC 4122 UUIDs
+  readonly assignedBy: string; // Actor UUID
+}
+
+export interface CreateWorkItemRecord {
+  readonly id: string; // RFC 4122 UUID (pre-generated)
+  readonly kind: WorkItemKind;
+  readonly title: string;
+  readonly notes?: string | null;
+  readonly assignmentId?: string | null; // RFC 4122 UUID
+  readonly relatedClientId?: string | null; // RFC 4122 UUID
+  readonly relatedPartyName?: string | null;
+  readonly assigneeId: string; // RFC 4122 UUID
+  readonly status: 'todo'; // Literal legal initial status
+  readonly priority?: 'low' | 'normal' | 'high' | 'urgent';
+  readonly dueAt: string; // ISO-8601 UTC
+  readonly reminderAt?: string | null; // ISO-8601 UTC
+  readonly createdById: string; // RFC 4122 UUID
+  readonly createdAt: string; // ISO-8601 UTC
+  readonly updatedAt: string; // ISO-8601 UTC
+}
+
+export interface UpdateWorkItemStatusCommand {
+  readonly id: string; // RFC 4122 UUID
+  readonly status: WorkItemStatus;
+  readonly expectedUpdatedAt?: string; // Optimistic concurrency verification
+  readonly notes?: string | null;
+  readonly progressPercent?: number;
+  readonly completionNote?: string | null;
+}
+
 export interface CrmRepository {
+  // Reference Lookups (Repository-backed, split for SQL safety)
+  getClientReference(ctx: RepositoryContext, clientId: string): Promise<ClientReference | null>;
+  listClientReferences(ctx: RepositoryContext): Promise<ClientReference[]>;
+  getServiceReferenceById(ctx: RepositoryContext, serviceId: string): Promise<ServiceReference | null>;
+  getServiceReferenceByName(ctx: RepositoryContext, serviceName: string): Promise<ServiceReference | null>;
+  listServiceReferences(ctx: RepositoryContext): Promise<ServiceReference[]>;
+
+  // Identity & Reporting Lines
   getEmployee(ctx: RepositoryContext, id: string): Promise<EmployeeRecord | null>;
   listEmployees(ctx: RepositoryContext): Promise<EmployeeRecord[]>;
-  saveEmployee(ctx: RepositoryContext, employee: EmployeeRecord): Promise<EmployeeRecord>;
+  updateReportingLine(
+    ctx: RepositoryContext,
+    employeeId: string,
+    supervisorId: string | null,
+  ): Promise<ReportingLineDto>;
 
+  // Assignments
   getAssignment(ctx: RepositoryContext, id: string): Promise<AssignmentDto | null>;
   listAssignments(ctx: RepositoryContext): Promise<AssignmentDto[]>;
-  saveAssignment(ctx: RepositoryContext, assignment: AssignmentDto): Promise<AssignmentDto>;
+  createAssignment(ctx: RepositoryContext, record: CreateAssignmentRecord): Promise<AssignmentDto>;
+  updateAssignmentStatus(
+    ctx: RepositoryContext,
+    command: UpdateAssignmentStatusCommand,
+  ): Promise<AssignmentDto>;
+  updateAssignmentReviewers(
+    ctx: RepositoryContext,
+    command: UpdateAssignmentReviewersCommand,
+  ): Promise<AssignmentDto>;
 
-  getRecurringSchedule(ctx: RepositoryContext, id: string): Promise<RecurringScheduleDto | null>;
-  listRecurringSchedules(ctx: RepositoryContext): Promise<RecurringScheduleDto[]>;
-  saveRecurringSchedule(ctx: RepositoryContext, schedule: RecurringScheduleDto): Promise<RecurringScheduleDto>;
-
+  // Work Items
   getWorkItem(ctx: RepositoryContext, id: string): Promise<WorkItemDto | null>;
   listWorkItems(ctx: RepositoryContext): Promise<WorkItemDto[]>;
-  saveWorkItem(ctx: RepositoryContext, workItem: WorkItemDto): Promise<WorkItemDto>;
+  createWorkItem(ctx: RepositoryContext, record: CreateWorkItemRecord): Promise<WorkItemDto>;
+  updateWorkItemStatus(
+    ctx: RepositoryContext,
+    command: UpdateWorkItemStatusCommand,
+  ): Promise<WorkItemDto>;
 
+  // Recurring Schedules
+  getRecurringSchedule(ctx: RepositoryContext, id: string): Promise<RecurringScheduleDto | null>;
+  listRecurringSchedules(ctx: RepositoryContext): Promise<RecurringScheduleDto[]>;
+  createRecurringSchedule(
+    ctx: RepositoryContext,
+    input: CreateRecurringScheduleInput & { id: string; createdById: string; code?: string; clientName: string; service: string },
+  ): Promise<RecurringScheduleDto>;
+  updateRecurringSchedule(
+    ctx: RepositoryContext,
+    id: string,
+    input: UpdateRecurringScheduleInput,
+  ): Promise<RecurringScheduleDto>;
+
+  // Office Accounts & Ledger
+  getOfficeAccountsSummary(ctx: RepositoryContext): Promise<OfficeAccountsSummaryDto>;
   listLedgerEntries(ctx: RepositoryContext): Promise<LedgerEntryDto[]>;
-  saveLedgerEntry(ctx: RepositoryContext, entry: LedgerEntryDto): Promise<LedgerEntryDto>;
+  createLedgerEntry(
+    ctx: RepositoryContext,
+    input: CreateLedgerEntryInput & { id: string; recordedById: string },
+  ): Promise<LedgerEntryDto>;
 }
 
 export type CrmApplicationDependencies = CrmRepository & DevActorDirectory;

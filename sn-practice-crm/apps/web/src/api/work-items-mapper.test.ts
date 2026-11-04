@@ -74,8 +74,8 @@ describe('work-items-mapper', () => {
       });
     });
 
-    it('maps done -> "Completed", 100%, success tone', () => {
-      const view = mapWorkItemStatusToView('done');
+    it('maps completed -> "Completed", 100%, success tone', () => {
+      const view = mapWorkItemStatusToView('completed');
       expect(view).toEqual({
         status: 'Completed',
         progress: 100,
@@ -225,14 +225,15 @@ describe('work-items-mapper', () => {
   describe('pure selectors and dynamic parent assignment label', () => {
     const rawDelegatedDto: WorkItemDto = {
       id: 'wrk_001',
+      code: 'WI-001001',
       kind: 'delegated',
       title: 'Verify purchase ledger',
       notes: 'Check tax invoices',
       assignmentId: 'ASN-0001',
       relatedClientId: 'CLI-0001',
       relatedPartyName: 'Aster Foods Private Limited',
-      assigneeId: 'usr_trainee',
-      createdById: 'usr_senior',
+      assigneeId: '00000000-0000-4000-a000-000000000005',
+      createdById: '00000000-0000-4000-a000-000000000003',
       status: 'in_progress',
       dueAt: '2026-11-03T12:30:00.000Z',
       reminderAt: null,
@@ -258,11 +259,12 @@ describe('work-items-mapper', () => {
     it('derives stable IDs and view properties on DelegatedTaskRecord', () => {
       const record = mapDtoToDelegatedTaskRecord(rawDelegatedDto, [SAMPLE_ASSIGNMENT_1]);
       expect(record.id).toBe('wrk_001');
+      expect(record.code).toBe('WI-001001');
       expect(record.parentAssignmentId).toBe('ASN-0001');
-      expect(record.assigneeId).toBe('usr_trainee');
-      expect(record.createdById).toBe('usr_senior');
+      expect(record.assigneeId).toBe('00000000-0000-4000-a000-000000000005');
+      expect(record.createdById).toBe('00000000-0000-4000-a000-000000000003');
       expect(record.person).toBe('Neha Kapoor');
-      expect(record.assignedBy).toBe('Priya Desai');
+      expect(record.assignedBy).toBe('Ananya Rao');
       expect(record.status).toBe('In Progress');
       expect(record.progress).toBe(50);
       expect(record.tone).toBe('default');
@@ -271,14 +273,15 @@ describe('work-items-mapper', () => {
     it('derives PersonalTaskRecord with correct context and done state', () => {
       const rawPersonalPending: WorkItemDto = {
         id: 'wrk_p01',
+        code: 'WI-001002',
         kind: 'personal',
         title: 'Call auditor',
         notes: null,
         assignmentId: null,
         relatedClientId: null,
         relatedPartyName: 'Aster Foods',
-        assigneeId: 'usr_staff',
-        createdById: 'usr_staff',
+        assigneeId: '00000000-0000-4000-a000-000000000004',
+        createdById: '00000000-0000-4000-a000-000000000004',
         status: 'todo',
         dueAt: '2026-11-02T10:00:00.000Z',
         reminderAt: null,
@@ -288,12 +291,13 @@ describe('work-items-mapper', () => {
 
       const recordPending = mapDtoToPersonalTaskRecord(rawPersonalPending, 'staff', FIXED_CLOCK);
       expect(recordPending.done).toBe(false);
+      expect(recordPending.code).toBe('WI-001002');
       expect(recordPending.context).toBe('Aster Foods');
       expect(recordPending.ownerRole).toBe('staff');
 
       const rawPersonalDone: WorkItemDto = {
         ...rawPersonalPending,
-        status: 'done',
+        status: 'completed',
       };
       const recordDone = mapDtoToPersonalTaskRecord(rawPersonalDone, 'staff', FIXED_CLOCK);
       expect(recordDone.done).toBe(true);
@@ -303,14 +307,15 @@ describe('work-items-mapper', () => {
   describe('role view groups derived by actor IDs', () => {
     const itemAssignedToSenior: WorkItemDto = {
       id: 'wrk_s1',
+      code: 'WI-001001',
       kind: 'delegated',
       title: 'Review balance sheet',
       notes: null,
       assignmentId: 'ASN-0002',
       relatedClientId: 'CLI-0002',
       relatedPartyName: 'BluePeak',
-      assigneeId: 'usr_senior',
-      createdById: 'usr_manager',
+      assigneeId: '00000000-0000-4000-a000-000000000003',
+      createdById: '00000000-0000-4000-a000-000000000002',
       status: 'ready_for_review',
       dueAt: '2026-11-04T12:30:00.000Z',
       reminderAt: null,
@@ -320,14 +325,15 @@ describe('work-items-mapper', () => {
 
     const itemDelegatedBySeniorToStaff: WorkItemDto = {
       id: 'wrk_s2',
+      code: 'WI-001002',
       kind: 'delegated',
       title: 'Draft tax audit annexures',
       notes: null,
       assignmentId: 'ASN-0001',
       relatedClientId: 'CLI-0001',
       relatedPartyName: 'Aster Foods',
-      assigneeId: 'usr_staff',
-      createdById: 'usr_senior',
+      assigneeId: '00000000-0000-4000-a000-000000000004',
+      createdById: '00000000-0000-4000-a000-000000000003',
       status: 'ready_for_review',
       dueAt: '2026-11-05T12:30:00.000Z',
       reminderAt: null,
@@ -337,14 +343,15 @@ describe('work-items-mapper', () => {
 
     const itemDelegatedByManagerToStaff: WorkItemDto = {
       id: 'wrk_s3',
+      code: 'WI-001003',
       kind: 'delegated',
       title: 'Vouch invoices',
       notes: null,
       assignmentId: 'ASN-0002',
       relatedClientId: 'CLI-0002',
       relatedPartyName: 'BluePeak',
-      assigneeId: 'usr_staff',
-      createdById: 'usr_manager',
+      assigneeId: '00000000-0000-4000-a000-000000000004',
+      createdById: '00000000-0000-4000-a000-000000000002',
       status: 'ready_for_review',
       dueAt: '2026-11-05T12:30:00.000Z',
       reminderAt: null,
@@ -354,14 +361,15 @@ describe('work-items-mapper', () => {
 
     const seniorPersonal: WorkItemDto = {
       id: 'wrk_p_senior',
+      code: 'WI-001004',
       kind: 'personal',
       title: 'Senior private reminder',
       notes: null,
       assignmentId: null,
       relatedClientId: null,
       relatedPartyName: 'Personal',
-      assigneeId: 'usr_senior',
-      createdById: 'usr_senior',
+      assigneeId: '00000000-0000-4000-a000-000000000003',
+      createdById: '00000000-0000-4000-a000-000000000003',
       status: 'todo',
       dueAt: '2026-11-02T12:30:00.000Z',
       reminderAt: null,
@@ -371,14 +379,15 @@ describe('work-items-mapper', () => {
 
     const staffPersonal: WorkItemDto = {
       id: 'wrk_p_staff',
+      code: 'WI-001005',
       kind: 'personal',
       title: 'Staff private note',
       notes: null,
       assignmentId: null,
       relatedClientId: null,
       relatedPartyName: 'Personal',
-      assigneeId: 'usr_staff',
-      createdById: 'usr_staff',
+      assigneeId: '00000000-0000-4000-a000-000000000004',
+      createdById: '00000000-0000-4000-a000-000000000004',
       status: 'todo',
       dueAt: '2026-11-02T12:30:00.000Z',
       reminderAt: null,
@@ -440,6 +449,16 @@ describe('work-items-mapper', () => {
       expect(getDelegationTargets('trainee')).toEqual([]);
     });
 
+    it('returns canonical UUIDs and correct persona names for delegation targets', () => {
+      const targets = getDelegationTargets('founder');
+      expect(targets).toEqual([
+        { id: '00000000-0000-4000-a000-000000000002', name: 'Priya Desai', role: 'manager', label: 'Priya Desai — Manager' },
+        { id: '00000000-0000-4000-a000-000000000003', name: 'Ananya Rao', role: 'senior_staff', label: 'Ananya Rao — Senior Staff' },
+        { id: '00000000-0000-4000-a000-000000000004', name: 'Rohan Mehta', role: 'staff', label: 'Rohan Mehta — Staff' },
+        { id: '00000000-0000-4000-a000-000000000005', name: 'Neha Kapoor', role: 'trainee', label: 'Neha Kapoor — Trainee' },
+      ]);
+    });
+
     it('returns parent assignment options filtered by role authority', () => {
       const assignments = [SAMPLE_ASSIGNMENT_1, SAMPLE_ASSIGNMENT_2];
 
@@ -447,8 +466,8 @@ describe('work-items-mapper', () => {
       expect(getParentAssignmentOptions('founder', assignments)).toEqual(assignments);
       expect(getParentAssignmentOptions('manager', assignments)).toEqual(assignments);
 
-      // Senior staff (Priya Desai): owns ASN-0001, reviews ASN-0002 -> sees both
-      expect(getParentAssignmentOptions('senior_staff', assignments)).toEqual(assignments);
+      // Senior staff (Ananya Rao): reviews ASN-0001 -> sees ASN-0001
+      expect(getParentAssignmentOptions('senior_staff', assignments)).toEqual([SAMPLE_ASSIGNMENT_1]);
 
       // Staff (Rohan Mehta): owns ASN-0002 -> sees only ASN-0002
       expect(getParentAssignmentOptions('staff', assignments)).toEqual([SAMPLE_ASSIGNMENT_2]);
@@ -461,14 +480,15 @@ describe('work-items-mapper', () => {
   describe('Slice 1C: Internal Office Task Mapping and View Grouping', () => {
     const internalDto: WorkItemDto = {
       id: 'wrk_int_01',
+      code: 'WI-001006',
       kind: 'internal',
       title: 'File November purchase bills in the blue cardboard file',
       notes: 'Cabinet A, shelf 2',
       assignmentId: null,
       relatedClientId: null,
       relatedPartyName: null,
-      assigneeId: 'usr_staff',
-      createdById: 'usr_manager',
+      assigneeId: '00000000-0000-4000-a000-000000000004',
+      createdById: '00000000-0000-4000-a000-000000000002',
       status: 'todo',
       dueAt: '2026-11-03T12:30:00.000Z',
       reminderAt: null,
@@ -503,8 +523,9 @@ describe('work-items-mapper', () => {
       const readyInternal: WorkItemDto = {
         ...internalDto,
         id: 'wrk_int_ready',
+        code: 'WI-001007',
         status: 'ready_for_review',
-        createdById: 'usr_senior',
+        createdById: '00000000-0000-4000-a000-000000000003',
       };
       const founderGroups = deriveWorkItemViewGroups([readyInternal], [], 'founder');
       const managerGroups = deriveWorkItemViewGroups([readyInternal], [], 'manager');
@@ -517,16 +538,18 @@ describe('work-items-mapper', () => {
       const seniorCreated: WorkItemDto = {
         ...internalDto,
         id: 'wrk_senior_cr',
+        code: 'WI-001008',
         status: 'ready_for_review',
-        createdById: 'usr_senior',
-        assigneeId: 'usr_staff',
+        createdById: '00000000-0000-4000-a000-000000000003',
+        assigneeId: '00000000-0000-4000-a000-000000000004',
       };
       const managerCreated: WorkItemDto = {
         ...internalDto,
         id: 'wrk_mgr_cr',
+        code: 'WI-001009',
         status: 'ready_for_review',
-        createdById: 'usr_manager',
-        assigneeId: 'usr_staff',
+        createdById: '00000000-0000-4000-a000-000000000002',
+        assigneeId: '00000000-0000-4000-a000-000000000004',
       };
 
       // Senior staff created wrk_senior_cr, but did NOT create wrk_mgr_cr
@@ -543,8 +566,9 @@ describe('work-items-mapper', () => {
       const traineeAssigned: WorkItemDto = {
         ...internalDto,
         id: 'wrk_trainee_int',
-        assigneeId: 'usr_trainee',
-        createdById: 'usr_staff',
+        code: 'WI-001010',
+        assigneeId: '00000000-0000-4000-a000-000000000005',
+        createdById: '00000000-0000-4000-a000-000000000004',
         status: 'ready_for_review',
       };
       const traineeGroups = deriveWorkItemViewGroups([traineeAssigned], [], 'trainee');

@@ -65,7 +65,7 @@ export interface CreateAssignmentCommand {
   tone?: 'default' | 'danger' | 'warning' | 'success';
 }
 
-export type AssignmentContractTransition = 'start' | 'submit' | 'complete' | 'reopen';
+export type AssignmentContractTransition = 'start' | 'submit' | 'complete' | 'request_changes' | 'reopen';
 
 /**
  * Stateless AssignmentsPort interface.

@@ -125,15 +125,16 @@ export class DeterministicTestWorkItemsAdapter implements WorkItemsPort {
 
     // Default mock response
     return {
-      id: `wrk_mock_${Date.now()}`,
+      id: '40000000-0000-4000-a000-000000000099',
+      code: 'WI-000000',
       kind: input.kind,
       title: input.title,
       notes: input.notes ?? null,
       assignmentId: input.kind === 'delegated' ? input.assignmentId : null,
       relatedClientId: input.kind === 'personal' ? input.relatedClientId ?? null : null,
       relatedPartyName: input.kind === 'personal' ? input.relatedPartyName ?? null : null,
-      assigneeId: input.kind === 'delegated' ? input.assigneeId : 'usr_staff',
-      createdById: 'usr_staff',
+      assigneeId: input.kind === 'delegated' ? input.assigneeId : '00000000-0000-4000-a000-000000000004',
+      createdById: '00000000-0000-4000-a000-000000000004',
       status: 'todo',
       dueAt: input.dueAt,
       reminderAt: input.reminderAt ?? null,
@@ -171,19 +172,22 @@ export class DeterministicTestWorkItemsAdapter implements WorkItemsPort {
         : action === 'submit'
         ? 'ready_for_review'
         : action === 'complete'
-        ? 'done'
+        ? 'completed'
+        : action === 'request_changes' || action === 'reopen'
+        ? 'changes_requested'
         : 'in_progress';
 
     return {
       id,
+      code: 'WI-000000',
       kind: 'delegated',
       title: 'Mock transitioned item',
       notes: null,
-      assignmentId: 'asg_mock',
-      relatedClientId: 'cli_mock',
+      assignmentId: '30000000-0000-4000-a000-000000000001',
+      relatedClientId: '10000000-0000-4000-a000-000000000001',
       relatedPartyName: 'Mock Client',
-      assigneeId: 'usr_trainee',
-      createdById: 'usr_staff',
+      assigneeId: '00000000-0000-4000-a000-000000000005',
+      createdById: '00000000-0000-4000-a000-000000000004',
       status: nextStatus,
       dueAt: new Date().toISOString(),
       reminderAt: null,

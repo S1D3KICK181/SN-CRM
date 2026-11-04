@@ -1,9 +1,11 @@
 import { z } from 'zod';
+import { ASSIGNMENT_TRANSITIONS, WORK_ITEM_TRANSITIONS } from '@sn/contracts';
 import { ApiError } from './errors';
 
-const id = z.string().trim().min(1).max(100).regex(/^[a-zA-Z0-9_-]+$/);
+export const entityUuid = z.string().uuid();
 const title = z.string().trim().min(2).max(160);
 const notes = z.string().trim().max(2000).optional();
+
 export const isoInstantSchema = z
   .string()
   .datetime({ offset: true })
@@ -14,8 +16,6 @@ export const isoInstantSchema = z
     },
     { message: 'Work item timestamps must be valid ISO date-time strings.' },
   );
-const instant = isoInstantSchema;
-const localDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 
 export function parseIsoInstant(value: unknown): number {
   const result = isoInstantSchema.safeParse(value);
@@ -29,31 +29,93 @@ export function parseIsoInstant(value: unknown): number {
   return time;
 }
 
+export const localDate = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, 'Must be YYYY-MM-DD');
+
 export const createAssignmentSchema = z
   .object({
-    clientId: id,
-    clientName: z.string().trim().min(2).max(160),
+    clientId: entityUuid,
     title,
-    service: z.string().trim().min(2).max(120),
-    ownerId: id,
-    reviewerIds: z.array(id).max(5).optional(),
-    dueAt: instant,
+    serviceId: entityUuid.optional(),
+    service: z.string().trim().min(2).max(120).optional(),
+    ownerId: entityUuid,
+    reviewerIds: z.array(entityUuid).max(5).optional(),
+    dueAt: isoInstantSchema,
+  })
+  .strict()
+  .refine(
+    (data) => Boolean(data.serviceId) !== Boolean(data.service),
+    {
+      message: 'Must provide either serviceId or service name, never neither or both.',
+      path: ['serviceId'],
+    },
+  );
+
+export const assignmentTransitionSchema = z
+  .object({
+    action: z.enum(ASSIGNMENT_TRANSITIONS),
+    expectedUpdatedAt: isoInstantSchema.optional(),
+    deliveryNotes: z.string().trim().max(2000).optional(),
+    reviewNotes: z.string().trim().max(2000).optional(),
+    progressPercent: z.number().int().min(0).max(100).optional(),
   })
   .strict();
 
-export const assignmentTransitionSchema = z
-  .object({ action: z.enum(['start', 'submit', 'complete', 'reopen']) })
+export const createWorkItemSchema = z.discriminatedUnion('kind', [
+  z
+    .object({
+      kind: z.literal('delegated'),
+      title,
+      notes,
+      assignmentId: entityUuid,
+      assigneeId: entityUuid,
+      dueAt: isoInstantSchema,
+      reminderAt: isoInstantSchema.nullable().optional(),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('internal'),
+      title,
+      notes,
+      assigneeId: entityUuid,
+      dueAt: isoInstantSchema,
+      reminderAt: isoInstantSchema.nullable().optional(),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('personal'),
+      title,
+      notes,
+      relatedClientId: entityUuid.optional(),
+      relatedPartyName: z.string().trim().min(2).max(160).optional(),
+      dueAt: isoInstantSchema,
+      reminderAt: isoInstantSchema.nullable().optional(),
+    })
+    .strict(),
+]);
+
+export const workItemTransitionSchema = z
+  .object({
+    action: z.enum(WORK_ITEM_TRANSITIONS),
+    expectedUpdatedAt: isoInstantSchema.optional(),
+    notes: z.string().trim().max(2000).optional(),
+    completionNote: z.string().trim().max(2000).optional(),
+    progressPercent: z.number().int().min(0).max(100).optional(),
+  })
   .strict();
 
 export const createRecurringScheduleSchema = z
   .object({
-    clientId: id,
-    clientName: z.string().trim().min(2).max(160),
+    clientId: entityUuid,
+    serviceId: entityUuid.optional(),
+    service: z.string().trim().min(2).max(120).optional(),
     title,
-    service: z.string().trim().min(2).max(120),
     cadence: z.enum(['monthly', 'quarterly', 'annual']),
-    ownerId: id,
-    reviewerIds: z.array(id).max(5).optional(),
+    ownerId: entityUuid,
+    reviewerIds: z.array(entityUuid).max(5).optional(),
     nextOccurrenceOn: localDate,
     dueDay: z.number().int().min(1).max(31),
   })
@@ -67,44 +129,11 @@ export const updateRecurringScheduleSchema = z
   .strict()
   .refine((value) => Object.keys(value).length > 0, 'At least one field is required.');
 
-const workItemBase = {
-  title,
-  notes,
-  dueAt: instant,
-  reminderAt: instant.nullable().optional(),
-};
-
-export const createWorkItemSchema = z.discriminatedUnion('kind', [
-  z
-    .object({
-      kind: z.literal('delegated'),
-      ...workItemBase,
-      assignmentId: id,
-      assigneeId: id,
-    })
-    .strict(),
-  z
-    .object({
-      kind: z.literal('internal'),
-      ...workItemBase,
-      assigneeId: id,
-    })
-    .strict(),
-  z
-    .object({
-      kind: z.literal('personal'),
-      ...workItemBase,
-      relatedClientId: id.optional(),
-      relatedPartyName: z.string().trim().min(2).max(160).optional(),
-    })
-    .strict(),
-]);
-
-export const workItemTransitionSchema = z
-  .object({ action: z.enum(['start', 'submit', 'complete', 'reopen']) })
+export const reportingLineSchema = z
+  .object({
+    managerId: entityUuid.nullable(),
+  })
   .strict();
-
-export const reportingLineSchema = z.object({ managerId: id.nullable() }).strict();
 
 export const createLedgerEntrySchema = z
   .object({

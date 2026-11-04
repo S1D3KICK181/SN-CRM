@@ -6,6 +6,7 @@ import { WorkItemOperationError } from './work-items-types';
 
 const SAMPLE_ITEM_1: WorkItemDto = {
   id: 'wrk_001',
+  code: 'WI-001001',
   kind: 'delegated',
   title: 'Vouch purchase register',
   notes: 'Audit Aster Foods',
@@ -23,6 +24,7 @@ const SAMPLE_ITEM_1: WorkItemDto = {
 
 const SAMPLE_ITEM_STAFF: WorkItemDto = {
   id: 'wrk_002',
+  code: 'WI-001002',
   kind: 'personal',
   title: 'Call banker',
   notes: null,
@@ -151,6 +153,7 @@ describe('WorkItemsCoordinator', () => {
 
     const serverCreatedDto: WorkItemDto = {
       id: 'wrk_created_999',
+      code: 'WI-001003',
       kind: 'delegated',
       title: 'Verify invoices',
       notes: null,
@@ -341,7 +344,7 @@ describe('WorkItemsCoordinator', () => {
     void coordinator.switchRole('founder');
 
     // Late resolution of transition
-    resolveTransition({ ...SAMPLE_ITEM_STAFF, status: 'done' });
+    resolveTransition({ ...SAMPLE_ITEM_STAFF, status: 'completed' });
     const result = await transitionPromise;
 
     // Transition should have been discarded due to generation/role switch, never resurrecting row
@@ -368,7 +371,7 @@ describe('WorkItemsCoordinator', () => {
     expect(secondRes.success).toBe(false);
     expect(secondRes.error?.code).toBe('conflict');
 
-    resolveTrans({ ...SAMPLE_ITEM_STAFF, status: 'done' });
+    resolveTrans({ ...SAMPLE_ITEM_STAFF, status: 'completed' });
     const firstRes = await first;
     expect(firstRes.success).toBe(true);
   });

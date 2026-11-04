@@ -1,180 +1,257 @@
 import type { CompanyRole } from '@sn/domain';
 
+// --- Session & Identity ---
+
 export interface SessionActor {
-  id: string;
-  name: string;
-  role: CompanyRole;
-  reportsToId: string | null;
+  readonly id: string; // RFC 4122 UUID
+  readonly name: string;
+  readonly role: CompanyRole;
+  readonly reportsToId: string | null; // RFC 4122 UUID of supervisor
 }
 
 export interface ApiEnvelope<T> {
-  data: T;
-  requestId: string;
+  readonly data: T;
+  readonly requestId: string;
 }
 
 export interface ApiProblem {
-  code: string;
-  message: string;
-  requestId: string;
+  readonly code: string;
+  readonly message: string;
+  readonly requestId: string;
 }
 
 export interface ApiErrorEnvelope {
-  error: {
-    code: string;
-    message: string;
-    details?: unknown;
+  readonly error: {
+    readonly code: string;
+    readonly message: string;
+    readonly details?: unknown;
   };
-  requestId: string;
+  readonly requestId: string;
 }
 
-export type AssignmentStatus = 'open' | 'in_progress' | 'ready_for_review' | 'completed';
+// --- Assignment Domain ---
+
+export const ASSIGNMENT_STATUSES = [
+  'draft',
+  'assigned',
+  'in_progress',
+  'ready_for_review',
+  'changes_requested',
+  'approved',
+  'closed',
+  'cancelled',
+] as const;
+export type AssignmentStatus = (typeof ASSIGNMENT_STATUSES)[number];
+
+export const ASSIGNMENT_TRANSITIONS = [
+  'start',
+  'submit',
+  'complete',
+  'request_changes',
+  'reopen',
+] as const;
+export type AssignmentTransition = (typeof ASSIGNMENT_TRANSITIONS)[number];
 
 export interface AssignmentDto {
-  id: string;
-  code: string;
-  clientId: string;
-  clientName: string;
-  title: string;
-  service: string;
-  ownerId: string;
-  reviewerIds: string[];
-  status: AssignmentStatus;
-  dueAt: string;
-  recurringScheduleId: string | null;
-  createdById: string;
-  createdAt: string;
-  updatedAt: string;
+  readonly id: string; // RFC 4122 UUID
+  readonly code: string; // Output-only: AS-xxxxxx
+  readonly clientId: string; // RFC 4122 UUID references public.clients(id)
+  readonly clientName: string; // Denormalized display name
+  readonly serviceId: string; // RFC 4122 UUID references public.service_catalog(id)
+  readonly service: string; // Denormalized display name
+  readonly title: string;
+  readonly ownerId: string; // RFC 4122 UUID references public.profiles(user_id)
+  readonly reviewerIds: readonly string[]; // RFC 4122 UUIDs references assignment_reviewers
+  readonly status: AssignmentStatus;
+  readonly dueAt: string; // ISO-8601 UTC
+  readonly recurringScheduleId: string | null;
+  readonly periodStart?: string | null;
+  readonly periodEnd?: string | null;
+  readonly priority?: 'low' | 'normal' | 'high' | 'urgent';
+  readonly createdById: string; // RFC 4122 UUID
+  readonly createdAt: string; // ISO-8601 UTC
+  readonly updatedAt: string; // ISO-8601 UTC
+  readonly startedAt?: string | null;
+  readonly submittedAt?: string | null;
+  readonly approvedAt?: string | null;
+  readonly approvedById?: string | null;
+  readonly closedAt?: string | null;
+  readonly closedById?: string | null;
 }
 
-export interface CreateAssignmentInput {
-  clientId: string;
-  clientName: string;
-  title: string;
-  service: string;
-  ownerId: string;
-  reviewerIds?: string[];
-  dueAt: string;
-}
+export type ServiceReferenceInput =
+  | { readonly serviceId: string; readonly service?: never }
+  | { readonly service: string; readonly serviceId?: never };
 
-export type AssignmentTransition = 'start' | 'submit' | 'complete' | 'reopen';
+export type CreateAssignmentInput = {
+  readonly clientId: string; // RFC 4122 UUID only (clientName completely purged)
+  readonly title: string;
+  readonly ownerId: string; // RFC 4122 UUID
+  readonly reviewerIds?: readonly string[]; // RFC 4122 UUIDs
+  readonly dueAt: string; // ISO-8601 UTC
+  readonly recurringScheduleId?: string | null;
+  readonly periodStart?: string | null;
+  readonly periodEnd?: string | null;
+  readonly priority?: 'low' | 'normal' | 'high' | 'urgent';
+} & ServiceReferenceInput;
 
-export interface RecurringScheduleDto {
-  id: string;
-  clientId: string;
-  clientName: string;
-  title: string;
-  service: string;
-  cadence: 'monthly' | 'quarterly' | 'annual';
-  ownerId: string;
-  reviewerIds: string[];
-  nextOccurrenceOn: string;
-  dueDay: number;
-  active: boolean;
-  createdById: string;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface CreateRecurringScheduleInput {
-  clientId: string;
-  clientName: string;
-  title: string;
-  service: string;
-  cadence: RecurringScheduleDto['cadence'];
-  ownerId: string;
-  reviewerIds?: string[];
-  nextOccurrenceOn: string;
-  dueDay: number;
-}
+// --- Work Item Domain ---
 
 export type WorkItemKind = 'delegated' | 'internal' | 'personal';
-export type WorkItemStatus = 'todo' | 'in_progress' | 'ready_for_review' | 'done';
+
+export const WORK_ITEM_STATUSES = [
+  'todo',
+  'in_progress',
+  'blocked',
+  'ready_for_review',
+  'changes_requested',
+  'completed',
+  'cancelled',
+] as const;
+export type WorkItemStatus = (typeof WORK_ITEM_STATUSES)[number];
+
+export const WORK_ITEM_TRANSITIONS = [
+  'start',
+  'submit',
+  'complete',
+  'request_changes',
+  'reopen',
+] as const;
+export type WorkItemTransition = (typeof WORK_ITEM_TRANSITIONS)[number];
 
 export interface WorkItemDto {
-  id: string;
-  kind: WorkItemKind;
-  title: string;
-  notes: string | null;
-  assignmentId: string | null;
-  relatedClientId: string | null;
-  relatedPartyName: string | null;
-  assigneeId: string;
-  createdById: string;
-  status: WorkItemStatus;
-  dueAt: string;
-  reminderAt: string | null;
-  createdAt: string;
-  updatedAt: string;
+  readonly id: string; // RFC 4122 UUID
+  readonly code: string; // Output-only: WI-xxxxxx
+  readonly kind: WorkItemKind;
+  readonly title: string;
+  readonly notes: string | null;
+  readonly assignmentId: string | null; // RFC 4122 UUID
+  readonly relatedClientId: string | null; // RFC 4122 UUID
+  readonly relatedPartyName: string | null;
+  readonly assigneeId: string; // RFC 4122 UUID references public.profiles(user_id)
+  readonly createdById: string; // RFC 4122 UUID references public.profiles(user_id)
+  readonly status: WorkItemStatus;
+  readonly priority?: 'low' | 'normal' | 'high' | 'urgent';
+  readonly dueAt: string; // ISO-8601 UTC
+  readonly reminderAt: string | null; // ISO-8601 UTC
+  readonly progressPercent?: number;
+  readonly completionNote?: string | null;
+  readonly completedAt?: string | null;
+  readonly createdAt: string; // ISO-8601 UTC
+  readonly updatedAt: string; // ISO-8601 UTC
 }
 
 export type CreateWorkItemInput =
   | {
-      kind: 'delegated';
-      title: string;
-      notes?: string;
-      assignmentId: string;
-      assigneeId: string;
-      dueAt: string;
-      reminderAt?: string;
+      readonly kind: 'delegated';
+      readonly title: string;
+      readonly notes?: string | null;
+      readonly assignmentId: string; // RFC 4122 UUID
+      readonly assigneeId: string; // RFC 4122 UUID
+      readonly dueAt: string;
+      readonly reminderAt?: string | null;
+      readonly priority?: 'low' | 'normal' | 'high' | 'urgent';
     }
   | {
-      kind: 'internal';
-      title: string;
-      notes?: string;
-      assigneeId: string;
-      dueAt: string;
-      reminderAt?: string;
+      readonly kind: 'internal';
+      readonly title: string;
+      readonly notes?: string | null;
+      readonly assigneeId: string; // RFC 4122 UUID
+      readonly dueAt: string;
+      readonly reminderAt?: string | null;
+      readonly priority?: 'low' | 'normal' | 'high' | 'urgent';
     }
   | {
-      kind: 'personal';
-      title: string;
-      notes?: string;
-      relatedClientId?: string;
-      relatedPartyName?: string;
-      dueAt: string;
-      reminderAt?: string;
+      readonly kind: 'personal';
+      readonly title: string;
+      readonly notes?: string | null;
+      readonly relatedClientId?: string | null; // RFC 4122 UUID
+      readonly relatedPartyName?: string | null;
+      readonly dueAt: string;
+      readonly reminderAt?: string | null;
+      readonly priority?: 'low' | 'normal' | 'high' | 'urgent';
     };
 
-export type WorkItemTransition = 'start' | 'submit' | 'complete' | 'reopen';
+// --- Reporting Lines Domain ---
 
 export interface ReportingLineDto {
-  employee: SessionActor;
-  manager: SessionActor | null;
+  readonly employee: SessionActor;
+  readonly manager: SessionActor | null;
 }
 
 export interface UpdateReportingLineInput {
-  managerId: string | null;
+  readonly managerId: string | null; // RFC 4122 UUID or null to remove
 }
+
+// --- Recurring Schedules Domain ---
+
+export interface RecurringScheduleDto {
+  readonly id: string; // RFC 4122 UUID
+  readonly code: string; // RS-xxxxxx
+  readonly clientId: string; // RFC 4122 UUID
+  readonly clientName: string; // Denormalized display name
+  readonly serviceId: string; // RFC 4122 UUID
+  readonly service: string;
+  readonly title: string;
+  readonly cadence: 'monthly' | 'quarterly' | 'annual';
+  readonly ownerId: string; // RFC 4122 UUID
+  readonly reviewerIds: readonly string[]; // RFC 4122 UUIDs
+  readonly nextOccurrenceOn: string; // YYYY-MM-DD
+  readonly dueDay: number;
+  readonly active: boolean;
+  readonly createdById: string; // RFC 4122 UUID
+  readonly createdAt: string; // ISO-8601 UTC
+  readonly updatedAt: string; // ISO-8601 UTC
+}
+
+export interface CreateRecurringScheduleInput {
+  readonly clientId: string; // RFC 4122 UUID only (clientName purged)
+  readonly serviceId?: string;
+  readonly service?: string;
+  readonly title: string;
+  readonly cadence: 'monthly' | 'quarterly' | 'annual';
+  readonly ownerId: string;
+  readonly reviewerIds?: readonly string[];
+  readonly nextOccurrenceOn: string;
+  readonly dueDay: number;
+}
+
+export interface UpdateRecurringScheduleInput {
+  readonly active?: boolean;
+  readonly nextOccurrenceOn?: string;
+}
+
+// --- Office Accounts & Ledger Domain ---
 
 export type LedgerDirection = 'inflow' | 'outflow';
 export type LedgerAccount = 'cash' | 'bank';
 
 export interface LedgerEntryDto {
-  id: string;
-  occurredOn: string;
-  account: LedgerAccount;
-  direction: LedgerDirection;
-  amountPaise: number;
-  narration: string;
-  reference: string | null;
-  recordedById: string;
-  createdAt: string;
+  readonly id: string; // RFC 4122 UUID
+  readonly occurredOn: string; // YYYY-MM-DD
+  readonly account: LedgerAccount;
+  readonly direction: LedgerDirection;
+  readonly amountPaise: number;
+  readonly narration: string;
+  readonly reference: string | null;
+  readonly recordedById: string; // RFC 4122 UUID
+  readonly createdAt: string; // ISO-8601 UTC
 }
 
 export interface CreateLedgerEntryInput {
-  occurredOn: string;
-  account: LedgerAccount;
-  direction: LedgerDirection;
-  amountPaise: number;
-  narration: string;
-  reference?: string;
+  readonly occurredOn: string;
+  readonly account: LedgerAccount;
+  readonly direction: LedgerDirection;
+  readonly amountPaise: number;
+  readonly narration: string;
+  readonly reference?: string | null;
 }
 
 export interface OfficeAccountsSummaryDto {
-  currency: 'INR';
-  cashBalancePaise: number;
-  bankBalancePaise: number;
-  totalInflowsPaise: number;
-  totalOutflowsPaise: number;
-  recentEntries: LedgerEntryDto[];
+  readonly currency: 'INR';
+  readonly cashBalancePaise: number;
+  readonly bankBalancePaise: number;
+  readonly totalInflowsPaise: number;
+  readonly totalOutflowsPaise: number;
+  readonly recentEntries: readonly LedgerEntryDto[];
 }

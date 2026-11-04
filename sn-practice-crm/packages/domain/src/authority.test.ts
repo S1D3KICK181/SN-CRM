@@ -25,7 +25,6 @@ describe('practice-level authority', () => {
     expect(authorize({ action: 'finance.manage', actor: actor('senior_staff') }).allowed).toBe(false);
   });
 });
-
 describe('delegation', () => {
   it('allows Senior Staff to delegate owned Assignment work to Staff or Trainee', () => {
     const senior = actor('senior_staff', 'senior-1');
@@ -67,7 +66,6 @@ describe('delegation', () => {
     expect(authorize({ action: 'task.create_internal', actor: actor('trainee'), target: employee('trainee', 'other') }).allowed).toBe(false);
   });
 });
-
 describe('personal work', () => {
   it.each(['founder', 'manager', 'senior_staff', 'staff', 'trainee'] as const)('lets %s create a Personal Task for themselves', (role) => {
     const currentActor = actor(role, `${role}-1`);
@@ -81,7 +79,6 @@ describe('personal work', () => {
     });
   });
 });
-
 describe('reporting lines', () => {
   it('requires a Manager to report to the Founder', () => {
     expect(validateReportingLine(employee('manager'), employee('founder'))).toEqual({ allowed: true });
@@ -115,5 +112,40 @@ describe('reporting lines', () => {
         proposedManager: employee('founder'),
       }).allowed,
     ).toBe(false);
+  });
+});
+describe('assignment change requests', () => {
+  it('allows an assigned reviewer to request changes', () => {
+    const reviewer = actor('senior_staff', 'reviewer-1');
+    expect(
+      authorize({
+        action: 'assignment.request_changes',
+        actor: reviewer,
+        assignmentOwnerId: 'owner-1',
+        reviewerIds: ['reviewer-1'],
+      }),
+    ).toEqual({ allowed: true });
+  });
+
+  it('allows leadership (founder/manager) to request changes even if not in reviewerIds', () => {
+    expect(
+      authorize({
+        action: 'assignment.request_changes',
+        actor: actor('manager', 'manager-1'),
+        assignmentOwnerId: 'owner-1',
+        reviewerIds: [],
+      }),
+    ).toEqual({ allowed: true });
+  });
+
+  it('prevents unassigned non-leadership staff from requesting changes', () => {
+    expect(
+      authorize({
+        action: 'assignment.request_changes',
+        actor: actor('staff', 'staff-1'),
+        assignmentOwnerId: 'owner-1',
+        reviewerIds: ['other-reviewer'],
+      }),
+    ).toMatchObject({ allowed: false, code: 'not_assignment_owner_or_reviewer' });
   });
 });

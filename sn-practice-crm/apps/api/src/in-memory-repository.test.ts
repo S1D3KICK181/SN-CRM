@@ -1,296 +1,247 @@
 import { describe, expect, it } from 'vitest';
 import { createDemoSeed, DEMO_ACTOR_IDS } from './demo-seed';
 import { InMemoryCrmRepository } from './in-memory-repository';
-import type { EmployeeRecord, RepositoryContext } from './repository';
+import type {
+  CreateAssignmentRecord,
+  CreateWorkItemRecord,
+  RepositoryContext,
+  UpdateAssignmentStatusCommand,
+  UpdateWorkItemStatusCommand,
+} from './repository';
 
-describe('InMemoryCrmRepository Contract and Isolation', () => {
+describe('InMemoryCrmRepository Contract, Lookups and Invariants', () => {
   const ctx: RepositoryContext = { actorId: DEMO_ACTOR_IDS.founder };
 
-  it('implements DevActorDirectory without requiring repository context', async () => {
+  it('implements DevActorDirectory with dual lookup (UUID and usr_* aliases)', async () => {
     const repository = new InMemoryCrmRepository(createDemoSeed());
 
     const actors = await repository.listDevActors();
-    expect(actors.length).toBeGreaterThan(0);
-    expect(actors.find((a) => a.id === DEMO_ACTOR_IDS.founder)?.role).toBe('founder');
+    expect(actors.length).toBe(5);
 
-    const single = await repository.resolveDevActor(DEMO_ACTOR_IDS.manager);
-    expect(single?.name).toBe('Ananya Rao');
+    // Canonical UUID lookups
+    const founder = await repository.resolveDevActor(DEMO_ACTOR_IDS.founder);
+    expect(founder?.name).toBe('S. Narayanan');
+    expect(founder?.role).toBe('founder');
 
-    const missing = await repository.resolveDevActor('usr_nonexistent');
+    const manager = await repository.resolveDevActor(DEMO_ACTOR_IDS.manager);
+    expect(manager?.name).toBe('Priya Desai');
+    expect(manager?.role).toBe('manager');
+
+    // Legacy usr_* aliases
+    const aliasFounder = await repository.resolveDevActor('usr_founder');
+    expect(aliasFounder?.id).toBe(DEMO_ACTOR_IDS.founder);
+    expect(aliasFounder?.name).toBe('S. Narayanan');
+
+    const aliasManager = await repository.resolveDevActor('usr_manager');
+    expect(aliasManager?.id).toBe(DEMO_ACTOR_IDS.manager);
+    expect(aliasManager?.name).toBe('Priya Desai');
+
+    const aliasSenior = await repository.resolveDevActor('usr_senior');
+    expect(aliasSenior?.id).toBe(DEMO_ACTOR_IDS.senior);
+    expect(aliasSenior?.name).toBe('Ananya Rao');
+
+    const aliasStaff = await repository.resolveDevActor('usr_staff');
+    expect(aliasStaff?.id).toBe(DEMO_ACTOR_IDS.staff);
+    expect(aliasStaff?.name).toBe('Rohan Mehta');
+
+    const aliasTrainee = await repository.resolveDevActor('usr_trainee');
+    expect(aliasTrainee?.id).toBe(DEMO_ACTOR_IDS.trainee);
+    expect(aliasTrainee?.name).toBe('Neha Kapoor');
+
+    const missing = await repository.resolveDevActor('nonexistent');
     expect(missing).toBeNull();
   });
 
-  it('strictly requires RepositoryContext on concrete saveEmployee at compile-time and runtime', async () => {
+  it('provides repository-backed reference lookups with split service lookups and strict UUID client lookup', async () => {
     const repository = new InMemoryCrmRepository(createDemoSeed());
-    const input: EmployeeRecord = {
-      id: 'usr_ctx_check',
-      name: 'Context Enforcement Employee',
-      role: 'staff',
-      reportsToId: null,
-      active: true,
-    };
 
-    // Compile-time / type-level assertion: saveEmployee strictly requires exactly [RepositoryContext, EmployeeRecord]
-    type SaveEmployeeParams = Parameters<InMemoryCrmRepository['saveEmployee']>;
-    type AssertHasTwoParams = SaveEmployeeParams extends [RepositoryContext, EmployeeRecord]
-      ? [RepositoryContext, EmployeeRecord] extends SaveEmployeeParams
-        ? true
-        : false
-      : false;
-    const _isStrictTwoParams: AssertHasTwoParams = true;
-    expect(_isStrictTwoParams).toBe(true);
+    // Client reference by UUID
+    const client = await repository.getClientReference(ctx, '10000000-0000-4000-a000-000000000001');
+    expect(client).toEqual({
+      id: '10000000-0000-4000-a000-000000000001',
+      code: 'CL-001001',
+      name: 'Aster Foods Private Limited',
+    });
 
-    // Typed usage / compile-time assertion: single-argument call is rejected by compiler
-    // @ts-expect-error Expected 2 arguments, but got 1: single-argument saveEmployee must be rejected at compile time
-    await expect(repository.saveEmployee(input)).rejects.toThrow();
+    const unknownClient = await repository.getClientReference(ctx, '10000000-0000-4000-a000-999999999999');
+    expect(unknownClient).toBeNull();
 
-    const saved = await repository.saveEmployee(ctx, input);
-    expect(saved.id).toBe(input.id);
+    const clientList = await repository.listClientReferences(ctx);
+    expect(clientList).toHaveLength(6);
+
+    // Split service lookups
+    const serviceById = await repository.getServiceReferenceById(ctx, '50000000-0000-4000-a000-000000000001');
+    expect(serviceById).toEqual({
+      id: '50000000-0000-4000-a000-000000000001',
+      name: 'GST Compliance',
+    });
+
+    const serviceByName = await repository.getServiceReferenceByName(ctx, 'GST Compliance');
+    expect(serviceByName).toEqual({
+      id: '50000000-0000-4000-a000-000000000001',
+      name: 'GST Compliance',
+    });
+
+    const unknownService = await repository.getServiceReferenceById(ctx, '50000000-0000-4000-a000-999999999999');
+    expect(unknownService).toBeNull();
+
+    const serviceList = await repository.listServiceReferences(ctx);
+    expect(serviceList).toHaveLength(6);
   });
 
-  it('saveEmployee clones into storage and returns a detached clone', async () => {
+  it('generates sequential collision-proof business codes from max(seed) + 1', async () => {
     const repository = new InMemoryCrmRepository(createDemoSeed());
-    const input: EmployeeRecord = {
-      id: 'usr_new_test',
-      name: 'Original Input Name',
-      role: 'staff',
-      reportsToId: null,
-      active: true,
+
+    // 1. Initial createAssignment generates AS-001007
+    const newAssignment1: CreateAssignmentRecord = {
+      id: '30000000-0000-4000-a000-000000000007',
+      clientId: '10000000-0000-4000-a000-000000000001',
+      clientName: 'Aster Foods Private Limited',
+      serviceId: '50000000-0000-4000-a000-000000000001',
+      service: 'GST Compliance',
+      title: 'November GST filing',
+      ownerId: DEMO_ACTOR_IDS.manager,
+      reviewerIds: [DEMO_ACTOR_IDS.senior],
+      status: 'assigned',
+      dueAt: '2026-11-20T12:00:00.000Z',
+      createdById: DEMO_ACTOR_IDS.founder,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
     };
 
-    const returned = await repository.saveEmployee(ctx, input);
+    const created1 = await repository.createAssignment(ctx, newAssignment1);
+    expect(created1.code).toBe('AS-001007');
+    expect(created1.reviewerIds).toEqual([DEMO_ACTOR_IDS.senior]);
 
-    // 1. Reference inequality: returned !== input
-    expect(returned).not.toBe(input);
-
-    // 2. Reference inequality: returned !== entity fetched afterward
-    const stored = await repository.getEmployee(ctx, input.id);
-    expect(stored).not.toBeNull();
-    expect(returned).not.toBe(stored);
-    expect(input).not.toBe(stored);
-
-    // 3. Mutating input leaves returned holding original canonical value and stored unchanged
-    input.name = 'Mutated Input Name';
-    expect(returned.name).toBe('Original Input Name');
-    const storedAfterInputMutation = await repository.getEmployee(ctx, input.id);
-    expect(storedAfterInputMutation?.name).toBe('Original Input Name');
-
-    // 4. Mutating returned leaves stored state unchanged
-    returned.name = 'Mutated Returned Name';
-    const storedAfterReturnedMutation = await repository.getEmployee(ctx, input.id);
-    expect(storedAfterReturnedMutation?.name).toBe('Original Input Name');
-  });
-
-  it('saveAssignment clones into storage and returns a detached clone (including nested reviewerIds)', async () => {
-    const repository = new InMemoryCrmRepository(createDemoSeed());
-    const input = {
-      id: 'asg_clone_test',
-      code: 'ASN-CLONE-0001',
-      clientId: 'cli_mehta',
-      clientName: 'Mehta Industries',
-      title: 'Original Title',
-      service: 'Statutory audit',
-      ownerId: DEMO_ACTOR_IDS.senior,
-      reviewerIds: [DEMO_ACTOR_IDS.manager] as string[],
-      status: 'open' as const,
-      dueAt: '2026-11-15T12:00:00.000Z',
-      recurringScheduleId: null,
-      createdById: DEMO_ACTOR_IDS.manager,
-      createdAt: '2026-10-30T12:00:00.000Z',
-      updatedAt: '2026-10-30T12:00:00.000Z',
+    // 2. Sequential createAssignment generates AS-001008
+    const newAssignment2: CreateAssignmentRecord = {
+      id: '30000000-0000-4000-a000-000000000008',
+      clientId: '10000000-0000-4000-a000-000000000002',
+      clientName: 'BluePeak Technologies LLP',
+      serviceId: '50000000-0000-4000-a000-000000000002',
+      service: 'Internal Audit',
+      title: 'Q3 Internal Audit',
+      ownerId: DEMO_ACTOR_IDS.staff,
+      reviewerIds: [DEMO_ACTOR_IDS.manager],
+      status: 'assigned',
+      dueAt: '2026-12-15T12:00:00.000Z',
+      createdById: DEMO_ACTOR_IDS.founder,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
     };
 
-    const returned = await repository.saveAssignment(ctx, input);
+    const created2 = await repository.createAssignment(ctx, newAssignment2);
+    expect(created2.code).toBe('AS-001008');
 
-    // 1. Reference inequalities: returned !== input and returned !== entity fetched afterward
-    expect(returned).not.toBe(input);
-    const stored = await repository.getAssignment(ctx, input.id);
-    expect(stored).not.toBeNull();
-    expect(returned).not.toBe(stored);
-    expect(input).not.toBe(stored);
-
-    // 2. Mutating input (including nested reviewerIds) leaves returned and stored unchanged
-    input.title = 'Mutated Input Title';
-    input.reviewerIds.push('usr_input_intruder');
-    expect(returned.title).toBe('Original Title');
-    expect(returned.reviewerIds).toEqual([DEMO_ACTOR_IDS.manager]);
-    const stored1 = await repository.getAssignment(ctx, input.id);
-    expect(stored1?.title).toBe('Original Title');
-    expect(stored1?.reviewerIds).toEqual([DEMO_ACTOR_IDS.manager]);
-
-    // 3. Mutating returned (including nested reviewerIds) leaves stored state unchanged
-    returned.title = 'Mutated Returned Title';
-    returned.reviewerIds.push('usr_returned_intruder');
-    const stored2 = await repository.getAssignment(ctx, input.id);
-    expect(stored2?.title).toBe('Original Title');
-    expect(stored2?.reviewerIds).toEqual([DEMO_ACTOR_IDS.manager]);
-  });
-
-  it('saveRecurringSchedule clones into storage and returns a detached clone (including nested reviewerIds)', async () => {
-    const repository = new InMemoryCrmRepository(createDemoSeed());
-    const input = {
-      id: 'sch_clone_test',
-      clientId: 'cli_mehta',
-      clientName: 'Mehta Industries',
-      title: 'Original Schedule Title',
-      service: 'GST compliance',
-      cadence: 'monthly' as const,
-      ownerId: DEMO_ACTOR_IDS.senior,
-      reviewerIds: [DEMO_ACTOR_IDS.manager] as string[],
-      nextOccurrenceOn: '2026-11-20',
-      dueDay: 20,
-      active: true,
-      createdById: DEMO_ACTOR_IDS.manager,
-      createdAt: '2026-10-30T12:00:00.000Z',
-      updatedAt: '2026-10-30T12:00:00.000Z',
-    };
-
-    const returned = await repository.saveRecurringSchedule(ctx, input);
-
-    // 1. Reference inequalities: returned !== input and returned !== entity fetched afterward
-    expect(returned).not.toBe(input);
-    const stored = await repository.getRecurringSchedule(ctx, input.id);
-    expect(stored).not.toBeNull();
-    expect(returned).not.toBe(stored);
-    expect(input).not.toBe(stored);
-
-    // 2. Mutating input (including nested reviewerIds) leaves returned and stored unchanged
-    input.title = 'Mutated Input Title';
-    input.reviewerIds.push('usr_input_intruder');
-    expect(returned.title).toBe('Original Schedule Title');
-    expect(returned.reviewerIds).toEqual([DEMO_ACTOR_IDS.manager]);
-    const stored1 = await repository.getRecurringSchedule(ctx, input.id);
-    expect(stored1?.title).toBe('Original Schedule Title');
-    expect(stored1?.reviewerIds).toEqual([DEMO_ACTOR_IDS.manager]);
-
-    // 3. Mutating returned (including nested reviewerIds) leaves stored state unchanged
-    returned.title = 'Mutated Returned Title';
-    returned.reviewerIds.push('usr_returned_intruder');
-    const stored2 = await repository.getRecurringSchedule(ctx, input.id);
-    expect(stored2?.title).toBe('Original Schedule Title');
-    expect(stored2?.reviewerIds).toEqual([DEMO_ACTOR_IDS.manager]);
-  });
-
-  it('saveWorkItem clones into storage and returns a detached clone', async () => {
-    const repository = new InMemoryCrmRepository(createDemoSeed());
-    const input = {
-      id: 'wrk_clone_test',
-      kind: 'personal' as const,
-      title: 'Original Task Title',
-      notes: null,
-      assignmentId: null,
-      relatedClientId: null,
-      relatedPartyName: null,
-      assigneeId: DEMO_ACTOR_IDS.staff,
-      createdById: DEMO_ACTOR_IDS.staff,
-      status: 'todo' as const,
+    // 3. createWorkItem generates WI-001007
+    const newWorkItem: CreateWorkItemRecord = {
+      id: '40000000-0000-4000-a000-000000000007',
+      kind: 'delegated',
+      title: 'Reconcile invoices',
+      assignmentId: '30000000-0000-4000-a000-000000000001',
+      relatedClientId: '10000000-0000-4000-a000-000000000001',
+      relatedPartyName: 'Aster Foods Private Limited',
+      assigneeId: DEMO_ACTOR_IDS.trainee,
+      status: 'todo',
       dueAt: '2026-11-10T12:00:00.000Z',
-      reminderAt: null,
-      createdAt: '2026-10-30T12:00:00.000Z',
-      updatedAt: '2026-10-30T12:00:00.000Z',
+      createdById: DEMO_ACTOR_IDS.manager,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
     };
 
-    const returned = await repository.saveWorkItem(ctx, input);
-
-    // 1. Reference inequalities: returned !== input and returned !== entity fetched afterward
-    expect(returned).not.toBe(input);
-    const stored = await repository.getWorkItem(ctx, input.id);
-    expect(stored).not.toBeNull();
-    expect(returned).not.toBe(stored);
-    expect(input).not.toBe(stored);
-
-    // 2. Mutating input leaves returned holding original canonical value and stored unchanged
-    input.title = 'Mutated Input Title';
-    expect(returned.title).toBe('Original Task Title');
-    const stored1 = await repository.getWorkItem(ctx, input.id);
-    expect(stored1?.title).toBe('Original Task Title');
-
-    // 3. Mutating returned leaves stored state unchanged
-    returned.title = 'Mutated Returned Title';
-    const stored2 = await repository.getWorkItem(ctx, input.id);
-    expect(stored2?.title).toBe('Original Task Title');
+    const createdWorkItem = await repository.createWorkItem(ctx, newWorkItem);
+    expect(createdWorkItem.code).toBe('WI-001007');
   });
 
-  it('saveLedgerEntry clones into storage and returns a detached clone', async () => {
+  it('updates assignment status without mutating reviewers and enforces concurrency check', async () => {
     const repository = new InMemoryCrmRepository(createDemoSeed());
-    const input = {
-      id: 'led_clone_test',
-      occurredOn: '2026-10-30',
-      account: 'cash' as const,
-      direction: 'inflow' as const,
-      amountPaise: 50000,
-      narration: 'Original Narration',
-      reference: null,
-      recordedById: DEMO_ACTOR_IDS.founder,
-      createdAt: '2026-10-30T12:00:00.000Z',
+    const assignment = await repository.getAssignment(ctx, '30000000-0000-4000-a000-000000000001');
+    expect(assignment).not.toBeNull();
+    const originalReviewers = [...assignment!.reviewerIds];
+    const originalUpdatedAt = assignment!.updatedAt;
+
+    // Concurrency conflict test (409)
+    const conflictCmd: UpdateAssignmentStatusCommand = {
+      id: assignment!.id,
+      status: 'ready_for_review',
+      expectedUpdatedAt: '2020-01-01T00:00:00.000Z', // Mismatched timestamp
     };
 
-    const returned = await repository.saveLedgerEntry(ctx, input);
+    await expect(repository.updateAssignmentStatus(ctx, conflictCmd)).rejects.toMatchObject({
+      status: 409,
+      code: 'concurrency_conflict',
+    });
 
-    // 1. Reference inequalities: returned !== input and returned !== entity listed afterward
-    expect(returned).not.toBe(input);
-    const all = await repository.listLedgerEntries(ctx);
-    const stored = all.find((e) => e.id === input.id);
-    expect(stored).toBeDefined();
-    expect(returned).not.toBe(stored);
-    expect(input).not.toBe(stored);
+    // Valid update with matching expectedUpdatedAt
+    const validCmd: UpdateAssignmentStatusCommand = {
+      id: assignment!.id,
+      status: 'ready_for_review',
+      expectedUpdatedAt: originalUpdatedAt,
+      deliveryNotes: 'Ready for partner review',
+      progressPercent: 80,
+    };
 
-    // 2. Mutating input leaves returned holding original canonical value and stored unchanged
-    input.narration = 'Mutated Narration';
-    expect(returned.narration).toBe('Original Narration');
-    const all1 = await repository.listLedgerEntries(ctx);
-    const stored1 = all1.find((e) => e.id === input.id);
-    expect(stored1?.narration).toBe('Original Narration');
+    const updated = await repository.updateAssignmentStatus(ctx, validCmd);
+    expect(updated.status).toBe('ready_for_review');
+    expect(updated.reviewerIds).toEqual(originalReviewers);
+    expect(updated.updatedAt).not.toBe(originalUpdatedAt);
 
-    // 3. Mutating returned leaves stored state unchanged
-    returned.narration = 'Mutated Returned Narration';
-    const all2 = await repository.listLedgerEntries(ctx);
-    const stored2 = all2.find((e) => e.id === input.id);
-    expect(stored2?.narration).toBe('Original Narration');
+    // Verify independent reviewer update
+    const updatedReviewers = await repository.updateAssignmentReviewers(ctx, {
+      id: assignment!.id,
+      reviewerIds: [DEMO_ACTOR_IDS.founder],
+      assignedBy: DEMO_ACTOR_IDS.manager,
+    });
+    expect(updatedReviewers.reviewerIds).toEqual([DEMO_ACTOR_IDS.founder]);
+    expect(updatedReviewers.status).toBe('ready_for_review');
   });
 
-  it('mutating seed data after constructor or mutating returned list elements cannot alter repository storage', async () => {
-    const seed = createDemoSeed();
-    const repository = new InMemoryCrmRepository(seed);
+  it('updates work item status and enforces concurrency check', async () => {
+    const repository = new InMemoryCrmRepository(createDemoSeed());
+    const workItem = await repository.getWorkItem(ctx, '40000000-0000-4000-a000-000000000001');
+    expect(workItem).not.toBeNull();
+    const originalUpdatedAt = workItem!.updatedAt;
 
-    // 1. Mutate seed data after constructor
-    const seedEmployee = seed.employees[0];
-    expect(seedEmployee).toBeDefined();
-    const seedEmployeeId = seedEmployee!.id;
-    const originalEmployeeName = seedEmployee!.name;
-    seedEmployee!.name = 'Mutated Post-Constructor Seed Name';
+    const conflictCmd: UpdateWorkItemStatusCommand = {
+      id: workItem!.id,
+      status: 'ready_for_review',
+      expectedUpdatedAt: '2020-01-01T00:00:00.000Z',
+    };
 
-    const seedAssignment = seed.assignments[0];
-    expect(seedAssignment).toBeDefined();
-    const seedAssignmentId = seedAssignment!.id;
-    const originalAssignmentTitle = seedAssignment!.title;
-    seedAssignment!.title = 'Mutated Post-Constructor Seed Title';
+    await expect(repository.updateWorkItemStatus(ctx, conflictCmd)).rejects.toMatchObject({
+      status: 409,
+      code: 'concurrency_conflict',
+    });
 
-    const devActor = await repository.resolveDevActor(seedEmployeeId);
-    expect(devActor?.name).toBe(originalEmployeeName);
+    const validCmd: UpdateWorkItemStatusCommand = {
+      id: workItem!.id,
+      status: 'ready_for_review',
+      expectedUpdatedAt: originalUpdatedAt,
+      progressPercent: 90,
+    };
 
-    const assignment = await repository.getAssignment(ctx, seedAssignmentId);
-    expect(assignment?.title).toBe(originalAssignmentTitle);
+    const updated = await repository.updateWorkItemStatus(ctx, validCmd);
+    expect(updated.status).toBe('ready_for_review');
+    expect(updated.updatedAt).not.toBe(originalUpdatedAt);
+  });
 
-    // 2. Mutate an element from a returned list
-    const list = await repository.listAssignments(ctx);
-    expect(list.length).toBeGreaterThan(0);
-    const firstItem = list[0]!;
-    const originalFirstTitle = firstItem.title;
-    const originalReviewerCount = firstItem.reviewerIds.length;
+  it('updates reporting line and deletes row when supervisorId is null', async () => {
+    const repository = new InMemoryCrmRepository(createDemoSeed());
 
-    firstItem.title = 'Mutated In-Memory List Item Title';
-    firstItem.reviewerIds.push('usr_list_mutation_intruder');
+    // Update supervisor
+    const updatedLine = await repository.updateReportingLine(ctx, DEMO_ACTOR_IDS.staff, DEMO_ACTOR_IDS.founder);
+    expect(updatedLine.employee.id).toBe(DEMO_ACTOR_IDS.staff);
+    expect(updatedLine.manager?.id).toBe(DEMO_ACTOR_IDS.founder);
 
-    const fetchedDirectly = await repository.getAssignment(ctx, firstItem.id);
-    expect(fetchedDirectly?.title).toBe(originalFirstTitle);
-    expect(fetchedDirectly?.reviewerIds.length).toBe(originalReviewerCount);
-    expect(fetchedDirectly?.reviewerIds).not.toContain('usr_list_mutation_intruder');
+    const emp = await repository.getEmployee(ctx, DEMO_ACTOR_IDS.staff);
+    expect(emp?.reportsToId).toBe(DEMO_ACTOR_IDS.founder);
 
-    const fetchedListAgain = await repository.listAssignments(ctx);
-    expect(fetchedListAgain[0]?.title).toBe(originalFirstTitle);
-    expect(fetchedListAgain[0]?.reviewerIds.length).toBe(originalReviewerCount);
-    expect(fetchedListAgain[0]?.reviewerIds).not.toContain('usr_list_mutation_intruder');
+    // Remove supervisor (null)
+    const removedLine = await repository.updateReportingLine(ctx, DEMO_ACTOR_IDS.staff, null);
+    expect(removedLine.employee.id).toBe(DEMO_ACTOR_IDS.staff);
+    expect(removedLine.manager).toBeNull();
+
+    const empAfter = await repository.getEmployee(ctx, DEMO_ACTOR_IDS.staff);
+    expect(empAfter?.reportsToId).toBeNull();
   });
 });
-

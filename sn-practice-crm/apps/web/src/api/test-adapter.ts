@@ -94,13 +94,13 @@ export class DeterministicTestAssignmentsAdapter implements AssignmentsPort {
     }
 
     return {
-      id: command.id ?? `asg_mock_${Date.now()}`,
+      id: command.id ?? '30000000-0000-4000-a000-000000000099',
       title: command.title,
       client: command.clientName ?? command.client ?? 'Mock Client',
       service: command.service,
       due: command.dueDate ?? command.due ?? '11/11/2026',
       owner: command.ownerNameOrId ?? command.owner ?? 'Priya Desai',
-      status: 'Open',
+      status: 'Awaiting documents',
       progress: 15,
       tone: 'default',
     };
@@ -134,9 +134,30 @@ export class DeterministicTestAssignmentsAdapter implements AssignmentsPort {
       service: 'Compliance',
       due: '11/11/2026',
       owner: 'Priya Desai',
-      status: action === 'complete' ? 'Completed' : action === 'submit' ? 'Pending review' : 'In progress',
-      progress: action === 'complete' ? 100 : action === 'submit' ? 80 : 50,
-      tone: action === 'complete' ? 'success' : action === 'submit' ? 'warning' : 'default',
+      status:
+        action === 'complete'
+          ? 'Completed'
+          : action === 'submit'
+            ? 'Pending review'
+            : action === 'request_changes'
+              ? 'Changes requested'
+              : 'In progress',
+      progress:
+        action === 'complete'
+          ? 100
+          : action === 'submit'
+            ? 80
+            : action === 'request_changes'
+              ? 60
+              : 50,
+      tone:
+        action === 'complete'
+          ? 'success'
+          : action === 'submit'
+            ? 'warning'
+            : action === 'request_changes'
+              ? 'danger'
+              : 'default',
     };
   }
 }

@@ -28,18 +28,19 @@ function jsonResponse(data: unknown, status = 200, requestId = 'req-test-123'): 
 }
 
 const SAMPLE_DTO: AssignmentDto = {
-  id: 'asg_gst_october',
-  code: 'ASN-2026-0108',
-  clientId: 'cli_mehta',
-  clientName: 'Mehta Industries Pvt Ltd',
-  title: 'October GST return',
-  service: 'GST compliance',
-  ownerId: 'usr_senior',
-  reviewerIds: ['usr_manager'],
+  id: '30000000-0000-4000-a000-000000000001',
+  code: 'AS-001001',
+  clientId: '10000000-0000-4000-a000-000000000001',
+  clientName: 'Aster Foods Private Limited',
+  serviceId: '50000000-0000-4000-a000-000000000001',
+  service: 'GST Compliance',
+  title: 'GSTR-1 & 3B Compliance · Oct 2026',
+  ownerId: '00000000-0000-4000-a000-000000000003',
+  reviewerIds: ['00000000-0000-4000-a000-000000000002'],
   status: 'in_progress',
   dueAt: '2026-11-11T12:30:00.000Z',
-  recurringScheduleId: 'sch_mehta_gst',
-  createdById: 'usr_manager',
+  recurringScheduleId: '20000000-0000-4000-a000-000000000001',
+  createdById: '00000000-0000-4000-a000-000000000001',
   createdAt: '2026-10-01T04:30:00.000Z',
   updatedAt: '2026-10-29T09:15:00.000Z',
 };
@@ -57,19 +58,19 @@ describe('HttpAssignmentsAdapter', () => {
     const adapter = new HttpAssignmentsAdapter({ fetchFn: mockFetch });
 
     await adapter.list('founder');
-    expect(recordedHeaders['lastRole']).toBe('usr_founder');
+    expect(recordedHeaders['lastRole']).toBe('00000000-0000-4000-a000-000000000001');
 
     await adapter.list('manager');
-    expect(recordedHeaders['lastRole']).toBe('usr_manager');
+    expect(recordedHeaders['lastRole']).toBe('00000000-0000-4000-a000-000000000002');
 
     await adapter.list('senior_staff');
-    expect(recordedHeaders['lastRole']).toBe('usr_senior');
+    expect(recordedHeaders['lastRole']).toBe('00000000-0000-4000-a000-000000000003');
 
     await adapter.list('staff');
-    expect(recordedHeaders['lastRole']).toBe('usr_staff');
+    expect(recordedHeaders['lastRole']).toBe('00000000-0000-4000-a000-000000000004');
 
     await adapter.list('trainee');
-    expect(recordedHeaders['lastRole']).toBe('usr_trainee');
+    expect(recordedHeaders['lastRole']).toBe('00000000-0000-4000-a000-000000000005');
   });
 
   it('unwraps response envelopes and deterministically maps AssignmentDto to AssignmentRow', async () => {
@@ -83,13 +84,13 @@ describe('HttpAssignmentsAdapter', () => {
 
     expect(rows).toHaveLength(1);
     const row = rows[0]!;
-    expect(row.id).toBe('asg_gst_october');
-    expect(row.title).toBe('October GST return');
-    expect(row.client).toBe('Mehta Industries Pvt Ltd');
-    expect(row.clientId).toBe('cli_mehta');
-    expect(row.service).toBe('GST compliance');
-    expect(row.owner).toBe('Priya Desai');
-    expect(row.reviewer).toBe('Ananya Rao');
+    expect(row.id).toBe('30000000-0000-4000-a000-000000000001');
+    expect(row.title).toBe('GSTR-1 & 3B Compliance · Oct 2026');
+    expect(row.client).toBe('Aster Foods Private Limited');
+    expect(row.clientId).toBe('10000000-0000-4000-a000-000000000001');
+    expect(row.service).toBe('GST Compliance');
+    expect(row.owner).toBe('Ananya Rao');
+    expect(row.reviewer).toBe('Priya Desai');
     expect(row.status).toBe('In progress');
     expect(row.progress).toBe(50);
     expect(row.tone).toBe('default');
@@ -110,25 +111,25 @@ describe('HttpAssignmentsAdapter', () => {
 
     const adapter = new HttpAssignmentsAdapter({ fetchFn: mockFetch });
     const created = await adapter.create('founder', {
-      clientId: 'cli_mehta',
-      clientName: 'Mehta Industries Pvt Ltd',
+      clientId: 'CLI-0001',
+      clientName: 'Aster Foods Private Limited',
       title: 'October GST return',
       service: 'GST compliance',
-      ownerNameOrId: 'Priya Desai',
-      reviewerNameOrId: 'Ananya Rao',
+      ownerNameOrId: 'Ananya Rao',
+      reviewerNameOrId: 'Priya Desai',
       dueDate: '11/11/2026',
     });
 
     expect(capturedUrl).toBe('/api/v1/assignments');
     expect(capturedMethod).toBe('POST');
-    expect(capturedBody.clientId).toBe('cli_mehta');
-    expect(capturedBody.clientName).toBe('Mehta Industries Pvt Ltd');
+    expect(capturedBody.clientId).toBe('10000000-0000-4000-a000-000000000001');
+    expect(capturedBody.clientName).toBeUndefined();
     expect(capturedBody.title).toBe('October GST return');
     expect(capturedBody.service).toBe('GST compliance');
-    expect(capturedBody.ownerId).toBe('usr_senior');
-    expect(capturedBody.reviewerIds).toEqual(['usr_manager']);
+    expect(capturedBody.ownerId).toBe('00000000-0000-4000-a000-000000000003');
+    expect(capturedBody.reviewerIds).toEqual(['00000000-0000-4000-a000-000000000002']);
     expect(capturedBody.dueAt).toContain('2026-11-11');
-    expect(created.id).toBe('asg_gst_october');
+    expect(created.id).toBe('30000000-0000-4000-a000-000000000001');
   });
 
   it('executes status transition against exact path, body, and actor authority', async () => {
@@ -147,9 +148,9 @@ describe('HttpAssignmentsAdapter', () => {
     });
 
     const adapter = new HttpAssignmentsAdapter({ fetchFn: mockFetch });
-    const updated = await adapter.transition('senior_staff', 'asg_gst_october', 'submit');
+    const updated = await adapter.transition('senior_staff', '30000000-0000-4000-a000-000000000001', 'submit');
 
-    expect(capturedUrl).toBe('/api/v1/assignments/asg_gst_october/transitions');
+    expect(capturedUrl).toBe('/api/v1/assignments/30000000-0000-4000-a000-000000000001/transitions');
     expect(capturedMethod).toBe('POST');
     expect(capturedBody).toEqual({ action: 'submit' });
     expect(updated.status).toBe('Pending review');
@@ -237,7 +238,8 @@ describe('HttpAssignmentsAdapter', () => {
     const adapter = new HttpAssignmentsAdapter({ fetchFn: mockFetch });
     await expect(
       adapter.create('founder', {
-        clientName: '',
+        clientId: 'CLI-0001',
+        clientName: 'Aster Foods Private Limited',
         title: '',
         service: '',
         ownerNameOrId: '',
@@ -297,11 +299,11 @@ describe('HttpAssignmentsAdapter', () => {
   });
 
   describe('Finding 4: lifecycle normalization & drawer vocabulary mapping', () => {
-    it('maps wire status "open" to UI "Awaiting documents"', () => {
+    it('maps wire status "assigned" to UI "Awaiting documents"', () => {
       const openDto: AssignmentDto = {
         ...SAMPLE_DTO,
-        id: 'asg_open_sample',
-        status: 'open',
+        id: '30000000-0000-4000-a000-000000000099',
+        status: 'assigned',
       };
       const row = mapDtoToAssignmentRow(openDto);
       expect(row.status).toBe('Awaiting documents');

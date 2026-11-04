@@ -753,14 +753,15 @@ describe('ComposerDialog create-assignment submit lifecycle', () => {
       expect(titleInput).toBeDefined();
       expect(titleInput.name).toBe('title');
 
-      // Fields: assignee select with downward targets for manager (Senior, Staff, Trainee; no Founder)
+      // Fields: assignee select with downward targets for manager (Senior, Staff, Trainee; no Founder or self)
       const assigneeSelect = screen.getByRole('combobox') as HTMLSelectElement;
       expect(assigneeSelect.name).toBe('assigneeId');
       const optionTexts = Array.from(assigneeSelect.options).map((o) => o.textContent);
-      expect(optionTexts.some((t) => t?.includes('Priya Desai'))).toBe(true);
+      expect(optionTexts.some((t) => t?.includes('Ananya Rao'))).toBe(true);
       expect(optionTexts.some((t) => t?.includes('Rohan Mehta'))).toBe(true);
       expect(optionTexts.some((t) => t?.includes('Neha Kapoor'))).toBe(true);
       expect(optionTexts.some((t) => t?.includes('Narayanan'))).toBe(false);
+      expect(optionTexts.some((t) => t?.includes('Priya Desai'))).toBe(false);
 
       // Target completion date
       const dueInput = screen.getByDisplayValue('Tomorrow') as HTMLInputElement;

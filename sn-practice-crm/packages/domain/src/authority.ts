@@ -28,6 +28,7 @@ export type AuthorityRequest =
   | { action: 'assignment.create' | 'assignment.reassign' | 'schedule.manage' | 'assignment.approve' | 'assignment.close'; actor: Actor }
   | { action: 'assignment.assign'; actor: Actor; target: EmployeeRef }
   | { action: 'assignment.progress' | 'assignment.submit'; actor: Actor; assignmentOwnerId: string; reviewerIds?: readonly string[] }
+  | { action: 'assignment.request_changes'; actor: Actor; assignmentOwnerId: string; reviewerIds?: readonly string[] }
   | {
       action: 'task.delegate';
       actor: Actor;
@@ -127,6 +128,11 @@ export function authorize(request: AuthorityRequest): AuthorityDecision {
         ? ALLOWED
         : deny('not_assignment_owner_or_reviewer', 'Only the Assignment Owner may submit it for review.');
 
+    case 'assignment.request_changes':
+      return isLeadership(actor.role) || (request.reviewerIds && request.reviewerIds.includes(actor.id))
+        ? ALLOWED
+        : deny('not_assignment_owner_or_reviewer', 'Only practice leadership or an assigned reviewer may request changes on an assignment.');
+
     case 'task.delegate':
       if (!isLeadership(actor.role) && !ownsOrReviews(actor, request.assignmentOwnerId, request.reviewerIds)) {
         return deny('not_assignment_owner_or_reviewer', 'Child work may be delegated only by leadership, the Assignment Owner, or an explicit reviewer.');
@@ -156,6 +162,9 @@ export function authorize(request: AuthorityRequest): AuthorityDecision {
       }
       if (actor.role === 'manager' && (request.subject.role === 'founder' || request.subject.role === 'manager')) {
         return deny('role_not_permitted', 'A Manager may maintain reporting lines only for Senior Staff, Staff, and Trainees.');
+      }
+      if (request.proposedManager === null) {
+        return ALLOWED;
       }
       return validateReportingLine(request.subject, request.proposedManager);
     }

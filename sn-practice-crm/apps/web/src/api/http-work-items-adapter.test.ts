@@ -6,6 +6,7 @@ import { WorkItemOperationError } from './work-items-types';
 describe('HttpWorkItemsAdapter', () => {
   const sampleDto: WorkItemDto = {
     id: 'wrk_001',
+    code: 'WI-001001',
     kind: 'delegated',
     title: 'Verify TDS challan',
     notes: 'Verify 281 challans',
@@ -40,7 +41,7 @@ describe('HttpWorkItemsAdapter', () => {
     const items = await adapter.list('staff', { requestId: 'req_client_1' });
 
     expect(capturedUrl).toBe('http://localhost:3000/api/v1/work-items');
-    expect(capturedHeaders?.get('x-demo-user-id')).toBe('usr_staff');
+    expect(capturedHeaders?.get('x-demo-user-id')).toBe('00000000-0000-4000-a000-000000000004');
     expect(capturedHeaders?.get('x-request-id')).toBe('req_client_1');
     expect(items).toEqual([sampleDto]);
   });
@@ -73,7 +74,7 @@ describe('HttpWorkItemsAdapter', () => {
 
     const created = await adapter.create('staff', input);
     expect(capturedMethod).toBe('POST');
-    expect(capturedHeaders?.get('x-demo-user-id')).toBe('usr_staff');
+    expect(capturedHeaders?.get('x-demo-user-id')).toBe('00000000-0000-4000-a000-000000000004');
     expect(capturedHeaders?.get('content-type')).toBe('application/json');
     expect(JSON.parse(capturedBody)).toEqual(input);
     expect(created).toEqual(sampleDto);

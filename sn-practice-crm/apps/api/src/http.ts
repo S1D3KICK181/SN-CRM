@@ -10,6 +10,7 @@ import {
   createLedgerEntrySchema,
   createRecurringScheduleSchema,
   createWorkItemSchema,
+  entityUuid,
   reportingLineSchema,
   updateRecurringScheduleSchema,
   workItemTransitionSchema,
@@ -27,6 +28,20 @@ const DEFAULT_LOCAL_ORIGINS = [
   'http://localhost:4173',
   'http://127.0.0.1:4173',
 ];
+
+const DEV_ACTOR_ALIASES: Record<string, string> = {
+  usr_founder: '00000000-0000-4000-a000-000000000001',
+  usr_manager: '00000000-0000-4000-a000-000000000002',
+  usr_senior: '00000000-0000-4000-a000-000000000003',
+  usr_staff: '00000000-0000-4000-a000-000000000004',
+  usr_trainee: '00000000-0000-4000-a000-000000000005',
+};
+
+function normalizeDevUserHeader(headerValue: string | undefined): string | undefined {
+  if (!headerValue) return undefined;
+  const trimmed = headerValue.trim();
+  return DEV_ACTOR_ALIASES[trimmed] ?? trimmed;
+}
 
 interface Logger {
   error(message: string, metadata?: unknown): void;
@@ -145,7 +160,13 @@ async function readJson<T>(request: IncomingMessage, schema: ZodType<T>): Promis
 
 function routeId(pathname: string, pattern: RegExp): string | null {
   const match = pattern.exec(pathname);
-  return match?.[1] ? decodeURIComponent(match[1]) : null;
+  if (!match?.[1]) return null;
+  const decoded = decodeURIComponent(match[1]);
+  const parsed = entityUuid.safeParse(decoded);
+  if (!parsed.success) {
+    throw new ApiError(422, 'invalid_identifier', 'The route parameter must be a valid RFC 4122 UUID.');
+  }
+  return parsed.data;
 }
 
 function problemFor(error: unknown, requestId: string): { status: number; body: ApiErrorEnvelope } {
@@ -214,7 +235,8 @@ export function createApiServer(application: CrmApplication, options: ApiServerO
       }
 
       const actorHeader = request.headers['x-demo-user-id'];
-      const actor = await application.requireActor(typeof actorHeader === 'string' ? actorHeader : undefined);
+      const normalizedActorId = normalizeDevUserHeader(typeof actorHeader === 'string' ? actorHeader : undefined);
+      const actor = await application.requireActor(normalizedActorId);
 
       if (request.method === 'GET' && pathname === '/api/v1/session') {
         sendData(response, context, allowedOrigins, 200, actor);
@@ -227,18 +249,18 @@ export function createApiServer(application: CrmApplication, options: ApiServerO
       }
       if (request.method === 'POST' && pathname === '/api/v1/assignments') {
         const input = await readJson(request, createAssignmentSchema);
-        sendData(response, context, allowedOrigins, 201, await application.createAssignment(actor, input));
+        sendData(response, context, allowedOrigins, 201, await application.createAssignment(actor, input as unknown as import('@sn/contracts').CreateAssignmentInput));
         return;
       }
       const assignmentTransitionId = routeId(pathname, /^\/api\/v1\/assignments\/([^/]+)\/transitions$/);
       if (request.method === 'POST' && assignmentTransitionId) {
-        const { action } = await readJson(request, assignmentTransitionSchema);
+        const body = await readJson(request, assignmentTransitionSchema);
         sendData(
           response,
           context,
           allowedOrigins,
           200,
-          await application.transitionAssignment(actor, assignmentTransitionId, action),
+          await application.transitionAssignment(actor, assignmentTransitionId, body.action, body),
         );
         return;
       }
@@ -270,13 +292,13 @@ export function createApiServer(application: CrmApplication, options: ApiServerO
       }
       const workItemTransitionId = routeId(pathname, /^\/api\/v1\/work-items\/([^/]+)\/transitions$/);
       if (request.method === 'POST' && workItemTransitionId) {
-        const { action } = await readJson(request, workItemTransitionSchema);
+        const body = await readJson(request, workItemTransitionSchema);
         sendData(
           response,
           context,
           allowedOrigins,
           200,
-          await application.transitionWorkItem(actor, workItemTransitionId, action),
+          await application.transitionWorkItem(actor, workItemTransitionId, body.action, body),
         );
         return;
       }

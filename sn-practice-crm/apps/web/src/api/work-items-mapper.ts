@@ -248,10 +248,16 @@ export function mapWorkItemStatusToView(status: WorkItemStatus): WorkItemStatusV
       return { status: 'To Do', progress: 0, tone: 'default' };
     case 'in_progress':
       return { status: 'In Progress', progress: 50, tone: 'default' };
+    case 'blocked':
+      return { status: 'In Progress', progress: 40, tone: 'danger' };
     case 'ready_for_review':
       return { status: 'Pending Review', progress: 90, tone: 'warning' };
-    case 'done':
+    case 'changes_requested':
+      return { status: 'In Progress', progress: 60, tone: 'danger' };
+    case 'completed':
       return { status: 'Completed', progress: 100, tone: 'success' };
+    case 'cancelled':
+      return { status: 'Completed', progress: 0, tone: 'default' };
   }
 }
 
@@ -283,6 +289,7 @@ export function mapDtoToDelegatedTaskRecord(
 
   return {
     id: dto.id,
+    code: dto.code,
     kind: dto.kind as 'delegated' | 'internal',
     title: dto.title,
     parent: isInternal
@@ -308,10 +315,11 @@ export function mapDtoToPersonalTaskRecord(
 ): PersonalTaskRecord {
   return {
     id: dto.id,
+    code: dto.code,
     title: dto.title,
     context: dto.relatedPartyName || (dto.assignmentId ? dto.assignmentId : 'Personal'),
     time: formatWorkItemTime(dto.dueAt, clock),
-    done: dto.status === 'done',
+    done: dto.status === 'completed',
     ownerRole: role,
   };
 }
@@ -394,25 +402,25 @@ export function getDelegationTargets(role: CompanyRole): DelegationTargetOption[
   switch (role) {
     case 'founder':
       return [
-        { id: 'usr_manager', name: 'Ananya Rao', role: 'manager', label: 'Ananya Rao — Manager' },
-        { id: 'usr_senior', name: 'Priya Desai', role: 'senior_staff', label: 'Priya Desai — Senior Staff' },
-        { id: 'usr_staff', name: 'Rohan Mehta', role: 'staff', label: 'Rohan Mehta — Staff' },
-        { id: 'usr_trainee', name: 'Neha Kapoor', role: 'trainee', label: 'Neha Kapoor — Trainee' },
+        { id: '00000000-0000-4000-a000-000000000002', name: 'Priya Desai', role: 'manager', label: 'Priya Desai — Manager' },
+        { id: '00000000-0000-4000-a000-000000000003', name: 'Ananya Rao', role: 'senior_staff', label: 'Ananya Rao — Senior Staff' },
+        { id: '00000000-0000-4000-a000-000000000004', name: 'Rohan Mehta', role: 'staff', label: 'Rohan Mehta — Staff' },
+        { id: '00000000-0000-4000-a000-000000000005', name: 'Neha Kapoor', role: 'trainee', label: 'Neha Kapoor — Trainee' },
       ];
     case 'manager':
       return [
-        { id: 'usr_senior', name: 'Priya Desai', role: 'senior_staff', label: 'Priya Desai — Senior Staff' },
-        { id: 'usr_staff', name: 'Rohan Mehta', role: 'staff', label: 'Rohan Mehta — Staff' },
-        { id: 'usr_trainee', name: 'Neha Kapoor', role: 'trainee', label: 'Neha Kapoor — Trainee' },
+        { id: '00000000-0000-4000-a000-000000000003', name: 'Ananya Rao', role: 'senior_staff', label: 'Ananya Rao — Senior Staff' },
+        { id: '00000000-0000-4000-a000-000000000004', name: 'Rohan Mehta', role: 'staff', label: 'Rohan Mehta — Staff' },
+        { id: '00000000-0000-4000-a000-000000000005', name: 'Neha Kapoor', role: 'trainee', label: 'Neha Kapoor — Trainee' },
       ];
     case 'senior_staff':
       return [
-        { id: 'usr_staff', name: 'Rohan Mehta', role: 'staff', label: 'Rohan Mehta — Staff' },
-        { id: 'usr_trainee', name: 'Neha Kapoor', role: 'trainee', label: 'Neha Kapoor — Trainee' },
+        { id: '00000000-0000-4000-a000-000000000004', name: 'Rohan Mehta', role: 'staff', label: 'Rohan Mehta — Staff' },
+        { id: '00000000-0000-4000-a000-000000000005', name: 'Neha Kapoor', role: 'trainee', label: 'Neha Kapoor — Trainee' },
       ];
     case 'staff':
       return [
-        { id: 'usr_trainee', name: 'Neha Kapoor', role: 'trainee', label: 'Neha Kapoor — Trainee' },
+        { id: '00000000-0000-4000-a000-000000000005', name: 'Neha Kapoor', role: 'trainee', label: 'Neha Kapoor — Trainee' },
       ];
     case 'trainee':
       return [];

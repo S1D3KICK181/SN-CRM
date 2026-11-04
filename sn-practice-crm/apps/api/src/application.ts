@@ -1,6 +1,7 @@
 import { authorize, type Actor, type AuthorityRequest, type CompanyRole } from '@sn/domain';
 import type {
   AssignmentDto,
+  AssignmentStatus,
   AssignmentTransition,
   CreateAssignmentInput,
   CreateLedgerEntryInput,
@@ -12,19 +13,23 @@ import type {
   ReportingLineDto,
   SessionActor,
   WorkItemDto,
+  WorkItemStatus,
   WorkItemTransition,
 } from '@sn/contracts';
 import { ApiError, forbidden, notFound } from './errors';
 import type {
+  CreateAssignmentRecord,
+  CreateWorkItemRecord,
   CrmApplicationDependencies,
   EmployeeRecord,
   RepositoryContext,
+  ServiceReference,
 } from './repository';
 import { parseIsoInstant } from './schemas';
 
 export interface ApplicationOptions {
   now?: () => Date;
-  createId?: (prefix: string) => string;
+  createId?: (prefix?: string) => string;
 }
 
 function isLeadership(role: CompanyRole): boolean {
@@ -63,14 +68,14 @@ export type CreateWorkItemServiceInput = CreateWorkItemInput extends infer T
 
 export class CrmApplication {
   private readonly now: () => Date;
-  private readonly createId: (prefix: string) => string;
+  private readonly createId: (prefix?: string) => string;
 
   constructor(
     private readonly repository: CrmApplicationDependencies,
     options: ApplicationOptions = {},
   ) {
     this.now = options.now ?? (() => new Date());
-    this.createId = options.createId ?? ((prefix) => `${prefix}_${crypto.randomUUID()}`);
+    this.createId = options.createId ?? (() => crypto.randomUUID());
   }
 
   async listDemoActors(): Promise<SessionActor[]> {
@@ -120,83 +125,140 @@ export class CrmApplication {
   async createAssignment(actor: SessionActor, input: CreateAssignmentInput): Promise<AssignmentDto> {
     const ctx: RepositoryContext = { actorId: actor.id };
     requireAuthority({ action: 'assignment.create', actor: asActor(actor) });
+
+    const client = await this.repository.getClientReference(ctx, input.clientId);
+    if (!client) {
+      throw new ApiError(422, 'referenced_entity_not_found', 'Referenced client does not exist.');
+    }
+
+    let serviceRef: ServiceReference | null = null;
+    if (input.serviceId) {
+      serviceRef = await this.repository.getServiceReferenceById(ctx, input.serviceId);
+    } else if (input.service) {
+      serviceRef = await this.repository.getServiceReferenceByName(ctx, input.service);
+    }
+    if (!serviceRef) {
+      throw new ApiError(422, 'referenced_entity_not_found', 'Referenced service does not exist.');
+    }
+
     const owner = await this.getActiveEmployee(ctx, input.ownerId);
     requireAuthority({ action: 'assignment.assign', actor: asActor(actor), target: owner });
+
     const reviewerIds = await this.validateReviewerIds(ctx, input.reviewerIds ?? []);
     const timestamp = this.now().toISOString();
-    const existingCount = (await this.repository.listAssignments(ctx)).length;
 
-    const assignment: AssignmentDto = {
+    const record: CreateAssignmentRecord = {
       id: this.createId('asg'),
-      code: `ASN-DEMO-${String(existingCount + 1).padStart(4, '0')}`,
-      clientId: input.clientId,
-      clientName: input.clientName,
+      clientId: client.id,
+      clientName: client.name,
+      serviceId: serviceRef.id,
+      service: serviceRef.name,
       title: input.title,
-      service: input.service,
       ownerId: owner.id,
       reviewerIds,
-      status: 'open',
+      status: 'assigned',
       dueAt: input.dueAt,
-      recurringScheduleId: null,
+      recurringScheduleId: input.recurringScheduleId ?? null,
+      periodStart: input.periodStart ?? null,
+      periodEnd: input.periodEnd ?? null,
+      priority: input.priority ?? 'normal',
       createdById: actor.id,
       createdAt: timestamp,
       updatedAt: timestamp,
     };
 
-    return await this.repository.saveAssignment(ctx, assignment);
+    return await this.repository.createAssignment(ctx, record);
   }
 
   async transitionAssignment(
     actor: SessionActor,
     assignmentId: string,
     transition: AssignmentTransition,
+    options?: {
+      expectedUpdatedAt?: string;
+      deliveryNotes?: string;
+      reviewNotes?: string;
+      progressPercent?: number;
+    },
   ): Promise<AssignmentDto> {
     const ctx: RepositoryContext = { actorId: actor.id };
     const assignment = await this.getAssignment(ctx, assignmentId);
 
-    switch (transition) {
-      case 'start':
+    const normalizedAction = transition === 'reopen' ? 'request_changes' : transition;
+
+    if (assignment.status === 'approved' || assignment.status === 'closed') {
+      throw new ApiError(
+        409,
+        'invalid_state_transition',
+        'An approved Assignment is a terminal immutable audit artifact and cannot be reopened.',
+      );
+    }
+
+    let nextStatus: AssignmentStatus;
+    switch (normalizedAction) {
+      case 'start': {
         requireAuthority({
           action: 'assignment.progress',
           actor: asActor(actor),
           assignmentOwnerId: assignment.ownerId,
           reviewerIds: assignment.reviewerIds,
         });
-        if (assignment.status !== 'open') invalidTransition('Only an open Assignment can be started.');
-        assignment.status = 'in_progress';
+        if (assignment.status !== 'assigned' && assignment.status !== 'changes_requested') {
+          invalidTransition(`Cannot start assignment in status ${assignment.status}.`);
+        }
+        nextStatus = 'in_progress';
         break;
-      case 'submit':
+      }
+      case 'submit': {
         requireAuthority({
           action: 'assignment.submit',
           actor: asActor(actor),
           assignmentOwnerId: assignment.ownerId,
+          reviewerIds: assignment.reviewerIds,
         });
-        if (assignment.status !== 'open' && assignment.status !== 'in_progress') {
-          invalidTransition('Only an open or in-progress Assignment can be submitted.');
+        if (
+          assignment.status !== 'assigned' &&
+          assignment.status !== 'in_progress' &&
+          assignment.status !== 'changes_requested'
+        ) {
+          invalidTransition(`Cannot submit assignment in status ${assignment.status}.`);
         }
-        assignment.status = 'ready_for_review';
+        nextStatus = 'ready_for_review';
         break;
-      case 'complete':
+      }
+      case 'complete': {
         requireAuthority({ action: 'assignment.approve', actor: asActor(actor) });
         if (assignment.status !== 'ready_for_review') {
           invalidTransition('An Assignment must be ready for review before leadership completes it.');
         }
-        assignment.status = 'completed';
+        nextStatus = 'approved';
         break;
-      case 'reopen':
-        requireAuthority({ action: 'assignment.reassign', actor: asActor(actor) });
-        if (assignment.status === 'completed') {
-          invalidTransition('An approved Assignment is a terminal immutable audit artifact and cannot be reopened.');
+      }
+      case 'request_changes': {
+        requireAuthority({
+          action: 'assignment.request_changes',
+          actor: asActor(actor),
+          assignmentOwnerId: assignment.ownerId,
+          reviewerIds: assignment.reviewerIds,
+        });
+        if (assignment.status !== 'ready_for_review' && assignment.status !== 'in_progress') {
+          invalidTransition('Only a submitted or in-progress Assignment can have changes requested.');
         }
-        if (assignment.status !== 'ready_for_review') {
-          invalidTransition('Only a submitted Assignment can be reopened (request changes).');
-        }
-        assignment.status = 'in_progress';
+        nextStatus = 'changes_requested';
         break;
+      }
+      default:
+        invalidTransition(`Unsupported transition action: ${transition}`);
     }
 
-    assignment.updatedAt = this.now().toISOString();
-    return await this.repository.saveAssignment(ctx, assignment);
+    return await this.repository.updateAssignmentStatus(ctx, {
+      id: assignment.id,
+      status: nextStatus,
+      expectedUpdatedAt: options?.expectedUpdatedAt,
+      deliveryNotes: options?.deliveryNotes,
+      reviewNotes: options?.reviewNotes,
+      progressPercent: options?.progressPercent,
+    });
   }
 
   async listRecurringSchedules(actor: SessionActor): Promise<RecurringScheduleDto[]> {
@@ -216,27 +278,35 @@ export class CrmApplication {
   ): Promise<RecurringScheduleDto> {
     const ctx: RepositoryContext = { actorId: actor.id };
     requireAuthority({ action: 'schedule.manage', actor: asActor(actor) });
+
+    const client = await this.repository.getClientReference(ctx, input.clientId);
+    if (!client) {
+      throw new ApiError(422, 'referenced_entity_not_found', 'Referenced client does not exist.');
+    }
+
+    let serviceRef: ServiceReference | null = null;
+    if (input.serviceId) {
+      serviceRef = await this.repository.getServiceReferenceById(ctx, input.serviceId);
+    } else if (input.service) {
+      serviceRef = await this.repository.getServiceReferenceByName(ctx, input.service);
+    }
+    const serviceId = serviceRef?.id ?? input.serviceId ?? '50000000-0000-4000-a000-000000000001';
+    const service = serviceRef?.name ?? input.service ?? 'General Compliance';
+
     const owner = await this.getActiveEmployee(ctx, input.ownerId);
     requireAuthority({ action: 'assignment.assign', actor: asActor(actor), target: owner });
-    const timestamp = this.now().toISOString();
-    const schedule: RecurringScheduleDto = {
-      id: this.createId('sch'),
-      clientId: input.clientId,
-      clientName: input.clientName,
-      title: input.title,
-      service: input.service,
-      cadence: input.cadence,
-      ownerId: owner.id,
-      reviewerIds: await this.validateReviewerIds(ctx, input.reviewerIds ?? []),
-      nextOccurrenceOn: input.nextOccurrenceOn,
-      dueDay: input.dueDay,
-      active: true,
-      createdById: actor.id,
-      createdAt: timestamp,
-      updatedAt: timestamp,
-    };
 
-    return await this.repository.saveRecurringSchedule(ctx, schedule);
+    const reviewerIds = await this.validateReviewerIds(ctx, input.reviewerIds ?? []);
+
+    return await this.repository.createRecurringSchedule(ctx, {
+      ...input,
+      id: this.createId('sch'),
+      createdById: actor.id,
+      clientName: client.name,
+      serviceId,
+      service,
+      reviewerIds,
+    });
   }
 
   async updateRecurringSchedule(
@@ -246,13 +316,7 @@ export class CrmApplication {
   ): Promise<RecurringScheduleDto> {
     const ctx: RepositoryContext = { actorId: actor.id };
     requireAuthority({ action: 'schedule.manage', actor: asActor(actor) });
-    const schedule = await this.repository.getRecurringSchedule(ctx, scheduleId);
-    if (!schedule) throw notFound('Recurring Schedule');
-
-    if (patch.active !== undefined) schedule.active = patch.active;
-    if (patch.nextOccurrenceOn !== undefined) schedule.nextOccurrenceOn = patch.nextOccurrenceOn;
-    schedule.updatedAt = this.now().toISOString();
-    return await this.repository.saveRecurringSchedule(ctx, schedule);
+    return await this.repository.updateRecurringSchedule(ctx, scheduleId, patch);
   }
 
   async listWorkItems(actor: SessionActor): Promise<WorkItemDto[]> {
@@ -325,7 +389,7 @@ export class CrmApplication {
     }
 
     const timestamp = this.now().toISOString();
-    const item: WorkItemDto = {
+    const record: CreateWorkItemRecord = {
       id: this.createId('wrk'),
       kind: input.kind,
       title: input.title,
@@ -338,17 +402,24 @@ export class CrmApplication {
       status: 'todo',
       dueAt: input.dueAt,
       reminderAt,
+      priority: input.priority ?? 'normal',
       createdAt: timestamp,
       updatedAt: timestamp,
     };
 
-    return await this.repository.saveWorkItem(ctx, item);
+    return await this.repository.createWorkItem(ctx, record);
   }
 
   async transitionWorkItem(
     actor: SessionActor,
     workItemId: string,
     transition: WorkItemTransition,
+    options?: {
+      expectedUpdatedAt?: string;
+      notes?: string;
+      completionNote?: string;
+      progressPercent?: number;
+    },
   ): Promise<WorkItemDto> {
     const ctx: RepositoryContext = { actorId: actor.id };
     const item = await this.repository.getWorkItem(ctx, workItemId);
@@ -356,25 +427,40 @@ export class CrmApplication {
     const actorIsAssignee = item.assigneeId === actor.id;
     const actorCanReview = isLeadership(actor.role) || item.createdById === actor.id;
 
-    switch (transition) {
-      case 'start':
+    const normalizedAction = transition === 'reopen' ? 'request_changes' : transition;
+
+    if (item.status === 'completed') {
+      throw new ApiError(
+        409,
+        'invalid_state_transition',
+        'A completed Work Item is a terminal immutable audit artifact and cannot be reopened.',
+      );
+    }
+
+    let nextStatus: WorkItemStatus;
+    switch (normalizedAction) {
+      case 'start': {
         if (!actorIsAssignee && !isLeadership(actor.role)) {
           throw forbidden('not_work_item_assignee', 'Only the assignee or practice leadership may start this Work Item.');
         }
-        if (item.status !== 'todo') invalidTransition('Only a queued Work Item can be started.');
-        item.status = 'in_progress';
+        if (item.status !== 'todo' && item.status !== 'changes_requested') {
+          invalidTransition('Only a queued or changes_requested Work Item can be started.');
+        }
+        nextStatus = 'in_progress';
         break;
-      case 'submit':
+      }
+      case 'submit': {
         if (item.kind === 'personal') invalidTransition('Personal Tasks are completed directly and do not require review.');
         if (!actorIsAssignee) {
           throw forbidden('not_work_item_assignee', 'Only the assignee may submit this Work Item for review.');
         }
-        if (item.status !== 'todo' && item.status !== 'in_progress') {
-          invalidTransition('Only a queued or in-progress Work Item can be submitted.');
+        if (item.status !== 'todo' && item.status !== 'in_progress' && item.status !== 'changes_requested') {
+          invalidTransition('Only a queued, in-progress, or changes_requested Work Item can be submitted.');
         }
-        item.status = 'ready_for_review';
+        nextStatus = 'ready_for_review';
         break;
-      case 'complete':
+      }
+      case 'complete': {
         if (item.kind === 'personal') {
           if (!actorIsAssignee) {
             throw forbidden('not_work_item_owner', 'Only the owner may complete a Personal Task.');
@@ -390,24 +476,31 @@ export class CrmApplication {
             invalidTransition('A delegated or internal Work Item must be submitted before it is completed.');
           }
         }
-        item.status = 'done';
+        nextStatus = 'completed';
         break;
-      case 'reopen':
+      }
+      case 'request_changes': {
         if (item.kind === 'personal' ? !actorIsAssignee : !actorCanReview) {
-          throw forbidden('not_work_item_reviewer', 'You do not have authority to reopen this Work Item.');
-        }
-        if (item.status === 'done') {
-          invalidTransition('A completed Work Item is a terminal immutable audit artifact and cannot be reopened.');
+          throw forbidden('not_work_item_reviewer', 'You do not have authority to request changes on this Work Item.');
         }
         if (item.status !== 'ready_for_review') {
-          invalidTransition('Only a submitted Work Item can be reopened (request changes).');
+          invalidTransition('Only a submitted Work Item can be requested for changes.');
         }
-        item.status = 'in_progress';
+        nextStatus = 'changes_requested';
         break;
+      }
+      default:
+        invalidTransition(`Unsupported transition action: ${transition}`);
     }
 
-    item.updatedAt = this.now().toISOString();
-    return await this.repository.saveWorkItem(ctx, item);
+    return await this.repository.updateWorkItemStatus(ctx, {
+      id: item.id,
+      status: nextStatus,
+      expectedUpdatedAt: options?.expectedUpdatedAt,
+      notes: options?.notes,
+      completionNote: options?.completionNote,
+      progressPercent: options?.progressPercent,
+    });
   }
 
   async listReportingLines(actor: SessionActor): Promise<ReportingLineDto[]> {
@@ -437,34 +530,13 @@ export class CrmApplication {
       proposedManager: manager,
     });
 
-    subject.reportsToId = manager?.id ?? null;
-    const savedSubject = await this.repository.saveEmployee(ctx, subject);
-    return { employee: asSession(savedSubject), manager: manager ? asSession(manager) : null };
+    return await this.repository.updateReportingLine(ctx, employeeId, manager?.id ?? null);
   }
 
   async getOfficeAccountsSummary(actor: SessionActor): Promise<OfficeAccountsSummaryDto> {
     this.requireFinanceAuthority(actor);
     const ctx: RepositoryContext = { actorId: actor.id };
-    const entries = await this.repository.listLedgerEntries(ctx);
-    const balanceFor = (account: 'cash' | 'bank') =>
-      entries
-        .filter((entry) => entry.account === account)
-        .reduce((total, entry) => total + (entry.direction === 'inflow' ? entry.amountPaise : -entry.amountPaise), 0);
-    const totalFor = (direction: 'inflow' | 'outflow') =>
-      entries
-        .filter((entry) => entry.direction === direction)
-        .reduce((total, entry) => total + entry.amountPaise, 0);
-
-    return {
-      currency: 'INR',
-      cashBalancePaise: balanceFor('cash'),
-      bankBalancePaise: balanceFor('bank'),
-      totalInflowsPaise: totalFor('inflow'),
-      totalOutflowsPaise: totalFor('outflow'),
-      recentEntries: [...entries]
-        .sort((left, right) => right.occurredOn.localeCompare(left.occurredOn) || right.createdAt.localeCompare(left.createdAt))
-        .slice(0, 10),
-    };
+    return await this.repository.getOfficeAccountsSummary(ctx);
   }
 
   async listLedgerEntries(actor: SessionActor): Promise<LedgerEntryDto[]> {
@@ -479,18 +551,11 @@ export class CrmApplication {
   async createLedgerEntry(actor: SessionActor, input: CreateLedgerEntryInput): Promise<LedgerEntryDto> {
     this.requireFinanceAuthority(actor);
     const ctx: RepositoryContext = { actorId: actor.id };
-    const entry: LedgerEntryDto = {
+    return await this.repository.createLedgerEntry(ctx, {
+      ...input,
       id: this.createId('led'),
-      occurredOn: input.occurredOn,
-      account: input.account,
-      direction: input.direction,
-      amountPaise: input.amountPaise,
-      narration: input.narration,
-      reference: input.reference ?? null,
       recordedById: actor.id,
-      createdAt: this.now().toISOString(),
-    };
-    return await this.repository.saveLedgerEntry(ctx, entry);
+    });
   }
 
   private requireFinanceAuthority(actor: SessionActor): void {
@@ -512,8 +577,8 @@ export class CrmApplication {
   private async validateReviewerIds(ctx: RepositoryContext, ids: readonly string[]): Promise<string[]> {
     const reviewerIds = unique(ids);
     const reviewers = await Promise.all(reviewerIds.map((id) => this.getActiveEmployee(ctx, id)));
-    if (reviewers.some((reviewer) => !isLeadership(reviewer.role))) {
-      throw new ApiError(422, 'invalid_assignment_reviewer', 'Assignment reviewers must be the Founder or Manager.');
+    if (reviewers.some((reviewer) => reviewer.role === 'trainee')) {
+      throw new ApiError(422, 'invalid_assignment_reviewer', 'A Trainee cannot be assigned as an assignment reviewer.');
     }
     return reviewerIds;
   }

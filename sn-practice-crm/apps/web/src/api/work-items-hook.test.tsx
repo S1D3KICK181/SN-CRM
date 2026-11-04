@@ -14,14 +14,15 @@ afterEach(() => {
 
 const FOUNDER_ITEM: WorkItemDto = {
   id: 'wrk_f01',
+  code: 'WI-001001',
   kind: 'delegated',
   title: 'Founder Delegated Item',
   notes: null,
   assignmentId: 'ASN-0001',
   relatedClientId: 'CLI-0001',
   relatedPartyName: 'Aster Foods',
-  assigneeId: 'usr_senior',
-  createdById: 'usr_founder',
+  assigneeId: '00000000-0000-4000-a000-000000000003',
+  createdById: '00000000-0000-4000-a000-000000000001',
   status: 'todo',
   dueAt: '2026-11-04T12:30:00.000Z',
   reminderAt: null,
@@ -31,14 +32,15 @@ const FOUNDER_ITEM: WorkItemDto = {
 
 const STAFF_PERSONAL_ITEM: WorkItemDto = {
   id: 'wrk_p_staff',
+  code: 'WI-001002',
   kind: 'personal',
   title: 'Staff Private Task',
   notes: null,
   assignmentId: null,
   relatedClientId: null,
   relatedPartyName: 'Personal Note',
-  assigneeId: 'usr_staff',
-  createdById: 'usr_staff',
+  assigneeId: '00000000-0000-4000-a000-000000000004',
+  createdById: '00000000-0000-4000-a000-000000000004',
   status: 'todo',
   dueAt: '2026-11-03T12:30:00.000Z',
   reminderAt: null,
@@ -242,6 +244,7 @@ describe('useWorkItems React hook integration', () => {
       adapter.setCreateHandler((_role, input) => {
         return {
           id: 'wrk_int_created_1',
+          code: 'WI-001004',
           kind: 'internal',
           title: input.title,
           notes: input.notes ?? null,
@@ -330,14 +333,15 @@ describe('useWorkItems React hook integration', () => {
     it('zero-frame role privacy guard synchronously clears internal items on role change', async () => {
       const internalItem: WorkItemDto = {
         id: 'wrk_int_founder',
+        code: 'WI-001003',
         kind: 'internal',
         title: 'Founder Internal Work',
         notes: null,
         assignmentId: null,
         relatedClientId: null,
         relatedPartyName: null,
-        assigneeId: 'usr_manager',
-        createdById: 'usr_founder',
+        assigneeId: '00000000-0000-4000-a000-000000000002',
+        createdById: '00000000-0000-4000-a000-000000000001',
         status: 'todo',
         dueAt: '2026-11-04T12:30:00.000Z',
         reminderAt: null,

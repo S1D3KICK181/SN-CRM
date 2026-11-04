@@ -267,7 +267,7 @@ export function useWorkItems(
     async (taskId: string): Promise<boolean> => {
       const existing = coordinator.getState().items.find((i) => i.id === taskId);
       if (!existing) return false;
-      const action = existing.status === 'done' ? 'reopen' : 'complete';
+      const action = existing.status === 'completed' ? 'reopen' : 'complete';
       const res = await coordinator.handleTransitionWorkItem(taskId, action);
       return res.success;
     },

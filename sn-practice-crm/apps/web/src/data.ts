@@ -10,8 +10,8 @@ export const ROLE_LABELS: Record<CompanyRole, string> = {
 
 export const ROLE_PEOPLE: Record<CompanyRole, { id: string; name: string; initials: string }> = {
   founder: { id: 'founder-sn', name: 'S. Narayanan', initials: 'SN' },
-  manager: { id: 'manager-ananya', name: 'Ananya Rao', initials: 'AR' },
-  senior_staff: { id: 'senior-priya', name: 'Priya Desai', initials: 'PD' },
+  manager: { id: 'manager-priya', name: 'Priya Desai', initials: 'PD' },
+  senior_staff: { id: 'senior-ananya', name: 'Ananya Rao', initials: 'AR' },
   staff: { id: 'staff-rohan', name: 'Rohan Mehta', initials: 'RM' },
   trainee: { id: 'trainee-neha', name: 'Neha Kapoor', initials: 'NK' },
 };
@@ -195,6 +195,7 @@ export const ASSIGNMENTS: AssignmentRow[] = [
 
 export interface PersonalTaskRecord {
   id: string;
+  code?: string;
   title: string;
   context: string;
   time: string;
@@ -212,6 +213,7 @@ export type DelegatedTaskStatus = 'To Do' | 'In Progress' | 'Pending Review' | '
 
 export interface DelegatedTaskRecord {
   id: string;
+  code?: string;
   kind: 'delegated' | 'internal';
   title: string;
   parent: string;

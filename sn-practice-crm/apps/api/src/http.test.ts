@@ -8,10 +8,13 @@ import { InMemoryCrmRepository } from './in-memory-repository';
 
 const runningServers: Server[] = [];
 
+const CANONICAL_ASSIGNMENT_1 = '30000000-0000-4000-a000-000000000001';
+
 async function startServer(options?: { allowDevActorHeader?: boolean }): Promise<string> {
+  let id = 0;
   const application = new CrmApplication(new InMemoryCrmRepository(createDemoSeed()), {
     now: () => new Date('2026-10-30T12:00:00.000Z'),
-    createId: (prefix) => `${prefix}_http_test`,
+    createId: (prefix = 'entity') => `00000000-0000-4000-e000-${String(++id).padStart(12, '0')}`,
   });
   const server = createApiServer(application, {
     logger: { error: () => undefined },
@@ -235,17 +238,17 @@ describe('HTTP API', () => {
     it('returns 409 when attempting to reopen a completed Assignment via HTTP', async () => {
       const baseUrl = await startServer({ allowDevActorHeader: true });
 
-      // asg_gst_october: submit as senior -> complete as founder
-      await fetch(`${baseUrl}/api/v1/assignments/asg_gst_october/transitions`, {
+      // CANONICAL_ASSIGNMENT_1: submit as manager -> complete as founder
+      await fetch(`${baseUrl}/api/v1/assignments/${CANONICAL_ASSIGNMENT_1}/transitions`, {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
-          'x-demo-user-id': DEMO_ACTOR_IDS.senior,
+          'x-demo-user-id': DEMO_ACTOR_IDS.manager,
         },
         body: JSON.stringify({ action: 'submit' }),
       });
 
-      await fetch(`${baseUrl}/api/v1/assignments/asg_gst_october/transitions`, {
+      await fetch(`${baseUrl}/api/v1/assignments/${CANONICAL_ASSIGNMENT_1}/transitions`, {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
@@ -255,7 +258,7 @@ describe('HTTP API', () => {
       });
 
       // Try to reopen completed assignment
-      const reopenRes = await fetch(`${baseUrl}/api/v1/assignments/asg_gst_october/transitions`, {
+      const reopenRes = await fetch(`${baseUrl}/api/v1/assignments/${CANONICAL_ASSIGNMENT_1}/transitions`, {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
@@ -274,21 +277,21 @@ describe('HTTP API', () => {
       });
     });
 
-    it('returns 200 and in_progress when reopening a submitted Assignment prior to approval (Request changes)', async () => {
+    it('returns 200 and changes_requested when reopening a submitted Assignment prior to approval (Request changes)', async () => {
       const baseUrl = await startServer({ allowDevActorHeader: true });
 
-      // asg_gst_october starts in_progress -> submit
-      await fetch(`${baseUrl}/api/v1/assignments/asg_gst_october/transitions`, {
+      // CANONICAL_ASSIGNMENT_1 starts in_progress -> submit
+      await fetch(`${baseUrl}/api/v1/assignments/${CANONICAL_ASSIGNMENT_1}/transitions`, {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
-          'x-demo-user-id': DEMO_ACTOR_IDS.senior,
+          'x-demo-user-id': DEMO_ACTOR_IDS.manager,
         },
         body: JSON.stringify({ action: 'submit' }),
       });
 
       // Reopen prior to approval
-      const reopenRes = await fetch(`${baseUrl}/api/v1/assignments/asg_gst_october/transitions`, {
+      const reopenRes = await fetch(`${baseUrl}/api/v1/assignments/${CANONICAL_ASSIGNMENT_1}/transitions`, {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
@@ -300,8 +303,8 @@ describe('HTTP API', () => {
       expect(reopenRes.status).toBe(200);
       const body = await reopenRes.json();
       expect(body.data).toMatchObject({
-        id: 'asg_gst_october',
-        status: 'in_progress',
+        id: CANONICAL_ASSIGNMENT_1,
+        status: 'changes_requested',
       });
     });
 
@@ -318,7 +321,7 @@ describe('HTTP API', () => {
         body: JSON.stringify({
           kind: 'delegated',
           title: 'Verify GSTR-3B tax payment',
-          assignmentId: 'asg_gst_october',
+          assignmentId: CANONICAL_ASSIGNMENT_1,
           assigneeId: DEMO_ACTOR_IDS.trainee,
           dueAt: '2026-11-02T12:00:00.000Z',
         }),
@@ -365,7 +368,7 @@ describe('HTTP API', () => {
       });
     });
 
-    it('returns 200 and in_progress when reopening a submitted Work Item prior to approval (Request changes)', async () => {
+    it('returns 200 and changes_requested when reopening a submitted Work Item prior to approval (Request changes)', async () => {
       const baseUrl = await startServer({ allowDevActorHeader: true });
 
       const createRes = await fetch(`${baseUrl}/api/v1/work-items`, {
@@ -377,7 +380,7 @@ describe('HTTP API', () => {
         body: JSON.stringify({
           kind: 'delegated',
           title: 'Recheck ledger postings',
-          assignmentId: 'asg_gst_october',
+          assignmentId: CANONICAL_ASSIGNMENT_1,
           assigneeId: DEMO_ACTOR_IDS.trainee,
           dueAt: '2026-11-02T12:00:00.000Z',
         }),
@@ -408,7 +411,26 @@ describe('HTTP API', () => {
       const body = await reopenRes.json();
       expect(body.data).toMatchObject({
         id: created.id,
-        status: 'in_progress',
+        status: 'changes_requested',
+      });
+    });
+
+    it('rejects non-UUID route parameters with 422 invalid_identifier', async () => {
+      const baseUrl = await startServer({ allowDevActorHeader: true });
+
+      const res = await fetch(`${baseUrl}/api/v1/assignments/not-a-uuid/transitions`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-demo-user-id': DEMO_ACTOR_IDS.founder,
+        },
+        body: JSON.stringify({ action: 'start' }),
+      });
+
+      expect(res.status).toBe(422);
+      const body = await res.json();
+      expect(body).toMatchObject({
+        error: { code: 'invalid_identifier' },
       });
     });
 

@@ -92,7 +92,9 @@ describe('Vite Proxy & Live API Smoke', () => {
     expect(rows.length).toBeGreaterThanOrEqual(2);
 
     const first = rows[0]!;
-    expect(first.id).toMatch(/^asg_/);
+    expect(first.id).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+    );
     expect(first.client).toBeTruthy();
     expect(first.due).toMatch(/^\d{2}\/\d{2}\/\d{4}$/);
   });
@@ -104,20 +106,22 @@ describe('Vite Proxy & Live API Smoke', () => {
 
     // 1. Create assignment as founder
     const created = await adapter.create('founder', {
-      clientId: 'cli_mehta',
-      clientName: 'Mehta Industries Pvt Ltd',
+      clientId: 'CLI-0001',
+      clientName: 'Aster Foods Private Limited',
       title: 'Smoke Test Filing',
-      service: 'GST compliance',
-      ownerNameOrId: 'Priya Desai',
-      reviewerNameOrId: 'Ananya Rao',
+      service: 'GST Compliance',
+      ownerNameOrId: 'Ananya Rao',
+      reviewerNameOrId: 'Priya Desai',
       dueDate: '15/11/2026',
     });
 
-    expect(created.id).toMatch(/^asg_/);
+    expect(created.id).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+    );
     expect(created.title).toBe('Smoke Test Filing');
     expect(created.status).toBe('Awaiting documents');
 
-    // 2. Start assignment as senior staff (Priya Desai owns it)
+    // 2. Start assignment as senior staff (Ananya Rao owns it)
     const started = await adapter.transition('senior_staff', created.id, 'start');
     expect(started.status).toBe('In progress');
 
@@ -127,7 +131,7 @@ describe('Vite Proxy & Live API Smoke', () => {
 
     // 4. Complete assignment as founder
     const completed = await adapter.transition('founder', created.id, 'complete');
-    expect(completed.status).toBe('Completed');
+    expect(completed.status).toBe('Approved');
     expect(completed.progress).toBe(100);
   });
 
@@ -158,7 +162,9 @@ describe('Vite Proxy & Live API Smoke', () => {
 
     const created = await adapter.create('founder', uiComposerCommand);
 
-    expect(created.id).toMatch(/^asg_/);
+    expect(created.id).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+    );
     expect(created.title).toBe('Statutory Compliance Engagement');
     expect(created.client).toBe('Aster Foods Private Limited');
     expect(created.owner).toBe('Priya Desai');
