@@ -19,7 +19,7 @@
 > - **Tooling:** Project-local Supabase CLI 2.122.0 (`sn-practice-crm/package.json`) and PostgreSQL client `psql` 18.6 are verified and operational.
 > - **Canonical App-Local Config:** Initialized at `sn-practice-crm/supabase/config.toml` (project ID: `sn-practice-crm`) on standard local ports (API 54321, DB 54322, Studio 54323, Inbucket mail 54324). Its `.gitignore` ignores `.temp`, `.branches`, and local `.env` files. (The separate parent `supabase/config.toml` was preserved untouched and must not be used or modified for this app-local workflow).
 > - **Verified Clean Start Command:** Default `npx supabase start` reproducibly failed only on optional local Analytics/Logflare container health checks. The verified clean startup command is `npx supabase start -x logflare,vector`. These two services are optional local observability components; excluding them yields zero unhealthy containers while retaining all essential development services (PostgreSQL Database, Auth, RLS, PostgREST REST API, Realtime, Storage, Studio, Inbucket mail, PostgreSQL meta, and Edge Runtime).
-> - **Database Schema & Migrations:** `npx supabase db reset --local` passed. Because authoritative migration `database/migrations/0001_practice_core.sql` resides outside `supabase/migrations`, manual application via `psql -v ON_ERROR_STOP=1` was executed. The schema inventory contains exactly 16 base tables and 4 views.
+> - **Database Schema & Migrations:** Canonical migrations reside under `sn-practice-crm/supabase/migrations/` (`20261031060700_practice_core.sql`, `20261103105200_work_item_reminder.sql`, `20261103120000_add_demo_support.sql`). Executing `npx supabase db reset --local --no-seed` drops and recreates the database schema, applying all canonical migrations automatically. Seeding is executed via `npm run seed:local`.
 > - **Invariants & Persistence Verified:** `database/tests/001_catalog_invariants.sql` passed on initial execution and passed again after a clean stop/restart cycle (`npx supabase stop` followed by `npx supabase start -x logflare,vector`), proving schema and data persistence.
 > - **Monorepo Quality Gate:** All quality checks pass at HEAD `6e01704b3875c897c78313371bb44fd9acf9c619` (TypeScript typecheck passed; Vitest passed 6 files / 85 tests; static DB/policy passed 9 tests; total: 94 tests; production build passed in 3.73s).
 > - **Active Stack State:** The local Supabase stack is intentionally left running.
@@ -164,12 +164,15 @@ This stop/start cycle was executed and verified: database schema and state were 
 ## 5. Database Migration Layout & Execution Truth
 
 ### 5.1 File Placement Architecture
-- **Authoritative Core Migration:** Located at `sn-practice-crm/database/migrations/0001_practice_core.sql` (2,960 lines).
+- **Canonical Migrations Directory:** Located at `sn-practice-crm/supabase/migrations/` containing:
+  - `20261031060700_practice_core.sql` (Practice core schema, tables, policies, and triggers)
+  - `20261103105200_work_item_reminder.sql` (Work item reminder_at column, index, and immutability trigger)
+  - `20261103120000_add_demo_support.sql` (Demo data support, is_demo flag, immutability, and cleanup RPC)
 - **Supabase CLI Convention:** As documented in the [Supabase CLI reference](https://supabase.com/docs/reference/cli/global-flags) and [Supabase CLI local development](https://supabase.com/docs/guides/local-development/cli/getting-started?platform=npm&queryGroups=platform), the Supabase CLI applies migration files from `sn-practice-crm/supabase/migrations/` using timestamped naming (e.g., `YYYYMMDDHHMMSS_name.sql`).
-- **Architectural Truth (Source-Backed Fact & Project Inference):** Because authoritative core migration SQL resides under `database/migrations/` and not `supabase/migrations/`, running local database reset drops and recreates the database schema from baseline, but will **not** automatically apply `0001_practice_core.sql`. Manual application via `psql` remains required after a reset. This is a source-backed fact based on official CLI behavior documented in the [Supabase CLI reference](https://supabase.com/docs/reference/cli/global-flags) combined with this repository's project-specific directory structure.
+- **Architectural Truth:** With all migrations consolidated in `sn-practice-crm/supabase/migrations/`, running `npx supabase db reset --local --no-seed` recreates the schema from baseline and applies all canonical migrations in order. Local seeding is then executed using `npm run seed:local`.
 
 ### 5.2 Verified Execution Sequence
-The full provisioning and verification sequence was executed cleanly:
+The full provisioning and verification sequence is:
 
 1. **Ensure Working Directory:**
    ```powershell
@@ -178,9 +181,14 @@ The full provisioning and verification sequence was executed cleanly:
 
 2. **Reset Local Database (Approved Local Target Only):**
    ```powershell
-   npx supabase db reset --local
+   npx supabase db reset --local --no-seed
    ```
-   *Official Fact:* As documented in the [Supabase CLI reference](https://supabase.com/docs/reference/cli/global-flags), `supabase db reset --local` resets the local database by recreating it from baseline. Never use `--linked` or `--db-url` in this verification task; all actions must remain strictly local. (Reset passed cleanly).
+   *Official Fact:* As documented in the [Supabase CLI reference](https://supabase.com/docs/reference/cli/global-flags), `supabase db reset --local --no-seed` resets the local database by recreating it from baseline and applying all canonical migrations without running seed. Never use `--linked` or `--db-url`; all actions must remain strictly local.
+
+3. **Seed Local Database:**
+   ```powershell
+   npm run seed:local
+   ```
 
 3. **Inspect Local Stack Status & Define Task-Scoped Connection Variable:**
    ```powershell
@@ -258,7 +266,7 @@ Full monorepo verification was conducted at HEAD `6e01704b3875c897c78313371bb44f
 
 1. **Exact Local Target Constraint:** All database operations must target the verified local Supabase container instance on loopback/localhost (`127.0.0.1` or `localhost`). Running commands targeting cloud projects, using `supabase link`, or passing `--linked` or `--db-url` is strictly prohibited.
 2. **No Broad Container / Volume Pruning:** Workers must never execute blanket cleanup commands such as `docker system prune -a` or `docker volume prune`, which could destroy host state outside the CRM project.
-3. **Local Reset Scope & Migration Requirement:** Be aware that `npx supabase db reset --local` drops the local database schema, recreating it from baseline as documented in the [Supabase CLI reference](https://supabase.com/docs/reference/cli/global-flags). Because `0001_practice_core.sql` resides outside `supabase/migrations`, manual reapplication via `psql` is required after any reset.
+3. **Local Reset Scope & Canonical Migrations:** Executing `npx supabase db reset --local --no-seed` drops the local database schema, recreating it from baseline and automatically applying all canonical migrations from `sn-practice-crm/supabase/migrations/`. Seeding is decoupled and performed via `npm run seed:local`.
 4. **Service Role Key Isolation:** The Supabase `service_role` secret bypasses RLS policies entirely. It is permitted solely in backend background jobs (such as `materialize_due_recurring_assignments`) and must never be exposed to frontend code or client bundles.
 5. **No Secret Storage & Working Tree Hygiene:** Database credentials and API keys must never be committed to git, echoed into logs, or stored in unignored files. The generated `sn-practice-crm/supabase/` directory has `.temp` and `.branches` ignored by its `.gitignore`; only canonical `config.toml` and `.gitignore` remain nonignored.
 
