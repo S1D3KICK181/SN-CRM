@@ -1,8 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import type postgres from 'postgres';
 import type { ZodType } from 'zod';
-import type { ApiErrorEnvelope } from '@sn/contracts';
+import type { ApiErrorEnvelope, SessionActor } from '@sn/contracts';
 import { CrmApplication } from './application';
+import { DEV_ACTOR_ALIASES, normalizeDevUserHeader, resolveActor, verifySupabaseToken } from './auth';
 import { ApiError } from './errors';
 import {
   assignmentTransitionSchema,
@@ -15,6 +17,8 @@ import {
   updateRecurringScheduleSchema,
   workItemTransitionSchema,
 } from './schemas';
+
+export { DEV_ACTOR_ALIASES, normalizeDevUserHeader };
 
 const DEFAULT_LOCAL_ORIGINS = [
   'http://localhost:4320',
@@ -29,26 +33,15 @@ const DEFAULT_LOCAL_ORIGINS = [
   'http://127.0.0.1:4173',
 ];
 
-const DEV_ACTOR_ALIASES: Record<string, string> = {
-  usr_founder: '00000000-0000-4000-a000-000000000001',
-  usr_manager: '00000000-0000-4000-a000-000000000002',
-  usr_senior: '00000000-0000-4000-a000-000000000003',
-  usr_staff: '00000000-0000-4000-a000-000000000004',
-  usr_trainee: '00000000-0000-4000-a000-000000000005',
-};
-
-function normalizeDevUserHeader(headerValue: string | undefined): string | undefined {
-  if (!headerValue) return undefined;
-  const trimmed = headerValue.trim();
-  return DEV_ACTOR_ALIASES[trimmed] ?? trimmed;
-}
-
 interface Logger {
   error(message: string, metadata?: unknown): void;
 }
 
 export interface AuthConfig {
   readonly allowDevActorHeader: boolean;
+  readonly jwksUrl?: string;
+  readonly jwtSecret?: string;
+  readonly jwtIssuer?: string;
 }
 
 export function isProductionEnvironment(nodeEnv: string | undefined): boolean {
@@ -64,7 +57,12 @@ export function resolveAuthConfig(env: NodeJS.ProcessEnv = process.env): AuthCon
       'FATAL CONFIGURATION ERROR: ALLOW_DEV_ACTOR_HEADER cannot be enabled when NODE_ENV is production.',
     );
   }
-  return { allowDevActorHeader: allowDev };
+  return {
+    allowDevActorHeader: allowDev,
+    jwksUrl: env['SUPABASE_JWKS_URL']?.trim() || undefined,
+    jwtSecret: env['SUPABASE_JWT_SECRET']?.trim() || undefined,
+    jwtIssuer: env['SUPABASE_JWT_ISSUER']?.trim() || undefined,
+  };
 }
 
 export interface ApiServerOptions {
@@ -72,6 +70,10 @@ export interface ApiServerOptions {
   logger?: Logger;
   createRequestId?: () => string;
   allowDevActorHeader?: boolean;
+  jwksUrl?: string;
+  jwtSecret?: string;
+  jwtIssuer?: string;
+  sql?: postgres.Sql;
 }
 
 interface RequestContext {
@@ -90,7 +92,10 @@ function writeCorsHeaders(response: ServerResponse, origin: string | undefined, 
   response.setHeader('access-control-allow-origin', origin);
   response.setHeader('vary', 'Origin');
   response.setHeader('access-control-allow-methods', 'GET,POST,PUT,PATCH,OPTIONS');
-  response.setHeader('access-control-allow-headers', 'content-type,x-demo-user-id,x-request-id');
+  response.setHeader(
+    'access-control-allow-headers',
+    'authorization,content-type,x-demo-user-id,x-request-id',
+  );
   response.setHeader('access-control-max-age', '600');
 }
 
@@ -179,6 +184,61 @@ function problemFor(error: unknown, requestId: string): { status: number; body: 
       },
     };
   }
+
+  const pgErr = error as { code?: string; message?: string };
+  if (pgErr?.code) {
+    if (pgErr.code === '42501') {
+      return {
+        status: 403,
+        body: {
+          error: { code: 'forbidden', message: 'You do not have permission to perform this operation.' },
+          requestId,
+        },
+      };
+    }
+    if (pgErr.code === '23514') {
+      const msg = pgErr.message ?? '';
+      const isConstraint = msg.includes('check constraint') || msg.includes('violates check constraint');
+      return {
+        status: 422,
+        body: {
+          error: {
+            code: 'validation_failed',
+            message: isConstraint ? 'Request failed database validation constraints.' : msg || 'Business rule validation failed.',
+          },
+          requestId,
+        },
+      };
+    }
+    if (pgErr.code === '23503') {
+      return {
+        status: 422,
+        body: {
+          error: { code: 'referenced_entity_not_found', message: 'The referenced entity does not exist.' },
+          requestId,
+        },
+      };
+    }
+    if (pgErr.code === '23505') {
+      return {
+        status: 409,
+        body: {
+          error: { code: 'conflict', message: 'A record with this identifier already exists.' },
+          requestId,
+        },
+      };
+    }
+    if (pgErr.code === '08000' || pgErr.code === 'ECONNREFUSED') {
+      return {
+        status: 503,
+        body: {
+          error: { code: 'database_unavailable', message: 'Database service is temporarily unavailable.' },
+          requestId,
+        },
+      };
+    }
+  }
+
   return {
     status: 500,
     body: {
@@ -225,18 +285,46 @@ export function createApiServer(application: CrmApplication, options: ApiServerO
         return;
       }
 
-      if (!allowDevActorHeader) {
-        throw new ApiError(401, 'dev_auth_disabled', 'Development header authentication is disabled.');
-      }
-
       if (request.method === 'GET' && pathname === '/api/v1/demo/actors') {
+        if (!allowDevActorHeader) {
+          throw new ApiError(401, 'dev_auth_disabled', 'Development header authentication is disabled.');
+        }
         sendData(response, context, allowedOrigins, 200, await application.listDemoActors());
         return;
       }
 
-      const actorHeader = request.headers['x-demo-user-id'];
-      const normalizedActorId = normalizeDevUserHeader(typeof actorHeader === 'string' ? actorHeader : undefined);
-      const actor = await application.requireActor(normalizedActorId);
+      let actor: SessionActor;
+      if (options.sql) {
+        actor = await resolveActor(
+          request,
+          options.sql,
+          {
+            jwksUrl: options.jwksUrl,
+            jwtSecret: options.jwtSecret,
+            jwtIssuer: options.jwtIssuer,
+            allowDevActorHeader,
+          },
+          (actorId) => application.requireActor(actorId),
+        );
+      } else {
+        const authHeader = request.headers.authorization;
+        if (typeof authHeader === 'string' && authHeader.trim().toLowerCase().startsWith('bearer ')) {
+          const token = authHeader.trim().slice(7).trim();
+          const verified = await verifySupabaseToken(token, {
+            jwksUrl: options.jwksUrl,
+            jwtSecret: options.jwtSecret,
+            jwtIssuer: options.jwtIssuer,
+          });
+          actor = await application.requireActor(verified.sub);
+        } else {
+          if (!allowDevActorHeader) {
+            throw new ApiError(401, 'dev_auth_disabled', 'Development header authentication is disabled.');
+          }
+          const rawHeader = request.headers['x-demo-user-id'];
+          const actorId = normalizeDevUserHeader(typeof rawHeader === 'string' ? rawHeader : undefined);
+          actor = await application.requireActor(actorId);
+        }
+      }
 
       if (request.method === 'GET' && pathname === '/api/v1/session') {
         sendData(response, context, allowedOrigins, 200, actor);
@@ -358,4 +446,34 @@ export function localOriginsFromEnvironment(value: string | undefined): string[]
     }
   }
   return origins;
+}
+
+export function resolveAllowedOrigins(env: NodeJS.ProcessEnv = process.env): string[] {
+  const isProduction = isProductionEnvironment(env['NODE_ENV']);
+  if (isProduction) {
+    const raw = env['CORS_ALLOWED_ORIGINS'];
+    if (!raw || !raw.trim()) {
+      throw new Error('FATAL CONFIGURATION ERROR: CORS_ALLOWED_ORIGINS must be set in production mode.');
+    }
+    const origins = raw
+      .split(',')
+      .map((origin) => origin.trim())
+      .filter(Boolean);
+    if (origins.length === 0) {
+      throw new Error('FATAL CONFIGURATION ERROR: CORS_ALLOWED_ORIGINS must contain at least one origin.');
+    }
+    for (const origin of origins) {
+      try {
+        const url = new URL(origin);
+        if (url.protocol !== 'https:') {
+          throw new Error(`Production CORS origin must use https: protocol. Invalid origin: ${origin}`);
+        }
+      } catch (err) {
+        if (err instanceof Error && err.message.startsWith('Production CORS origin')) throw err;
+        throw new Error(`FATAL CONFIGURATION ERROR: Invalid production CORS origin: ${origin}`);
+      }
+    }
+    return origins;
+  }
+  return localOriginsFromEnvironment(env['LOCAL_WEB_ORIGINS']);
 }

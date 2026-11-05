@@ -6,10 +6,15 @@
     "dev": "vite dev --config apps/web/vite.config.ts",
     "build": "vite build --config apps/web/vite.config.ts",
     "test": "vitest run --config vitest.config.ts",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
     "test:db": "node database/tests/static-policy.test.mjs && node database/tests/seed-syntax.test.mjs",
     "seed:local": "node scripts/seed-local.mjs",
     "test:all": "npm run test && npm run test:db",
     "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "jose": "^6.2.14",
+    "postgres": "^3.4.9"
   },
   "devDependencies": {
     "supabase": "2.122.0"

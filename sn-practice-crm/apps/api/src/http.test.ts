@@ -1,9 +1,10 @@
 import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { SignJWT } from 'jose';
 import { afterEach, describe, expect, it } from 'vitest';
 import { CrmApplication } from './application';
 import { createDemoSeed, DEMO_ACTOR_IDS } from './demo-seed';
-import { createApiServer, resolveAuthConfig } from './http';
+import { createApiServer, resolveAllowedOrigins, resolveAuthConfig } from './http';
 import { InMemoryCrmRepository } from './in-memory-repository';
 
 const runningServers: Server[] = [];
@@ -579,6 +580,86 @@ describe('HTTP API', () => {
           error: { code: 'validation_failed' },
         });
       }
+    });
+
+    it('includes authorization in CORS allow-headers on OPTIONS preflight', async () => {
+      const baseUrl = await startServer();
+      const res = await fetch(`${baseUrl}/api/v1/session`, {
+        method: 'OPTIONS',
+        headers: {
+          Origin: 'http://localhost:5173',
+          'Access-Control-Request-Method': 'GET',
+          'Access-Control-Request-Headers': 'authorization',
+        },
+      });
+
+      expect(res.status).toBe(204);
+      const allowHeaders = res.headers.get('access-control-allow-headers');
+      expect(allowHeaders).toContain('authorization');
+    });
+
+    it('authenticates via Bearer token when allowDevActorHeader is false', async () => {
+      const jwtSecret = 'test-secret-at-least-32-characters-long';
+      let id = 0;
+      const application = new CrmApplication(new InMemoryCrmRepository(createDemoSeed()), {
+        now: () => new Date('2026-10-30T12:00:00.000Z'),
+        createId: () => `00000000-0000-4000-e000-${String(++id).padStart(12, '0')}`,
+      });
+      const server = createApiServer(application, {
+        logger: { error: () => undefined },
+        allowDevActorHeader: false,
+        jwtSecret,
+      });
+      runningServers.push(server);
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+      const address = server.address() as AddressInfo;
+      const baseUrl = `http://127.0.0.1:${address.port}`;
+
+      const secret = new TextEncoder().encode(jwtSecret);
+      const token = await new SignJWT({ aud: 'authenticated' })
+        .setProtectedHeader({ alg: 'HS256' })
+        .setSubject(DEMO_ACTOR_IDS.founder)
+        .setIssuedAt()
+        .setExpirationTime('1h')
+        .sign(secret);
+
+      const res = await fetch(`${baseUrl}/api/v1/session`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data).toMatchObject({
+        id: DEMO_ACTOR_IDS.founder,
+        role: 'founder',
+      });
+    });
+
+    it('validates production HTTPS origins and fails closed on invalid/missing origins', () => {
+      // Valid production origins
+      const valid = resolveAllowedOrigins({
+        NODE_ENV: 'production',
+        CORS_ALLOWED_ORIGINS: 'https://app.sn-practice.com, https://admin.sn-practice.com',
+      });
+      expect(valid).toEqual(['https://app.sn-practice.com', 'https://admin.sn-practice.com']);
+
+      // Fails closed if missing in production
+      expect(() =>
+        resolveAllowedOrigins({
+          NODE_ENV: 'production',
+          CORS_ALLOWED_ORIGINS: '',
+        }),
+      ).toThrow('CORS_ALLOWED_ORIGINS must be set');
+
+      // Fails closed if non-HTTPS in production
+      expect(() =>
+        resolveAllowedOrigins({
+          NODE_ENV: 'production',
+          CORS_ALLOWED_ORIGINS: 'http://insecure.example.com',
+        }),
+      ).toThrow('Production CORS origin must use https:');
     });
   });
 });
