@@ -661,5 +661,13 @@ describe('HTTP API', () => {
         }),
       ).toThrow('Production CORS origin must use https:');
     });
+
+    it('TC-CORS-01: includes Vite dev 4310 and preview 4311 in default local allowed origins', () => {
+      const origins = resolveAllowedOrigins({});
+      expect(origins).toContain('http://localhost:4310');
+      expect(origins).toContain('http://127.0.0.1:4310');
+      expect(origins).toContain('http://localhost:4311');
+      expect(origins).toContain('http://127.0.0.1:4311');
+    });
   });
 });

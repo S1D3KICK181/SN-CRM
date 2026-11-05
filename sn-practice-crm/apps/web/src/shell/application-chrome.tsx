@@ -5,17 +5,17 @@ import {
   ChevronRight,
   Plus,
   Search,
-  Sparkles,
 } from 'lucide-react';
+import type { SessionActor } from '@sn/contracts';
 import { COMPANY_ROLES, type CompanyRole } from '@sn/domain';
-import { ROLE_LABELS, ROLE_PEOPLE } from '../data';
+import { ROLE_LABELS } from '../data';
 import { getNavigationForRole, type PageKey } from './navigation';
 
 interface ApplicationChromeProps {
-  role: CompanyRole;
+  actor: SessionActor;
   activePage: PageKey;
   toast: string | null;
-  onRoleChange: (role: CompanyRole) => void;
+  onSignOut: () => Promise<void> | void;
   onNavigate: (page: PageKey) => void;
   onQuickAdd: () => void;
   onToast: (message: string) => void;
@@ -24,39 +24,52 @@ interface ApplicationChromeProps {
 }
 
 export function ApplicationChrome({
-  role,
+  actor,
   activePage,
   toast,
-  onRoleChange,
+  onSignOut,
   onNavigate,
   onQuickAdd,
   onToast,
   children,
   overlays,
 }: ApplicationChromeProps) {
-  const person = ROLE_PEOPLE[role];
+  const role = actor.role;
+  const initials = actor.name
+    .split(' ')
+    .filter(Boolean)
+    .map((n) => n[0])
+    .join('')
+    .slice(0, 2)
+    .toUpperCase() || 'SN';
 
   return (
     <div className="app-shell">
-      <Sidebar role={role} activePage={activePage} onNavigate={onNavigate} />
+      <Sidebar role={role} actor={actor} initials={initials} activePage={activePage} onNavigate={onNavigate} />
       <div className="main-column">
-        <div className="preview-banner">
-          <span>
-            <Sparkles aria-hidden="true" />
-            <strong>Clean-slate preview</strong> · permission-aware demo data
+        <div className="preview-banner verified-session-strip">
+          <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--success)' }} />
+            <strong>Verified:</strong> {actor.name} ({ROLE_LABELS[role]})
           </span>
-          <label>
-            Preview as
-            <select value={role} onChange={(event) => onRoleChange(event.target.value as CompanyRole)}>
-              {COMPANY_ROLES.map((item) => (
-                <option value={item} key={item}>
-                  {ROLE_LABELS[item]}
-                </option>
-              ))}
-            </select>
-          </label>
+          <button
+            type="button"
+            onClick={() => void onSignOut()}
+            style={{
+              background: 'transparent',
+              border: '1px solid var(--border)',
+              borderRadius: 6,
+              padding: '3px 10px',
+              fontSize: 11,
+              fontWeight: 600,
+              cursor: 'pointer',
+              color: 'var(--ink)',
+            }}
+          >
+            Sign out
+          </button>
         </div>
-        <Topbar activePage={activePage} person={person} onQuickAdd={onQuickAdd} onToast={onToast} />
+        <Topbar activePage={activePage} initials={initials} onQuickAdd={onQuickAdd} onToast={onToast} />
         <main className="main-content">
           {children}
         </main>
@@ -74,14 +87,17 @@ export function ApplicationChrome({
 
 function Sidebar({
   role,
+  actor,
+  initials,
   activePage,
   onNavigate,
 }: {
   role: CompanyRole;
+  actor: SessionActor;
+  initials: string;
   activePage: PageKey;
   onNavigate: (page: PageKey) => void;
 }) {
-  const person = ROLE_PEOPLE[role];
   return (
     <aside className="sidebar" aria-label="Primary navigation">
       <button className="brand" type="button" onClick={() => onNavigate('Dashboard')}>
@@ -117,9 +133,9 @@ function Sidebar({
       </nav>
       <div className="sidebar-footer">
         <button className="profile-card" type="button">
-          <span className="avatar">{person.initials}</span>
+          <span className="avatar">{initials}</span>
           <span className="profile-copy">
-            <strong>{person.name}</strong>
+            <strong>{actor.name}</strong>
             <small>{ROLE_LABELS[role]}</small>
           </span>
           <ChevronRight aria-hidden="true" />
@@ -131,12 +147,12 @@ function Sidebar({
 
 function Topbar({
   activePage,
-  person,
+  initials,
   onQuickAdd,
   onToast,
 }: {
   activePage: PageKey;
-  person: { initials: string };
+  initials: string;
   onQuickAdd: () => void;
   onToast: (message: string) => void;
 }) {
@@ -159,7 +175,7 @@ function Topbar({
           <Plus aria-hidden="true" />
         </button>
         <span className="user-avatar" aria-hidden="true">
-          {person.initials}
+          {initials}
         </span>
       </div>
     </header>

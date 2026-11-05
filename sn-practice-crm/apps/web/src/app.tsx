@@ -31,7 +31,13 @@ import {
   X,
 } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
+import type { SessionActor } from '@sn/contracts';
 import { authorize, type CompanyRole } from '@sn/domain';
+import { SessionClient } from './api/auth/session-client';
+import { SessionManager } from './api/auth/session-manager';
+import type { AuthSessionSource } from './api/auth/types';
+import { SessionProvider, useSessionActor } from './shell/session-context';
+import { SignInGate } from './shell/sign-in-gate';
 import { ApplicationChrome } from './shell/application-chrome';
 import { MODULE_DESCRIPTIONS, type PageKey } from './shell/navigation';
 import { Card, Field, MoreButton, Status } from './ui/workspace-primitives';
@@ -82,7 +88,55 @@ import {
 type DialogMode = 'assignment' | 'personal' | 'delegated' | 'internal' | 'client' | 'schedule' | 'invoice' | 'receipt' | null;
 
 export function App() {
-  const [role, setRole] = useState<CompanyRole>('founder');
+  const { status, actor, error, retry, signOut, signInWithPassword } = useSessionActor();
+
+  if (status === 'initializing') {
+    return (
+      <div className="session-screen-center" role="status" aria-live="polite">
+        <div className="session-spinner" />
+        <p>Verifying secure session…</p>
+      </div>
+    );
+  }
+
+  if (status === 'unauthenticated' || !actor) {
+    return <SignInGate onSignIn={signInWithPassword} />;
+  }
+
+  if (status === 'forbidden') {
+    return (
+      <div className="session-screen-center" role="alert">
+        <h2>Access Restricted</h2>
+        <p>Your account is verified, but you have no active employee profile or assigned role in the CRM database.</p>
+        <button type="button" onClick={() => void signOut()}>Sign Out</button>
+      </div>
+    );
+  }
+
+  if (status === 'error') {
+    return (
+      <div className="session-screen-center" role="alert">
+        <h2>Connection Error</h2>
+        <p>{error?.message ?? 'Could not connect to CRM API.'}</p>
+        <div style={{ display: 'flex', gap: 12, marginTop: 16 }}>
+          <button type="button" onClick={() => void retry()}>Retry</button>
+          <button type="button" onClick={() => void signOut()}>Sign Out</button>
+        </div>
+      </div>
+    );
+  }
+
+  return <AuthenticatedApp actor={actor} onSignOut={signOut} />;
+}
+
+function AuthenticatedApp({
+  actor,
+  onSignOut,
+}: {
+  actor: SessionActor;
+  onSignOut: (options?: { scope?: 'local' | 'global' }) => Promise<void>;
+}) {
+  const role = actor.role;
   const [activePage, setActivePage] = useState<PageKey>('Dashboard');
   const [dialog, setDialog] = useState<DialogMode>(null);
   const [toast, setToast] = useState<string | null>(null);
@@ -116,8 +170,6 @@ export function App() {
   const [presetInvoiceForReceipt, setPresetInvoiceForReceipt] = useState<InvoiceRecord | null>(null);
   const [presetAssignmentForInvoice, setPresetAssignmentForInvoice] = useState<AssignmentRow | null>(null);
 
-  const person = ROLE_PEOPLE[role];
-  const actor = useMemo(() => ({ id: person.id, role }), [person.id, role]);
   const canCreateAssignment = authorize({ action: 'assignment.create', actor }).allowed;
 
   useEffect(() => {
@@ -134,15 +186,6 @@ export function App() {
       }
     }
   }, [assignments, selectedAssignmentForDrawer]);
-
-  function switchRole(nextRole: CompanyRole) {
-    if (nextRole !== role) {
-      setSelectedAssignmentForDrawer(null);
-    }
-    setRole(nextRole);
-    setActivePage('Dashboard');
-    setToast(`Preview switched to ${ROLE_LABELS[nextRole]}`);
-  }
 
   function openPrimaryAction() {
     setDialog(canCreateAssignment ? 'assignment' : 'personal');
@@ -441,10 +484,10 @@ export function App() {
 
   return (
     <ApplicationChrome
-      role={role}
+      actor={actor}
       activePage={activePage}
       toast={toast}
-      onRoleChange={switchRole}
+      onSignOut={onSignOut}
       onNavigate={setActivePage}
       onQuickAdd={openPrimaryAction}
       onToast={setToast}
@@ -2518,5 +2561,19 @@ function InternalTaskFields({ role }: { role: CompanyRole }) {
         />
       </Field>
     </>
+  );
+}
+
+export interface AppRootProps {
+  authSource?: AuthSessionSource;
+  client?: SessionClient;
+  manager?: SessionManager;
+}
+
+export function AppRoot({ authSource, client, manager }: AppRootProps = {}) {
+  return (
+    <SessionProvider authSource={authSource} client={client} manager={manager}>
+      <App />
+    </SessionProvider>
   );
 }

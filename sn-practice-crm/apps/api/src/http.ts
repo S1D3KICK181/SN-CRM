@@ -21,6 +21,10 @@ import {
 export { DEV_ACTOR_ALIASES, normalizeDevUserHeader };
 
 const DEFAULT_LOCAL_ORIGINS = [
+  'http://localhost:4310',
+  'http://127.0.0.1:4310',
+  'http://localhost:4311',
+  'http://127.0.0.1:4311',
   'http://localhost:4320',
   'http://127.0.0.1:4320',
   'http://localhost:4321',

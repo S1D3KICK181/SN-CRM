@@ -6,6 +6,7 @@ export default defineConfig({
     alias: {
       '@sn/domain': fileURLToPath(new URL('./packages/domain/src/index.ts', import.meta.url)),
       '@sn/contracts': fileURLToPath(new URL('./packages/contracts/src/index.ts', import.meta.url)),
+      '@web': fileURLToPath(new URL('./apps/web/src', import.meta.url)),
     },
   },
   test: {
