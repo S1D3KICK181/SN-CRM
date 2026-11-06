@@ -1,5 +1,6 @@
 import type {
   AssignmentDto,
+  ClientDto,
   CreateLedgerEntryInput,
   CreateRecurringScheduleInput,
   LedgerEntryDto,
@@ -24,9 +25,11 @@ import type {
   UpdateWorkItemStatusCommand,
 } from './repository';
 
+export type ClientSeedRecord = Omit<ClientDto, 'relationshipOwnerName' | 'activeAssignmentsCount'>;
+
 export interface DemoSeed {
   employees: EmployeeRecord[];
-  clients?: ClientReference[];
+  clients: ClientSeedRecord[];
   services?: ServiceReference[];
   assignments: AssignmentDto[];
   recurringSchedules: RecurringScheduleDto[];
@@ -46,15 +49,6 @@ const DEV_ACTOR_ALIASES: Record<string, string> = {
   usr_trainee: '00000000-0000-4000-a000-000000000005',
 };
 
-const DEFAULT_CLIENTS: readonly ClientReference[] = [
-  { id: '10000000-0000-4000-a000-000000000001', code: 'CL-001001', name: 'Aster Foods Private Limited' },
-  { id: '10000000-0000-4000-a000-000000000002', code: 'CL-001002', name: 'BluePeak Technologies LLP' },
-  { id: '10000000-0000-4000-a000-000000000003', code: 'CL-001003', name: 'Sharma Retail Enterprises' },
-  { id: '10000000-0000-4000-a000-000000000004', code: 'CL-001004', name: 'Kedia Holdings Private Limited' },
-  { id: '10000000-0000-4000-a000-000000000005', code: 'CL-001005', name: 'Northstar Exports Incorporated' },
-  { id: '10000000-0000-4000-a000-000000000006', code: 'CL-001006', name: 'Apex Logistics Private Limited' },
-];
-
 const DEFAULT_SERVICES: readonly ServiceReference[] = [
   { id: '50000000-0000-4000-a000-000000000001', name: 'GST Compliance' },
   { id: '50000000-0000-4000-a000-000000000002', name: 'Internal Audit' },
@@ -66,7 +60,7 @@ const DEFAULT_SERVICES: readonly ServiceReference[] = [
 
 export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
   private readonly employees = new Map<string, EmployeeRecord>();
-  private readonly clients = new Map<string, ClientReference>();
+  private readonly clients = new Map<string, ClientSeedRecord>();
   private readonly services = new Map<string, ServiceReference>();
   private readonly assignments = new Map<string, AssignmentDto>();
   private readonly schedules = new Map<string, RecurringScheduleDto>();
@@ -80,8 +74,7 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
   constructor(seed: DemoSeed) {
     seed.employees.forEach((value) => this.employees.set(value.id, copy(value)));
 
-    const clientsToLoad = seed.clients ?? DEFAULT_CLIENTS;
-    clientsToLoad.forEach((value) => this.clients.set(value.id, copy(value)));
+    seed.clients.forEach((value) => this.clients.set(value.id, copy(value)));
 
     const servicesToLoad = seed.services ?? DEFAULT_SERVICES;
     servicesToLoad.forEach((value) => this.services.set(value.id, copy(value)));
@@ -141,15 +134,181 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
     return copy(this.employees.get(employee.id)!);
   }
 
-  // --- Reference Lookups ---
+  // --- Private Helpers: Actor & Visibility (Postgres parity) ---
 
-  async getClientReference(_ctx: RepositoryContext, clientId: string): Promise<ClientReference | null> {
-    const value = this.clients.get(clientId);
-    return value ? copy(value) : null;
+  private getActor(ctx: RepositoryContext): EmployeeRecord | null {
+    const actor = this.employees.get(ctx.actorId);
+    if (!actor || !actor.active) {
+      return null;
+    }
+    return actor;
   }
 
-  async listClientReferences(_ctx: RepositoryContext): Promise<ClientReference[]> {
-    return copy([...this.clients.values()]);
+  private isManagement(actor: EmployeeRecord): boolean {
+    return actor.role === 'founder' || actor.role === 'manager';
+  }
+
+  private hasAssignmentInvolvement(actor: EmployeeRecord, assignment: AssignmentDto): boolean {
+    if (this.isManagement(actor)) {
+      return true;
+    }
+    if (assignment.ownerId === actor.id) {
+      return true;
+    }
+    if (assignment.reviewerIds.includes(actor.id)) {
+      return true;
+    }
+    for (const workItem of this.workItems.values()) {
+      if (workItem.assignmentId === assignment.id) {
+        if (workItem.assigneeId === actor.id || workItem.createdById === actor.id) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  private isClientVisible(actor: EmployeeRecord, client: ClientSeedRecord): boolean {
+    if (this.isManagement(actor)) {
+      return true;
+    }
+    if (client.relationshipOwnerId === actor.id) {
+      return true;
+    }
+    for (const assignment of this.assignments.values()) {
+      if (assignment.clientId === client.id && this.hasAssignmentInvolvement(actor, assignment)) {
+        return true;
+      }
+    }
+    for (const workItem of this.workItems.values()) {
+      if (
+        workItem.kind === 'personal' &&
+        workItem.relatedClientId === client.id &&
+        workItem.assigneeId === actor.id
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private toClientDto(actor: EmployeeRecord, client: ClientSeedRecord): ClientDto {
+    let relationshipOwnerName: string | null = null;
+    if (client.relationshipOwnerId) {
+      const owner = this.employees.get(client.relationshipOwnerId);
+      relationshipOwnerName = owner ? owner.name : null;
+    }
+
+    let activeAssignmentsCount = 0;
+    for (const assignment of this.assignments.values()) {
+      if (
+        assignment.clientId === client.id &&
+        assignment.status !== 'closed' &&
+        assignment.status !== 'cancelled' &&
+        this.hasAssignmentInvolvement(actor, assignment)
+      ) {
+        activeAssignmentsCount += 1;
+      }
+    }
+
+    return {
+      id: client.id,
+      code: client.code,
+      displayName: client.displayName,
+      legalName: client.legalName,
+      gstin: client.gstin,
+      pan: client.pan,
+      email: client.email,
+      phone: client.phone,
+      relationshipOwnerId: client.relationshipOwnerId,
+      relationshipOwnerName,
+      status: client.status,
+      notes: client.notes,
+      activeAssignmentsCount,
+      createdById: client.createdById,
+      createdAt: client.createdAt,
+      updatedAt: client.updatedAt,
+    };
+  }
+
+  private getVisibleClientRecord(
+    ctx: RepositoryContext,
+    clientId: string,
+  ): { actor: EmployeeRecord; client: ClientSeedRecord } | null {
+    const actor = this.getActor(ctx);
+    if (!actor) {
+      return null;
+    }
+    const client = this.clients.get(clientId);
+    if (!client || !this.isClientVisible(actor, client)) {
+      return null;
+    }
+    return { actor, client };
+  }
+
+  private getVisibleClientRecords(
+    ctx: RepositoryContext,
+  ): { actor: EmployeeRecord; clients: ClientSeedRecord[] } | null {
+    const actor = this.getActor(ctx);
+    if (!actor) {
+      return null;
+    }
+    const clients: ClientSeedRecord[] = [];
+    for (const client of this.clients.values()) {
+      if (this.isClientVisible(actor, client)) {
+        clients.push(client);
+      }
+    }
+    clients.sort((a, b) => a.code.localeCompare(b.code));
+    return { actor, clients };
+  }
+
+  // --- Clients (Read-Only) ---
+
+  async getClient(ctx: RepositoryContext, clientId: string): Promise<ClientDto | null> {
+    const match = this.getVisibleClientRecord(ctx, clientId);
+    if (!match) {
+      return null;
+    }
+    return copy(this.toClientDto(match.actor, match.client));
+  }
+
+  async listClients(ctx: RepositoryContext): Promise<ClientDto[]> {
+    const result = this.getVisibleClientRecords(ctx);
+    if (!result) {
+      return [];
+    }
+    return copy(result.clients.map((c) => this.toClientDto(result.actor, c)));
+  }
+
+  // --- Reference Lookups ---
+
+  async getClientReference(ctx: RepositoryContext, clientId: string): Promise<ClientReference | null> {
+    const match = this.getVisibleClientRecord(ctx, clientId);
+    if (!match) {
+      return null;
+    }
+    return {
+      id: match.client.id,
+      code: match.client.code,
+      name: match.client.displayName,
+    };
+  }
+
+  async listClientReferences(ctx: RepositoryContext): Promise<ClientReference[]> {
+    const result = this.getVisibleClientRecords(ctx);
+    if (!result) {
+      return [];
+    }
+    return copy(
+      result.clients
+        .filter((c) => c.status === 'active')
+        .map((c) => ({
+          id: c.id,
+          code: c.code,
+          name: c.displayName,
+        })),
+    );
   }
 
   async getServiceReferenceById(_ctx: RepositoryContext, serviceId: string): Promise<ServiceReference | null> {

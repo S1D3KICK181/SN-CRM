@@ -1,5 +1,7 @@
 import type {
   AssignmentDto,
+  ClientDto,
+  ClientStatus,
   CreateLedgerEntryInput,
   CreateRecurringScheduleInput,
   LedgerEntryDto,
@@ -59,6 +61,32 @@ function sanitizeDatabaseError(error: unknown): never {
   throw error;
 }
 
+function toIsoString(val: unknown): string {
+  if (val instanceof Date) return val.toISOString();
+  return new Date(String(val)).toISOString();
+}
+
+function mapClientRow(row: Record<string, unknown>): ClientDto {
+  return {
+    id: String(row['id']),
+    code: String(row['code']),
+    displayName: String(row['display_name']),
+    legalName: row['legal_name'] ? String(row['legal_name']) : null,
+    gstin: row['gstin'] ? String(row['gstin']) : null,
+    pan: row['pan'] ? String(row['pan']) : null,
+    email: row['email'] ? String(row['email']) : null,
+    phone: row['phone'] ? String(row['phone']) : null,
+    relationshipOwnerId: row['relationship_owner_id'] ? String(row['relationship_owner_id']) : null,
+    relationshipOwnerName: row['relationship_owner_name'] ? String(row['relationship_owner_name']) : null,
+    status: String(row['status']) as ClientStatus,
+    notes: row['notes'] ? String(row['notes']) : null,
+    activeAssignmentsCount: Number(row['active_assignments_count'] ?? 0),
+    createdById: String(row['created_by']),
+    createdAt: toIsoString(row['created_at']),
+    updatedAt: toIsoString(row['updated_at']),
+  };
+}
+
 export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
   private readonly runner: PostgresTransactionRunner;
 
@@ -69,6 +97,65 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
   async close(): Promise<void> {
     if ('end' in this.sql && typeof this.sql.end === 'function') {
       await this.sql.end();
+    }
+  }
+
+  // --- Clients (Read-Only) ---
+
+  private async queryClientDtos(tx: SqlClient, clientId?: string): Promise<ClientDto[]> {
+    const whereClause = clientId ? tx`WHERE c.id = ${clientId}::uuid` : tx``;
+    const rows = await tx`
+      SELECT
+        c.id,
+        c.code,
+        c.display_name,
+        c.legal_name,
+        c.gstin,
+        c.pan,
+        c.email,
+        c.phone,
+        c.relationship_owner_id,
+        p.full_name AS relationship_owner_name,
+        c.status,
+        c.notes,
+        c.created_by,
+        c.created_at,
+        c.updated_at,
+        coalesce(
+          (
+            SELECT count(*)::int
+            FROM public.assignments a
+            WHERE a.client_id = c.id
+              AND a.status NOT IN ('closed', 'cancelled')
+          ),
+          0
+        ) AS active_assignments_count
+      FROM public.clients c
+      LEFT JOIN public.profiles p ON p.user_id = c.relationship_owner_id
+      ${whereClause}
+      ORDER BY c.code ASC;
+    `;
+    return rows.map(mapClientRow);
+  }
+
+  async getClient(ctx: RepositoryContext, clientId: string): Promise<ClientDto | null> {
+    try {
+      return await this.runner.withUserContext(ctx, async (tx) => {
+        const dtos = await this.queryClientDtos(tx, clientId);
+        return dtos[0] ?? null;
+      });
+    } catch (error) {
+      sanitizeDatabaseError(error);
+    }
+  }
+
+  async listClients(ctx: RepositoryContext): Promise<ClientDto[]> {
+    try {
+      return await this.runner.withUserContext(ctx, async (tx) => {
+        return await this.queryClientDtos(tx);
+      });
+    } catch (error) {
+      sanitizeDatabaseError(error);
     }
   }
 

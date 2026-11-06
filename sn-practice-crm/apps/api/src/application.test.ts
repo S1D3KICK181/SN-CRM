@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type {
   AssignmentDto,
+  ClientDto,
   CreateAssignmentInput,
   CreateRecurringScheduleInput,
   LedgerEntryDto,
@@ -130,7 +131,7 @@ describe("CrmApplication authority and workflow rules", () => {
     expect(created).toMatchObject({
       ownerId: DEMO_ACTOR_IDS.staff,
       status: "assigned",
-      clientName: "Aster Foods Private Limited",
+      clientName: "Aster Foods",
     });
   });
 
@@ -808,6 +809,14 @@ describe("CrmApplication authority and workflow rules", () => {
       const underlying = new InMemoryCrmRepository(createDemoSeed());
 
       const trackingRepo: CrmApplicationDependencies = {
+        async getClient(ctx: RepositoryContext, clientId: string): Promise<ClientDto | null> {
+          callLog.push({ method: "getClient", actorId: ctx.actorId, targetId: clientId });
+          return underlying.getClient(ctx, clientId);
+        },
+        async listClients(ctx: RepositoryContext): Promise<ClientDto[]> {
+          callLog.push({ method: "listClients", actorId: ctx.actorId });
+          return underlying.listClients(ctx);
+        },
         async resolveDevActor(id: string): Promise<EmployeeRecord | null> {
           callLog.push({ method: "resolveDevActor", targetId: id });
           return underlying.resolveDevActor(id);

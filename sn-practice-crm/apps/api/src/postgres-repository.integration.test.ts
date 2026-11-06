@@ -20,6 +20,7 @@ const ADVISORY_LOCK_ID = 7142026;
 const FOUNDER_ID = '00000000-0000-4000-a000-000000000001';
 const MANAGER_ID = '00000000-0000-4000-a000-000000000002';
 const SENIOR_ID = '00000000-0000-4000-a000-000000000003';
+const STAFF_ID = '00000000-0000-4000-a000-000000000004';
 const TRAINEE_ID = '00000000-0000-4000-a000-000000000005';
 
 describe('PostgresCrmRepository Integration Suite', () => {
@@ -494,5 +495,160 @@ describe('PostgresCrmRepository Integration Suite', () => {
         server.close((err) => (err ? reject(err) : resolve()));
       });
     }
+  });
+
+  it('IT-11: Client read operations enforce RLS visibility across all five roles and map complete DTOs', async () => {
+    const repo = new PostgresCrmRepository(pool);
+    const founderCtx = { actorId: FOUNDER_ID };
+    const managerCtx = { actorId: MANAGER_ID };
+    const seniorCtx = { actorId: SENIOR_ID };
+    const staffCtx = { actorId: STAFF_ID };
+    const traineeCtx = { actorId: TRAINEE_ID };
+
+    // 1. Founder and Manager each list all six clients in ascending code order
+    const founderClients = await repo.listClients(founderCtx);
+    expect(founderClients.map((c) => c.code)).toEqual([
+      'CL-001001',
+      'CL-001002',
+      'CL-001003',
+      'CL-001004',
+      'CL-001005',
+      'CL-001006',
+    ]);
+
+    // Full DTO mapping assertion on listClients result
+    expect(founderClients[0]).toMatchObject({
+      id: '10000000-0000-4000-a000-000000000001',
+      code: 'CL-001001',
+      displayName: 'Aster Foods',
+      legalName: 'Aster Foods Private Limited',
+      gstin: '27AABCA1234A1Z5',
+      pan: 'AABCA1234A',
+      email: 'accounts@asterfoods.local',
+      phone: '+91 98200 11001',
+      relationshipOwnerId: MANAGER_ID,
+      relationshipOwnerName: 'Priya Desai',
+      status: 'active',
+      notes: null,
+      createdById: FOUNDER_ID,
+      activeAssignmentsCount: 1,
+    });
+    expect(typeof founderClients[0]?.activeAssignmentsCount).toBe('number');
+    expect(new Date(founderClients[0]!.createdAt).toISOString()).toBe(founderClients[0]!.createdAt);
+    expect(new Date(founderClients[0]!.updatedAt).toISOString()).toBe(founderClients[0]!.updatedAt);
+
+    const managerClients = await repo.listClients(managerCtx);
+    expect(managerClients.map((c) => c.code)).toEqual(founderClients.map((c) => c.code));
+
+    // 2. Senior Staff sees exactly CL-001001, 001003, 001004, 001005, 001006
+    const seniorClients = await repo.listClients(seniorCtx);
+    expect(seniorClients.map((c) => c.code)).toEqual([
+      'CL-001001',
+      'CL-001003',
+      'CL-001004',
+      'CL-001005',
+      'CL-001006',
+    ]);
+
+    // 3. Staff sees exactly CL-001002 and CL-001004
+    const staffClients = await repo.listClients(staffCtx);
+    expect(staffClients.map((c) => c.code)).toEqual(['CL-001002', 'CL-001004']);
+
+    // 4. Trainee sees exactly CL-001001
+    const traineeClients = await repo.listClients(traineeCtx);
+    expect(traineeClients.map((c) => c.code)).toEqual(['CL-001001']);
+
+    const traineeAster = await repo.getClient(traineeCtx, '10000000-0000-4000-a000-000000000001');
+    expect(traineeAster).not.toBeNull();
+    expect(traineeAster?.relationshipOwnerName).toBe('Priya Desai');
+    expect(traineeAster?.activeAssignmentsCount).toBe(1);
+
+    // 5. Trainee getClient for BluePeak returns null (RLS hidden)
+    const traineeBluePeak = await repo.getClient(traineeCtx, '10000000-0000-4000-a000-000000000002');
+    expect(traineeBluePeak).toBeNull();
+
+    // 6. getClient with valid but absent UUID returns null
+    const absentClient = await repo.getClient(founderCtx, '10000000-0000-4000-a000-999999999999');
+    expect(absentClient).toBeNull();
+
+    // 7. Founder DTO mapping verifies representative DB-faithful fields, valid ISO timestamps, and numeric active assignment count
+    const founderAster = await repo.getClient(founderCtx, '10000000-0000-4000-a000-000000000001');
+    expect(founderAster).not.toBeNull();
+    expect(founderAster).toMatchObject({
+      id: '10000000-0000-4000-a000-000000000001',
+      code: 'CL-001001',
+      displayName: 'Aster Foods',
+      legalName: 'Aster Foods Private Limited',
+      gstin: '27AABCA1234A1Z5',
+      pan: 'AABCA1234A',
+      email: 'accounts@asterfoods.local',
+      phone: '+91 98200 11001',
+      relationshipOwnerId: MANAGER_ID,
+      relationshipOwnerName: 'Priya Desai',
+      status: 'active',
+      notes: null,
+      createdById: FOUNDER_ID,
+      activeAssignmentsCount: 1,
+    });
+    expect(typeof founderAster?.activeAssignmentsCount).toBe('number');
+    expect(new Date(founderAster!.createdAt).toISOString()).toBe(founderAster!.createdAt);
+    expect(new Date(founderAster!.updatedAt).toISOString()).toBe(founderAster!.updatedAt);
+  });
+
+  it('IT-12: Client active assignment count filters closed status and enforces assignment RLS', async () => {
+    await runIsolatedTest(async (repo, tx) => {
+      const founderCtx = { actorId: FOUNDER_ID };
+      const traineeCtx = { actorId: TRAINEE_ID };
+      const asterId = '10000000-0000-4000-a000-000000000001';
+
+      // Insert 1 valid closed assignment for Aster (owned by Founder, trainee not involved)
+      await tx`
+        INSERT INTO public.assignments (
+          id, code, client_id, service_id, title, owner_id, status, due_at,
+          approved_at, approved_by, closed_at, closed_by, created_by, is_demo
+        ) VALUES (
+          '90000000-0000-4000-a000-000000000081'::uuid,
+          'AS-999981',
+          ${asterId}::uuid,
+          '50000000-0000-4000-a000-000000000001'::uuid,
+          'Closed Test Audit Assignment',
+          ${FOUNDER_ID}::uuid,
+          'closed'::public.assignment_status,
+          '2026-11-20T12:00:00.000Z'::timestamptz,
+          '2026-11-20T10:00:00.000Z'::timestamptz,
+          ${FOUNDER_ID}::uuid,
+          '2026-11-20T12:00:00.000Z'::timestamptz,
+          ${FOUNDER_ID}::uuid,
+          ${FOUNDER_ID}::uuid,
+          true
+        );
+      `;
+
+      // Insert 1 valid active (in_progress) assignment for Aster (owned by Founder, trainee not involved)
+      await tx`
+        INSERT INTO public.assignments (
+          id, code, client_id, service_id, title, owner_id, status, due_at, created_by, is_demo
+        ) VALUES (
+          '90000000-0000-4000-a000-000000000082'::uuid,
+          'AS-999982',
+          ${asterId}::uuid,
+          '50000000-0000-4000-a000-000000000001'::uuid,
+          'Active Test Tax Advisory Assignment',
+          ${FOUNDER_ID}::uuid,
+          'in_progress'::public.assignment_status,
+          '2026-11-20T12:00:00.000Z'::timestamptz,
+          ${FOUNDER_ID}::uuid,
+          true
+        );
+      `;
+
+      // Founder Aster count increases only by the new active assignment (closed is excluded: 1 existing + 1 active = 2)
+      const founderAster = await repo.getClient(founderCtx, asterId);
+      expect(founderAster?.activeAssignmentsCount).toBe(2);
+
+      // Trainee Aster count remains exactly 1 (the new active assignment is hidden by assignment RLS)
+      const traineeAster = await repo.getClient(traineeCtx, asterId);
+      expect(traineeAster?.activeAssignmentsCount).toBe(1);
+    });
   });
 });

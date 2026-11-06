@@ -1,6 +1,7 @@
 import type {
   AssignmentDto,
   AssignmentStatus,
+  ClientDto,
   CreateLedgerEntryInput,
   CreateRecurringScheduleInput,
   LedgerEntryDto,
@@ -107,6 +108,10 @@ export interface UpdateWorkItemStatusCommand {
 }
 
 export interface CrmRepository {
+  // Clients (Read-Only)
+  getClient(ctx: RepositoryContext, clientId: string): Promise<ClientDto | null>;
+  listClients(ctx: RepositoryContext): Promise<ClientDto[]>;
+
   // Reference Lookups (Repository-backed, split for SQL safety)
   getClientReference(ctx: RepositoryContext, clientId: string): Promise<ClientReference | null>;
   listClientReferences(ctx: RepositoryContext): Promise<ClientReference[]>;
