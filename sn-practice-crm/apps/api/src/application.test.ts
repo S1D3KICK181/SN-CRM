@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import * as domain from "@sn/domain";
 import type {
   AssignmentDto,
   ClientDto,
@@ -1083,6 +1084,15 @@ describe("CrmApplication authority and workflow rules", () => {
         narration: "Direct inflow",
       });
       expect(callLog.some((c) => c.method === "createLedgerEntry")).toBe(true);
+
+      // 12. client reads
+      callLog.length = 0;
+      await application.listClients(senior);
+      expect(callLog).toEqual([{ method: "listClients", actorId: senior.id }]);
+
+      callLog.length = 0;
+      await application.getClient(senior, CANONICAL_CLIENT_1);
+      expect(callLog).toEqual([{ method: "getClient", actorId: senior.id, targetId: CANONICAL_CLIENT_1 }]);
     });
 
     it("returns canonical entities returned by save/create methods across all domain families", async () => {
@@ -1149,6 +1159,143 @@ describe("CrmApplication authority and workflow rules", () => {
         narration: "Canonical ledger test",
       });
       expect(createdLedgerEntry.reference).toBe("REF-CANONICAL-DB-GENERATED");
+    });
+  });
+
+  describe("Client Read Operations (CL-03)", () => {
+    it("allows all five valid roles to read clients within their visibility scope", async () => {
+      const { application } = createFixture();
+
+      const roleScenarios = [
+        {
+          actorId: DEMO_ACTOR_IDS.founder,
+          expectedCount: 6,
+          visibleClientId: CANONICAL_CLIENT_1,
+          expectedCode: "CL-001001",
+        },
+        {
+          actorId: DEMO_ACTOR_IDS.manager,
+          expectedCount: 6,
+          visibleClientId: CANONICAL_CLIENT_1,
+          expectedCode: "CL-001001",
+        },
+        {
+          actorId: DEMO_ACTOR_IDS.senior,
+          expectedCount: 5,
+          visibleClientId: CANONICAL_CLIENT_1,
+          expectedCode: "CL-001001",
+        },
+        {
+          actorId: DEMO_ACTOR_IDS.staff,
+          expectedCount: 2,
+          visibleClientId: "10000000-0000-4000-a000-000000000002",
+          expectedCode: "CL-001002",
+        },
+        {
+          actorId: DEMO_ACTOR_IDS.trainee,
+          expectedCount: 1,
+          visibleClientId: CANONICAL_CLIENT_1,
+          expectedCode: "CL-001001",
+        },
+      ];
+
+      for (const scenario of roleScenarios) {
+        const actor = await application.requireActor(scenario.actorId);
+        const list = await application.listClients(actor);
+        expect(list.length).toBe(scenario.expectedCount);
+
+        const detail = await application.getClient(actor, scenario.visibleClientId);
+        expect(detail.id).toBe(scenario.visibleClientId);
+        expect(detail.code).toBe(scenario.expectedCode);
+        expect(detail.panMasked).toMatch(/^\*{6}\d{4}$/);
+      }
+    });
+
+    it("maps null repository results (both nonexistent and hidden clients) to identical 404 not_found errors", async () => {
+      const { application } = createFixture();
+      const founder = await application.requireActor(DEMO_ACTOR_IDS.founder);
+      const trainee = await application.requireActor(DEMO_ACTOR_IDS.trainee);
+
+      const absentId = "10000000-0000-4000-a000-999999999999";
+      const hiddenId = "10000000-0000-4000-a000-000000000002"; // BluePeak Tech
+
+      // Nonexistent client for founder
+      let nonexistentError: any;
+      try {
+        await application.getClient(founder, absentId);
+      } catch (err) {
+        nonexistentError = err;
+      }
+
+      // Hidden client for trainee
+      let hiddenError: any;
+      try {
+        await application.getClient(trainee, hiddenId);
+      } catch (err) {
+        hiddenError = err;
+      }
+
+      expect(nonexistentError).toBeDefined();
+      expect(hiddenError).toBeDefined();
+      expect(nonexistentError.status).toBe(404);
+      expect(nonexistentError.code).toBe("not_found");
+      expect(nonexistentError.message).toBe("Client was not found.");
+
+      expect(hiddenError.status).toBe(404);
+      expect(hiddenError.code).toBe("not_found");
+      expect(hiddenError.message).toBe("Client was not found.");
+    });
+
+    it("authorizes client.read and fails before repository access for unauthorized actors", async () => {
+      let repoCalled = false;
+      const fakeRepo: CrmApplicationDependencies = {
+        async getClient() {
+          repoCalled = true;
+          return null;
+        },
+        async listClients() {
+          repoCalled = true;
+          return [];
+        },
+      } as unknown as CrmApplicationDependencies;
+
+      const app = new CrmApplication(fakeRepo);
+      const testActor = {
+        id: "00000000-0000-4000-a000-000000000005",
+        name: "Test Employee",
+        role: "trainee" as const,
+        reportsToId: null,
+      };
+
+      const authorizeSpy = vi.spyOn(domain, "authorize").mockReturnValueOnce({
+        allowed: false,
+        code: "role_not_permitted",
+        reason: "Access denied",
+      });
+
+      await expect(app.listClients(testActor)).rejects.toMatchObject({
+        status: 403,
+        code: "role_not_permitted",
+      });
+      expect(repoCalled).toBe(false);
+      expect(authorizeSpy).toHaveBeenCalledWith({
+        action: "client.read",
+        actor: { id: testActor.id, role: testActor.role },
+      });
+
+      authorizeSpy.mockReturnValueOnce({
+        allowed: false,
+        code: "role_not_permitted",
+        reason: "Access denied",
+      });
+
+      await expect(app.getClient(testActor, CANONICAL_CLIENT_1)).rejects.toMatchObject({
+        status: 403,
+        code: "role_not_permitted",
+      });
+      expect(repoCalled).toBe(false);
+
+      authorizeSpy.mockRestore();
     });
   });
 });

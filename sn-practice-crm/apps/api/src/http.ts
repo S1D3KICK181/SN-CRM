@@ -167,13 +167,22 @@ async function readJson<T>(request: IncomingMessage, schema: ZodType<T>): Promis
   return parsed.data;
 }
 
+function invalidIdentifier(): never {
+  throw new ApiError(422, 'invalid_identifier', 'The route parameter must be a valid RFC 4122 UUID.');
+}
+
 function routeId(pathname: string, pattern: RegExp): string | null {
   const match = pattern.exec(pathname);
   if (!match?.[1]) return null;
-  const decoded = decodeURIComponent(match[1]);
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(match[1]);
+  } catch {
+    invalidIdentifier();
+  }
   const parsed = entityUuid.safeParse(decoded);
   if (!parsed.success) {
-    throw new ApiError(422, 'invalid_identifier', 'The route parameter must be a valid RFC 4122 UUID.');
+    invalidIdentifier();
   }
   return parsed.data;
 }
@@ -332,6 +341,16 @@ export function createApiServer(application: CrmApplication, options: ApiServerO
 
       if (request.method === 'GET' && pathname === '/api/v1/session') {
         sendData(response, context, allowedOrigins, 200, actor);
+        return;
+      }
+
+      if (request.method === 'GET' && pathname === '/api/v1/clients') {
+        sendData(response, context, allowedOrigins, 200, await application.listClients(actor));
+        return;
+      }
+      const clientId = routeId(pathname, /^\/api\/v1\/clients\/([^/]+)$/);
+      if (request.method === 'GET' && clientId) {
+        sendData(response, context, allowedOrigins, 200, await application.getClient(actor, clientId));
         return;
       }
 

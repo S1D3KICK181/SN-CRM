@@ -266,8 +266,17 @@ export interface ClientDto {
   readonly code: string; // Output-only: CL-xxxxxx
   readonly displayName: string;
   readonly legalName: string | null;
-  readonly gstin: string | null;
-  readonly pan: string | null;
+  /**
+   * Routine-read safe masked GSTIN (e.g. '27**********1Z5'). Raw plaintext GSTIN
+   * embeds the complete 10-character PAN; routine reads mask this derivation surface.
+   * Statutory raw GSTIN reveal requires a future audited access path.
+   */
+  readonly gstinMasked: string | null;
+  /**
+   * Routine-read safe masked PAN (e.g. '******1234'). Raw plaintext PAN must
+   * never appear in this DTO; sensitive unmasked reveal requires dedicated audit.
+   */
+  readonly panMasked: string | null;
   readonly email: string | null;
   readonly phone: string | null;
   readonly relationshipOwnerId: string | null; // RFC 4122 UUID references public.profiles(user_id)

@@ -330,13 +330,15 @@ describe('Client visibility and read operations (CL-02A parity)', () => {
 
     const aster = await repository.getClient(traineeCtx, '10000000-0000-4000-a000-000000000001');
     expect(aster).not.toBeNull();
+    expect(aster).not.toHaveProperty('pan');
+    expect(aster).not.toHaveProperty('gstin');
     expect(aster).toEqual({
       id: '10000000-0000-4000-a000-000000000001',
       code: 'CL-001001',
       displayName: 'Aster Foods',
       legalName: 'Aster Foods Private Limited',
-      gstin: '27AABCA1234A1Z5',
-      pan: 'AABCA1234A',
+      gstinMasked: '27**********1Z5',
+      panMasked: '******1234',
       email: 'accounts@asterfoods.local',
       phone: '+91 98200 11001',
       relationshipOwnerId: DEMO_ACTOR_IDS.manager,

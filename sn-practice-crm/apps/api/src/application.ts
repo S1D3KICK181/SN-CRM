@@ -3,6 +3,7 @@ import type {
   AssignmentDto,
   AssignmentStatus,
   AssignmentTransition,
+  ClientDto,
   CreateAssignmentInput,
   CreateLedgerEntryInput,
   CreateRecurringScheduleInput,
@@ -96,6 +97,24 @@ export class CrmApplication {
       throw new ApiError(401, 'invalid_demo_session', 'The selected demo user does not exist or is inactive.');
     }
     return asSession(employee);
+  }
+
+  // --- Clients (Read-Only) ---
+
+  async listClients(actor: SessionActor): Promise<ClientDto[]> {
+    const ctx: RepositoryContext = { actorId: actor.id };
+    requireAuthority({ action: 'client.read', actor: asActor(actor) });
+    return await this.repository.listClients(ctx);
+  }
+
+  async getClient(actor: SessionActor, clientId: string): Promise<ClientDto> {
+    const ctx: RepositoryContext = { actorId: actor.id };
+    requireAuthority({ action: 'client.read', actor: asActor(actor) });
+    const client = await this.repository.getClient(ctx, clientId);
+    if (!client) {
+      throw notFound('Client');
+    }
+    return client;
   }
 
   async listAssignments(actor: SessionActor): Promise<AssignmentDto[]> {

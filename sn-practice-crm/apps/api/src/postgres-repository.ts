@@ -14,6 +14,7 @@ import type {
 import { DEV_ACTOR_ALIASES } from './auth';
 import { PostgresTransactionRunner, type SqlClient } from './db';
 import { ApiError } from './errors';
+import { maskGstinForRoutineRead, maskPanForRoutineRead } from './client-privacy';
 import { isProductionEnvironment } from './http';
 import type {
   ClientReference,
@@ -72,8 +73,8 @@ function mapClientRow(row: Record<string, unknown>): ClientDto {
     code: String(row['code']),
     displayName: String(row['display_name']),
     legalName: row['legal_name'] ? String(row['legal_name']) : null,
-    gstin: row['gstin'] ? String(row['gstin']) : null,
-    pan: row['pan'] ? String(row['pan']) : null,
+    gstinMasked: maskGstinForRoutineRead(row['gstin'] ? String(row['gstin']) : null),
+    panMasked: maskPanForRoutineRead(row['pan'] ? String(row['pan']) : null),
     email: row['email'] ? String(row['email']) : null,
     phone: row['phone'] ? String(row['phone']) : null,
     relationshipOwnerId: row['relationship_owner_id'] ? String(row['relationship_owner_id']) : null,

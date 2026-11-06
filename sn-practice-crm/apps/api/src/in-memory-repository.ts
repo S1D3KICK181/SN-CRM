@@ -11,6 +11,7 @@ import type {
   WorkItemDto,
 } from '@sn/contracts';
 import { ApiError } from './errors';
+import { maskGstinForRoutineRead, maskPanForRoutineRead } from './client-privacy';
 import type {
   ClientReference,
   CreateAssignmentRecord,
@@ -25,7 +26,13 @@ import type {
   UpdateWorkItemStatusCommand,
 } from './repository';
 
-export type ClientSeedRecord = Omit<ClientDto, 'relationshipOwnerName' | 'activeAssignmentsCount'>;
+export type ClientSeedRecord = Omit<
+  ClientDto,
+  'relationshipOwnerName' | 'activeAssignmentsCount' | 'panMasked' | 'gstinMasked'
+> & {
+  pan: string | null;
+  gstin: string | null;
+};
 
 export interface DemoSeed {
   employees: EmployeeRecord[];
@@ -216,8 +223,8 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
       code: client.code,
       displayName: client.displayName,
       legalName: client.legalName,
-      gstin: client.gstin,
-      pan: client.pan,
+      gstinMasked: maskGstinForRoutineRead(client.gstin),
+      panMasked: maskPanForRoutineRead(client.pan),
       email: client.email,
       phone: client.phone,
       relationshipOwnerId: client.relationshipOwnerId,

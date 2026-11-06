@@ -517,13 +517,15 @@ describe('PostgresCrmRepository Integration Suite', () => {
     ]);
 
     // Full DTO mapping assertion on listClients result
+    expect(founderClients[0]).not.toHaveProperty('pan');
+    expect(founderClients[0]).not.toHaveProperty('gstin');
     expect(founderClients[0]).toMatchObject({
       id: '10000000-0000-4000-a000-000000000001',
       code: 'CL-001001',
       displayName: 'Aster Foods',
       legalName: 'Aster Foods Private Limited',
-      gstin: '27AABCA1234A1Z5',
-      pan: 'AABCA1234A',
+      gstinMasked: '27**********1Z5',
+      panMasked: '******1234',
       email: 'accounts@asterfoods.local',
       phone: '+91 98200 11001',
       relationshipOwnerId: MANAGER_ID,
@@ -574,13 +576,15 @@ describe('PostgresCrmRepository Integration Suite', () => {
     // 7. Founder DTO mapping verifies representative DB-faithful fields, valid ISO timestamps, and numeric active assignment count
     const founderAster = await repo.getClient(founderCtx, '10000000-0000-4000-a000-000000000001');
     expect(founderAster).not.toBeNull();
+    expect(founderAster).not.toHaveProperty('pan');
+    expect(founderAster).not.toHaveProperty('gstin');
     expect(founderAster).toMatchObject({
       id: '10000000-0000-4000-a000-000000000001',
       code: 'CL-001001',
       displayName: 'Aster Foods',
       legalName: 'Aster Foods Private Limited',
-      gstin: '27AABCA1234A1Z5',
-      pan: 'AABCA1234A',
+      gstinMasked: '27**********1Z5',
+      panMasked: '******1234',
       email: 'accounts@asterfoods.local',
       phone: '+91 98200 11001',
       relationshipOwnerId: MANAGER_ID,

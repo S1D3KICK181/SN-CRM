@@ -10,6 +10,7 @@ import { InMemoryCrmRepository } from './in-memory-repository';
 const runningServers: Server[] = [];
 
 const CANONICAL_ASSIGNMENT_1 = '30000000-0000-4000-a000-000000000001';
+const CANONICAL_CLIENT_1 = '10000000-0000-4000-a000-000000000001';
 
 async function startServer(options?: { allowDevActorHeader?: boolean }): Promise<string> {
   let id = 0;
@@ -668,6 +669,231 @@ describe('HTTP API', () => {
       expect(origins).toContain('http://127.0.0.1:4310');
       expect(origins).toContain('http://localhost:4311');
       expect(origins).toContain('http://127.0.0.1:4311');
+    });
+  });
+
+  describe('Client Read HTTP Endpoints (CL-03)', () => {
+    it('requires authentication on GET /api/v1/clients and /api/v1/clients/:id', async () => {
+      const baseUrl = await startServer();
+
+      // Missing auth header on collection
+      const listRes = await fetch(`${baseUrl}/api/v1/clients`, {
+        headers: { 'x-request-id': 'req-unauth-list' },
+      });
+      expect(listRes.status).toBe(401);
+      expect(listRes.headers.get('x-request-id')).toBe('req-unauth-list');
+      const listBody = await listRes.json();
+      expect(listBody).toEqual({
+        error: {
+          code: 'demo_session_required',
+          message: 'Choose a demo user and send its id in the x-demo-user-id header.',
+        },
+        requestId: 'req-unauth-list',
+      });
+
+      // Missing auth header on single item
+      const itemRes = await fetch(`${baseUrl}/api/v1/clients/${CANONICAL_CLIENT_1}`, {
+        headers: { 'x-request-id': 'req-unauth-item' },
+      });
+      expect(itemRes.status).toBe(401);
+      expect(itemRes.headers.get('x-request-id')).toBe('req-unauth-item');
+      const itemBody = await itemRes.json();
+      expect(itemBody).toEqual({
+        error: {
+          code: 'demo_session_required',
+          message: 'Choose a demo user and send its id in the x-demo-user-id header.',
+        },
+        requestId: 'req-unauth-item',
+      });
+
+      // Invalid / unknown demo user header
+      const invalidUserRes = await fetch(`${baseUrl}/api/v1/clients`, {
+        headers: { 'x-demo-user-id': 'unknown-user', 'x-request-id': 'req-invalid-user' },
+      });
+      expect(invalidUserRes.status).toBe(401);
+      const invalidUserBody = await invalidUserRes.json();
+      expect(invalidUserBody.error.code).toBe('invalid_demo_session');
+      expect(invalidUserBody.requestId).toBe('req-invalid-user');
+    });
+
+    it('returns 422 invalid_identifier for non-UUID route parameters', async () => {
+      const baseUrl = await startServer();
+      const res = await fetch(`${baseUrl}/api/v1/clients/not-a-valid-uuid`, {
+        headers: {
+          'x-demo-user-id': DEMO_ACTOR_IDS.founder,
+          'x-request-id': 'req-invalid-uuid',
+        },
+      });
+      expect(res.status).toBe(422);
+      expect(res.headers.get('x-request-id')).toBe('req-invalid-uuid');
+      const body = await res.json();
+      expect(body).toEqual({
+        error: {
+          code: 'invalid_identifier',
+          message: 'The route parameter must be a valid RFC 4122 UUID.',
+        },
+        requestId: 'req-invalid-uuid',
+      });
+    });
+
+    it('returns 422 invalid_identifier for malformed URI percent-escape route parameters', async () => {
+      const baseUrl = await startServer();
+      const res = await fetch(`${baseUrl}/api/v1/clients/%FF`, {
+        headers: {
+          'x-demo-user-id': DEMO_ACTOR_IDS.founder,
+          'x-request-id': 'req-malformed-escape',
+        },
+      });
+      expect(res.status).toBe(422);
+      expect(res.headers.get('x-request-id')).toBe('req-malformed-escape');
+      const body = await res.json();
+      expect(body).toEqual({
+        error: {
+          code: 'invalid_identifier',
+          message: 'The route parameter must be a valid RFC 4122 UUID.',
+        },
+        requestId: 'req-malformed-escape',
+      });
+    });
+
+    it('returns caller-visible clients list for founder (6), staff (2), and trainee (1)', async () => {
+      const baseUrl = await startServer();
+
+      // Founder sees all 6 clients
+      const founderRes = await fetch(`${baseUrl}/api/v1/clients`, {
+        headers: {
+          'x-demo-user-id': DEMO_ACTOR_IDS.founder,
+          'x-request-id': 'req-founder-clients',
+        },
+      });
+      expect(founderRes.status).toBe(200);
+      expect(founderRes.headers.get('x-request-id')).toBe('req-founder-clients');
+      const founderBody = await founderRes.json();
+      expect(founderBody.requestId).toBe('req-founder-clients');
+      expect(founderBody.data.length).toBe(6);
+      expect(founderBody.data[0]).toMatchObject({
+        id: CANONICAL_CLIENT_1,
+        code: 'CL-001001',
+        displayName: 'Aster Foods',
+        gstinMasked: '27**********1Z5',
+        panMasked: '******1234',
+        status: 'active',
+      });
+      expect(founderBody.data[0]).not.toHaveProperty('pan');
+      expect(founderBody.data[0]).not.toHaveProperty('gstin');
+
+      const ALL_DEMO_RAW_PANS = [
+        'AABCA1234A',
+        'AABCB2345B',
+        'AABCS3456C',
+        'AABCK4567D',
+        'AABCN5678E',
+        'AABCA6789F',
+      ] as const;
+      const ALL_DEMO_RAW_GSTINS = [
+        '27AABCA1234A1Z5',
+        '27AABCB2345B1Z4',
+        '27AABCS3456C1Z3',
+        '27AABCK4567D1Z2',
+        '27AABCN5678E1Z1',
+        '27AABCA6789F1Z0',
+      ] as const;
+
+      const serializedFounderBody = JSON.stringify(founderBody);
+      for (const rawPan of ALL_DEMO_RAW_PANS) {
+        expect(serializedFounderBody).not.toContain(rawPan);
+      }
+      for (const rawGstin of ALL_DEMO_RAW_GSTINS) {
+        expect(serializedFounderBody).not.toContain(rawGstin);
+      }
+      expect(serializedFounderBody).not.toContain('"pan":');
+      expect(serializedFounderBody).not.toContain('"gstin":');
+
+      // Staff sees 2 clients
+      const staffRes = await fetch(`${baseUrl}/api/v1/clients`, {
+        headers: { 'x-demo-user-id': DEMO_ACTOR_IDS.staff },
+      });
+      expect(staffRes.status).toBe(200);
+      const staffBody = await staffRes.json();
+      expect(staffBody.data.map((c: any) => c.code)).toEqual(['CL-001002', 'CL-001004']);
+
+      // Trainee sees 1 client (Aster Foods)
+      const traineeRes = await fetch(`${baseUrl}/api/v1/clients`, {
+        headers: { 'x-demo-user-id': DEMO_ACTOR_IDS.trainee },
+      });
+      expect(traineeRes.status).toBe(200);
+      const traineeBody = await traineeRes.json();
+      expect(traineeBody.data.map((c: any) => c.code)).toEqual(['CL-001001']);
+    });
+
+    it('returns visible client detail with 200 and expected DTO envelope', async () => {
+      const baseUrl = await startServer();
+      const res = await fetch(`${baseUrl}/api/v1/clients/${CANONICAL_CLIENT_1}`, {
+        headers: {
+          'x-demo-user-id': DEMO_ACTOR_IDS.founder,
+          'x-request-id': 'req-detail-aster',
+        },
+      });
+      expect(res.status).toBe(200);
+      expect(res.headers.get('x-request-id')).toBe('req-detail-aster');
+      const body = await res.json();
+      expect(body.requestId).toBe('req-detail-aster');
+      expect(body.data).toMatchObject({
+        id: CANONICAL_CLIENT_1,
+        code: 'CL-001001',
+        displayName: 'Aster Foods',
+        legalName: 'Aster Foods Private Limited',
+        gstinMasked: '27**********1Z5',
+        panMasked: '******1234',
+        status: 'active',
+        activeAssignmentsCount: 1,
+      });
+      expect(body.data).not.toHaveProperty('pan');
+      expect(body.data).not.toHaveProperty('gstin');
+      const serializedDetail = JSON.stringify(body);
+      expect(serializedDetail).not.toContain('AABCA1234A');
+      expect(serializedDetail).not.toContain('27AABCA1234A1Z5');
+      expect(serializedDetail).not.toContain('"pan":');
+      expect(serializedDetail).not.toContain('"gstin":');
+    });
+
+    it('ensures hidden and nonexistent clients are externally indistinguishable (identical 404 shape)', async () => {
+      const baseUrl = await startServer();
+      const absentId = '10000000-0000-4000-a000-999999999999';
+      const hiddenId = '10000000-0000-4000-a000-000000000002'; // BluePeak Tech (hidden for trainee)
+
+      // Trainee requests absent client
+      const absentRes = await fetch(`${baseUrl}/api/v1/clients/${absentId}`, {
+        headers: {
+          'x-demo-user-id': DEMO_ACTOR_IDS.trainee,
+          'x-request-id': 'req-absent-client',
+        },
+      });
+      expect(absentRes.status).toBe(404);
+      expect(absentRes.headers.get('x-request-id')).toBe('req-absent-client');
+      const absentBody = await absentRes.json();
+
+      // Trainee requests hidden client
+      const hiddenRes = await fetch(`${baseUrl}/api/v1/clients/${hiddenId}`, {
+        headers: {
+          'x-demo-user-id': DEMO_ACTOR_IDS.trainee,
+          'x-request-id': 'req-hidden-client',
+        },
+      });
+      expect(hiddenRes.status).toBe(404);
+      expect(hiddenRes.headers.get('x-request-id')).toBe('req-hidden-client');
+      const hiddenBody = await hiddenRes.json();
+
+      // Both must have identical error code, message, and shape (never revealing existence)
+      expect(absentBody.error).toEqual({
+        code: 'not_found',
+        message: 'Client was not found.',
+      });
+      expect(hiddenBody.error).toEqual({
+        code: 'not_found',
+        message: 'Client was not found.',
+      });
+      expect(hiddenBody.error).toEqual(absentBody.error);
     });
   });
 });
