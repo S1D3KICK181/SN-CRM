@@ -145,7 +145,6 @@ function AuthenticatedApp({
     assignments,
     handleCreateAssignment: createAssignmentLive,
     handleUpdateAssignment: updateAssignmentLive,
-    cascadeClientFields,
     markAssignmentBilled,
   } = useAssignments(role, { onToast: setToast });
   const {
@@ -214,28 +213,6 @@ function AuthenticatedApp({
         // Prevent unhandled rejection escaping event handlers
       }
     })();
-  }
-
-  function handleUpdateClient(updated: ClientRecord) {
-    setClients((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
-    setSchedules((prev) =>
-      prev.map((s) => {
-        if (s.clientId === updated.id) {
-          const nextBankRec = updated.bankStatementRequired === false
-            ? 'Not applicable'
-            : (s.bankRecStatus === 'Not applicable' ? 'Awaited' : s.bankRecStatus);
-          return {
-            ...s,
-            defaultOwner: updated.primaryOwner,
-            clientName: updated.name,
-            bankRecStatus: nextBankRec,
-          };
-        }
-        return s;
-      })
-    );
-    cascadeClientFields(updated);
-    setToast(`Client details updated for ${updated.name}`);
   }
 
   function handleOpenInvoiceForAssignment(asn: AssignmentRow) {
@@ -579,7 +556,6 @@ function AuthenticatedApp({
           onSubmitTaskForReview={handleSubmitTaskForReview}
           onApproveDelegatedTask={handleApproveDelegatedTask}
           onReopenDelegatedTask={handleReopenDelegatedTask}
-          onUpdateClient={handleUpdateClient}
         />
       )}
     </ApplicationChrome>
@@ -707,8 +683,8 @@ function PageHeading({
   eyebrow?: string;
   title: string;
   description: string;
-  primaryLabel: string;
-  onPrimary: () => void;
+  primaryLabel?: string;
+  onPrimary?: () => void;
   onSecondary: () => void;
 }) {
   return (
@@ -722,9 +698,11 @@ function PageHeading({
         <button className="soft-button" type="button" onClick={onSecondary}>
           <CalendarClock aria-hidden="true" /> Today’s plan
         </button>
-        <button className="primary-button" type="button" onClick={onPrimary}>
-          <Plus aria-hidden="true" /> {primaryLabel}
-        </button>
+        {primaryLabel && onPrimary ? (
+          <button className="primary-button" type="button" onClick={onPrimary}>
+            <Plus aria-hidden="true" /> {primaryLabel}
+          </button>
+        ) : null}
       </div>
     </section>
   );
@@ -1463,7 +1441,6 @@ function ModuleWorkspace({
   onSubmitTaskForReview,
   onApproveDelegatedTask,
   onReopenDelegatedTask,
-  onUpdateClient,
 }: {
   page: PageKey;
   role: CompanyRole;
@@ -1488,7 +1465,6 @@ function ModuleWorkspace({
   onSubmitTaskForReview?: (task: DelegatedTaskRecord) => void;
   onApproveDelegatedTask?: (task: DelegatedTaskRecord) => void;
   onReopenDelegatedTask?: (task: DelegatedTaskRecord) => void;
-  onUpdateClient?: (updated: ClientRecord) => void;
 }) {
   const leadership = role === 'founder' || role === 'manager';
   const primaryLabel =
@@ -1496,8 +1472,8 @@ function ModuleWorkspace({
       ? 'New assignment'
       : page === 'My Tasks'
       ? 'New personal task'
-      : page === 'Clients' && leadership
-      ? 'New client'
+      : page === 'Clients'
+      ? undefined
       : page === 'Billing & Collections'
       ? (leadership ? 'Raise invoice' : 'Record receipt')
       : `Add ${page.toLowerCase()}`;
@@ -1506,8 +1482,8 @@ function ModuleWorkspace({
       ? 'assignment'
       : page === 'My Tasks'
       ? 'personal'
-      : page === 'Clients' && leadership
-      ? 'client'
+      : page === 'Clients'
+      ? null
       : page === 'Billing & Collections'
       ? (leadership ? 'invoice' : 'receipt')
       : null;
@@ -1524,18 +1500,7 @@ function ModuleWorkspace({
       {page === 'Clients' ? (
         <ClientsWorkspace
           role={role}
-          model={{
-            clients,
-            schedules,
-            invoices,
-            receipts,
-          }}
-          actions={{
-            compose: onCompose,
-            notify: onToast,
-            recordPaymentForInvoice: onRecordPaymentForInvoice,
-            updateClient: onUpdateClient,
-          }}
+          onToast={onToast}
         />
       ) : null}
       {page === 'Assignments' ? (

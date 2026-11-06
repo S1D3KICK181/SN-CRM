@@ -2393,6 +2393,182 @@ tbody tr:hover {
   background: var(--canvas) !important;
 }
 
+.skeleton-row td {
+  padding: 12px 14px;
+}
+
+.skeleton-pulse {
+  background: var(--canvas-deep);
+  border-radius: calc(var(--radius-control) / 2);
+  animation: skeleton-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes skeleton-pulse {
+  0% { opacity: 0.6; }
+  50% { opacity: 0.25; }
+  100% { opacity: 0.6; }
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.workspace-warning-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  background: var(--warning-soft);
+  border: 1px solid var(--warning);
+  border-radius: var(--radius-card);
+  color: var(--ink-strong);
+  font-size: 12px;
+}
+
+.workspace-warning-message {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.workspace-warning-message svg {
+  color: var(--warning);
+  flex-shrink: 0;
+}
+
+.workspace-error-card {
+  padding: 40px 20px;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+
+.workspace-error-icon {
+  width: 44px;
+  height: 44px;
+  border-radius: var(--radius-control);
+  background: var(--danger-soft);
+  color: var(--danger);
+  display: grid;
+  place-items: center;
+}
+
+.workspace-empty-card {
+  padding: 48px 20px;
+  text-align: center;
+}
+
+.stat-metric-skeleton {
+  display: inline-block;
+  width: 38px;
+  height: 24px;
+  border-radius: calc(var(--radius-control) / 2);
+  margin-top: 4px;
+}
+
+.stat-unavailable {
+  display: inline-block;
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--ink-muted);
+  line-height: 1.1;
+  margin-top: 4px;
+}
+
+.drawer-error-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding: 36px 20px;
+  gap: 12px;
+}
+
+.drawer-error-icon {
+  width: 44px;
+  height: 44px;
+  border-radius: var(--radius-control);
+  background: var(--danger-soft);
+  color: var(--danger);
+  display: grid;
+  place-items: center;
+}
+
+.drawer-notice-box {
+  background: var(--canvas);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  padding: 12px 14px;
+}
+
+.drawer-unsupported-box {
+  padding: 24px;
+  text-align: center;
+}
+
+.drawer-unsupported-icon {
+  margin: 0 auto 10px;
+  display: block;
+  color: var(--ink-muted);
+}
+
+.drawer-grid-2col {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.drawer-field-label {
+  display: block;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--ink-muted);
+  text-transform: uppercase;
+}
+
+.drawer-field-val {
+  font-size: 12px;
+  color: var(--ink);
+  margin-top: 2px;
+}
+
+.drawer-field-val strong {
+  color: var(--ink-strong);
+}
+
+.client-text-wrap {
+  overflow-wrap: anywhere;
+  word-break: normal;
+}
+
+.drawer-text-contain {
+  overflow-wrap: anywhere;
+  word-break: normal;
+  min-width: 0;
+}
+
+.drawer-title-contain {
+  overflow-wrap: anywhere;
+  word-break: normal;
+}
+
+.drawer-subtitle-contain {
+  overflow-wrap: anywhere;
+  word-break: normal;
+}
+
+.drawer-notes-content {
+  margin: 0;
+  font-size: 12px;
+  color: var(--ink);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 /* Slide-out Drawer */
 .drawer-backdrop {
   position: fixed;
@@ -2477,7 +2653,7 @@ tbody tr:hover {
   display: grid;
   place-items: center;
   cursor: pointer;
-  transition: all 120ms ease;
+  transition: color 120ms var(--ease-out), background-color 120ms var(--ease-out), border-color 120ms var(--ease-out);
   flex-shrink: 0;
 }
 
@@ -2492,7 +2668,8 @@ tbody tr:hover {
   padding: 0 24px;
   background: var(--surface);
   border-bottom: 1px solid var(--border);
-  gap: 20px;
+  gap: 16px;
+  overflow-x: auto;
 }
 
 .drawer-tab {
@@ -2503,8 +2680,9 @@ tbody tr:hover {
   font-size: 11px;
   font-weight: 700;
   cursor: pointer;
+  white-space: nowrap;
   border-bottom: 2px solid transparent;
-  transition: all 140ms ease;
+  transition: color 140ms var(--ease-out), border-color 140ms var(--ease-out);
 }
 
 .drawer-tab:hover {

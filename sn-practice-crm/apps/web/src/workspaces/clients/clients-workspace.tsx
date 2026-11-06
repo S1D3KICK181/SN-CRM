@@ -1,291 +1,401 @@
 import { useMemo, useState } from 'react';
 import {
+  AlertTriangle,
   Building2,
   CheckCircle2,
   ChevronRight,
   Files,
-  IndianRupee,
-  Pencil,
-  Plus,
+  RotateCcw,
   Search,
+  UserCheck,
 } from 'lucide-react';
 import type { CompanyRole } from '@sn/domain';
-import type {
-  ClientRecord,
-  InvoiceRecord,
-  ReceiptRecord,
-  RecurringScheduleRecord,
-} from '../../data';
-import { Card, MoreButton } from '../../ui/workspace-primitives';
+import type { ClientStatus } from '@sn/contracts';
+import { useClients } from '../../api/use-clients';
+import type { ClientsPort } from '../../api/clients-types';
+import { Card } from '../../ui/workspace-primitives';
 import { ClientProfileDrawer } from './client-profile-drawer';
+import {
+  computeClientDirectoryStats,
+  matchesClientSearch,
+  toClientDetailViewModel,
+  toClientListItemViewModel,
+} from './clients-view-model';
 
-type ClientComposeIntent = 'client' | 'schedule' | 'invoice' | 'receipt' | 'assignment';
-
-interface ClientsWorkspaceProps {
-  role: CompanyRole;
-  model: {
-    clients: ClientRecord[];
-    schedules: RecurringScheduleRecord[];
-    invoices: InvoiceRecord[];
-    receipts: ReceiptRecord[];
-  };
-  actions: {
-    compose: (intent: ClientComposeIntent) => void;
-    notify: (message: string) => void;
-    recordPaymentForInvoice: (invoice: InvoiceRecord) => void;
-    updateClient?: (client: ClientRecord) => void;
-  };
+export interface ClientsWorkspaceProps {
+  readonly role: CompanyRole;
+  readonly port?: ClientsPort;
+  readonly onToast?: (message: string) => void;
 }
 
 export function ClientsWorkspace({
   role,
-  model,
-  actions,
+  port,
+  onToast,
 }: ClientsWorkspaceProps) {
-  const { clients, schedules, invoices, receipts } = model;
-  const { compose, notify, recordPaymentForInvoice, updateClient } = actions;
+  const {
+    items,
+    loading,
+    error,
+    hasLiveSnapshot,
+    selectedClientId,
+    selectedDetail,
+    detailLoading,
+    detailError,
+    selectClient,
+    clearSelection,
+    refresh,
+  } = useClients(role, { port, onToast });
 
   const [search, setSearch] = useState('');
-  const [typeFilter, setTypeFilter] = useState('All');
-  const [selectedClient, setSelectedClient] = useState<ClientRecord | null>(null);
-  const [startInEditMode, setStartInEditMode] = useState(false);
+  const [statusFilter, setStatusFilter] = useState<'all' | ClientStatus>('all');
+
+  // Synchronously reset local search and filter on role transition
+  const [prevRole, setPrevRole] = useState(role);
+  if (prevRole !== role) {
+    setPrevRole(role);
+    setSearch('');
+    setStatusFilter('all');
+  }
+
+  const stats = useMemo(() => computeClientDirectoryStats(items), [items]);
 
   const filtered = useMemo(() => {
-    return clients.filter((c) => {
-      const q = search.toLowerCase();
-      const matchSearch =
-        c.name.toLowerCase().includes(q) ||
-        c.tradeName.toLowerCase().includes(q) ||
-        c.pan.toLowerCase().includes(q) ||
-        c.gstin.toLowerCase().includes(q) ||
-        c.city.toLowerCase().includes(q);
-      const matchType = typeFilter === 'All' || c.type === typeFilter;
-      return matchSearch && matchType;
+    return items.filter((client) => {
+      const matchSearch = matchesClientSearch(client, search);
+      const matchStatus = statusFilter === 'all' || client.status === statusFilter;
+      return matchSearch && matchStatus;
     });
-  }, [clients, search, typeFilter]);
+  }, [items, search, statusFilter]);
 
-  const leadership = role === 'founder' || role === 'manager';
+  const isInitialLoading = loading && !hasLiveSnapshot;
+  const isInitialError = error !== null && !hasLiveSnapshot;
+  const isRefreshError = error !== null && hasLiveSnapshot;
+
+  const cardDescription = isInitialLoading
+    ? 'Loading client records…'
+    : isInitialError
+    ? 'Unable to load clients'
+    : `${filtered.length} client${filtered.length === 1 ? '' : 's'} matching current filter · Click row to open profile drawer`;
 
   return (
     <div className="client-workspace">
-      <section className="workspace-stats-grid">
+      {/* Role-scoped directory metrics */}
+      <section className="workspace-stats-grid" aria-label="Client directory metrics">
         <article className="workspace-stat-card">
           <div className="workspace-stat-info">
-            <span>Total Active Clients</span>
-            <strong>48</strong>
-            <small>6 currently in active view</small>
+            <span>Accessible Clients</span>
+            {isInitialLoading ? (
+              <span className="skeleton-pulse stat-metric-skeleton" aria-label="Loading Accessible Clients" />
+            ) : isInitialError ? (
+              <span className="stat-unavailable" aria-label="Accessible Clients unavailable">—</span>
+            ) : (
+              <strong>{stats.accessibleClients}</strong>
+            )}
+            <small>
+              {isInitialLoading ? 'Loading…' : isInitialError ? 'Unavailable' : `${stats.activeClients} active in current role scope`}
+            </small>
           </div>
           <span className="workspace-stat-icon">
             <Building2 aria-hidden="true" />
           </span>
         </article>
+
         <article className="workspace-stat-card">
           <div className="workspace-stat-info">
-            <span>Active GST Filers</span>
-            <strong>38</strong>
-            <small>October filings due in 4 days</small>
+            <span>Active Clients</span>
+            {isInitialLoading ? (
+              <span className="skeleton-pulse stat-metric-skeleton" aria-label="Loading Active Clients" />
+            ) : isInitialError ? (
+              <span className="stat-unavailable" aria-label="Active Clients unavailable">—</span>
+            ) : (
+              <strong>{stats.activeClients}</strong>
+            )}
+            <small>
+              {isInitialLoading ? 'Loading…' : isInitialError ? 'Unavailable' : 'Active client engagements'}
+            </small>
           </div>
           <span className="workspace-stat-icon stat-success">
             <CheckCircle2 aria-hidden="true" />
           </span>
         </article>
+
         <article className="workspace-stat-card">
           <div className="workspace-stat-info">
-            <span>Awaited Documents</span>
-            <strong>12</strong>
-            <small>5 client dependencies overdue</small>
+            <span>Active Assignments</span>
+            {isInitialLoading ? (
+              <span className="skeleton-pulse stat-metric-skeleton" aria-label="Loading Active Assignments" />
+            ) : isInitialError ? (
+              <span className="stat-unavailable" aria-label="Active Assignments unavailable">—</span>
+            ) : (
+              <strong>{stats.activeAssignments}</strong>
+            )}
+            <small>
+              {isInitialLoading ? 'Loading…' : isInitialError ? 'Unavailable' : 'Across accessible clients'}
+            </small>
           </div>
           <span className="workspace-stat-icon stat-warning">
             <Files aria-hidden="true" />
           </span>
         </article>
+
         <article className="workspace-stat-card">
           <div className="workspace-stat-info">
-            <span>Practice Outstanding</span>
-            <strong>₹1,21,750</strong>
-            <small>₹88,500 over 60 days overdue</small>
+            <span>Assigned Relationships</span>
+            {isInitialLoading ? (
+              <span className="skeleton-pulse stat-metric-skeleton" aria-label="Loading Assigned Relationships" />
+            ) : isInitialError ? (
+              <span className="stat-unavailable" aria-label="Assigned Relationships unavailable">—</span>
+            ) : (
+              <strong>{stats.relationshipManaged}</strong>
+            )}
+            <small>
+              {isInitialLoading ? 'Loading…' : isInitialError ? 'Unavailable' : 'With assigned relationship owner'}
+            </small>
           </div>
           <span className="workspace-stat-icon stat-gold">
-            <IndianRupee aria-hidden="true" />
+            <UserCheck aria-hidden="true" />
           </span>
         </article>
       </section>
 
+      {/* Non-destructive refresh warning banner */}
+      {isRefreshError ? (
+        <div className="workspace-warning-banner" role="status">
+          <div className="workspace-warning-message">
+            <AlertTriangle size={15} aria-hidden="true" />
+            <span>Failed to refresh client list. Showing last loaded data.</span>
+          </div>
+          <button
+            className="soft-button"
+            type="button"
+            onClick={() => void refresh()}
+            style={{ fontSize: 11, padding: '3px 10px', height: 'auto' }}
+          >
+            Retry
+          </button>
+        </div>
+      ) : null}
+
+      {/* Toolbar: Search, Status Filter, Refresh */}
       <div className="client-toolbar">
         <div className="client-search-wrap">
           <Search aria-hidden="true" />
           <input
             className="client-search-input"
             type="search"
-            placeholder="Search by client name, PAN, GSTIN, trade name…"
+            placeholder="Search by client name, code, or masked tax ID…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
+            aria-label="Search clients"
           />
         </div>
         <div className="client-filter-group">
           <select
             className="client-select"
-            value={typeFilter}
-            onChange={(e) => setTypeFilter(e.target.value)}
-            aria-label="Filter by entity type"
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value as 'all' | ClientStatus)}
+            aria-label="Filter by client status"
           >
-            <option value="All">All entity types</option>
-            <option value="Private Limited">Private Limited</option>
-            <option value="LLP">LLP</option>
-            <option value="Proprietorship">Proprietorship</option>
-            <option value="Partnership">Partnership</option>
-            <option value="Public Limited">Public Limited</option>
+            <option value="all">All statuses</option>
+            <option value="active">Active</option>
+            <option value="on_hold">On Hold</option>
+            <option value="archived">Archived</option>
           </select>
-          {leadership ? (
-            <button
-              className="primary-button"
-              type="button"
-              onClick={() => compose('client')}
-            >
-              <Plus aria-hidden="true" /> Add client
-            </button>
-          ) : null}
+          <button
+            className="soft-button"
+            type="button"
+            onClick={() => void refresh()}
+            disabled={loading}
+            aria-label="Refresh client list"
+            style={{
+              height: 38,
+              padding: '0 12px',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 6,
+            }}
+          >
+            <RotateCcw
+              size={13}
+              aria-hidden="true"
+              style={{
+                animation: loading ? 'spin 1s linear infinite' : 'none',
+              }}
+            />
+            <span>Refresh</span>
+          </button>
         </div>
       </div>
 
+      {/* Client directory table */}
       <Card
         title="Client directory"
-        description={`${filtered.length} entities matching current filter · Click row to open profile drawer`}
-        action={<MoreButton />}
+        description={cardDescription}
         className="table-card"
       >
-        <div className="table-scroll">
-          <table>
-            <thead>
-              <tr>
-                <th>Client / Trade Name</th>
-                <th>Entity Type</th>
-                <th>Tax IDs</th>
-                <th>Relationship Owner</th>
-                <th>Active Work</th>
-                <th>Accounting Charges / Cadence</th>
-                <th>Outstanding</th>
-                <th>Profile</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.map((client) => {
-                const entityClass =
-                  client.type === 'Private Limited'
-                    ? 'entity-pvt-ltd'
-                    : client.type === 'LLP'
-                    ? 'entity-llp'
-                    : client.type === 'Proprietorship'
-                    ? 'entity-prop'
-                    : client.type === 'Partnership'
-                    ? 'entity-partnership'
-                    : client.type === 'Public Limited'
-                    ? 'entity-public-ltd'
-                    : 'entity-individual';
-
-                return (
-                  <tr
-                    key={client.id}
-                    className="interactive-row"
-                    onClick={() => {
-                      setSelectedClient(client);
-                      setStartInEditMode(false);
-                    }}
-                  >
+        {isInitialLoading ? (
+          <div className="table-scroll" aria-busy="true" aria-label="Loading client directory">
+            <table>
+              <thead>
+                <tr>
+                  <th>Client / Code</th>
+                  <th>Status</th>
+                  <th>Masked Tax IDs</th>
+                  <th>Relationship Owner</th>
+                  <th>Active Work</th>
+                  <th>Contact</th>
+                  <th>Profile</th>
+                </tr>
+              </thead>
+              <tbody>
+                {[1, 2, 3, 4, 5].map((idx) => (
+                  <tr key={idx} className="skeleton-row">
                     <td>
-                      <div>
-                        <strong>{client.name}</strong>
-                        <small className="table-secondary">{client.tradeName} · {client.city}</small>
-                      </div>
+                      <div className="skeleton-pulse" style={{ height: 16, width: 140, marginBottom: 4 }} />
+                      <div className="skeleton-pulse" style={{ height: 12, width: 90 }} />
                     </td>
                     <td>
-                      <span className={`entity-badge ${entityClass}`}>{client.type}</span>
+                      <div className="skeleton-pulse" style={{ height: 20, width: 60, borderRadius: 6 }} />
                     </td>
                     <td>
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
-                        <span className="tax-id-chip">{client.pan}</span>
-                        <span className="tax-id-chip" style={{ color: 'var(--ink-muted)' }}>{client.gstin}</span>
-                      </div>
+                      <div className="skeleton-pulse" style={{ height: 14, width: 80, marginBottom: 3 }} />
+                      <div className="skeleton-pulse" style={{ height: 14, width: 110 }} />
                     </td>
                     <td>
-                      <span>{client.primaryOwner}</span>
+                      <div className="skeleton-pulse" style={{ height: 14, width: 100 }} />
                     </td>
                     <td>
-                      <span className="status tone-default">
-                        {client.activeAssignments} active
-                      </span>
+                      <div className="skeleton-pulse" style={{ height: 20, width: 50, borderRadius: 6 }} />
                     </td>
                     <td>
-                      <div>
-                        <strong>{client.recurringFee}</strong>
-                        <small className="table-secondary">{client.billingFrequency}</small>
-                      </div>
+                      <div className="skeleton-pulse" style={{ height: 12, width: 120, marginBottom: 3 }} />
+                      <div className="skeleton-pulse" style={{ height: 12, width: 90 }} />
                     </td>
                     <td>
-                      <div>
-                        <strong className={`tone-${client.outstandingTone}`}>{client.outstanding}</strong>
-                        <small className="table-secondary">{client.outstandingAge}</small>
-                      </div>
+                      <div className="skeleton-pulse" style={{ height: 24, width: 50, borderRadius: 6 }} />
                     </td>
-                    <td>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : isInitialError ? (
+          <div className="workspace-error-card" role="alert">
+            <div className="workspace-error-icon">
+              <AlertTriangle size={22} aria-hidden="true" />
+            </div>
+            <h3 style={{ margin: 0, fontSize: 15, fontWeight: 700, color: 'var(--ink-strong)' }}>
+              Unable to load clients
+            </h3>
+            <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-muted)', maxWidth: 360 }}>
+              {error.message || 'An error occurred while loading client records.'}
+            </p>
+            <button
+              className="primary-button"
+              type="button"
+              onClick={() => void refresh()}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 6, marginTop: 8 }}
+            >
+              <RotateCcw size={13} aria-hidden="true" /> Try again
+            </button>
+          </div>
+        ) : filtered.length === 0 ? (
+          <div className="workspace-empty-card">
+            <p style={{ margin: 0, fontSize: 13, fontWeight: 600, color: 'var(--ink-strong)' }}>
+              {items.length === 0
+                ? 'No clients accessible for this role.'
+                : 'No clients match your filter criteria.'}
+            </p>
+            <p style={{ margin: '4px 0 0', fontSize: 11, color: 'var(--ink-muted)' }}>
+              {items.length === 0
+                ? 'Clients visible to this role will appear here.'
+                : 'Try adjusting your search terms or clearing status filters.'}
+            </p>
+          </div>
+        ) : (
+          <div className="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>Client / Code</th>
+                  <th>Status</th>
+                  <th>Masked Tax IDs</th>
+                  <th>Relationship Owner</th>
+                  <th>Active Work</th>
+                  <th>Contact</th>
+                  <th>Profile</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map((client) => {
+                  const vm = toClientListItemViewModel(client);
+                  return (
+                    <tr
+                      key={vm.id}
+                      className="interactive-row"
+                      onClick={() => void selectClient(vm.id)}
+                    >
+                      <td>
+                        <div className="client-text-wrap">
+                          <strong>{vm.displayName}</strong>
+                          <small className="table-secondary">{vm.subtitle}</small>
+                        </div>
+                      </td>
+                      <td>
+                        <span className={`status tone-${vm.statusTone}`}>{vm.statusLabel}</span>
+                      </td>
+                      <td>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                          <span className="tax-id-chip">{vm.panMasked}</span>
+                          <span className="tax-id-chip" style={{ color: 'var(--ink-muted)' }}>
+                            {vm.gstinMasked}
+                          </span>
+                        </div>
+                      </td>
+                      <td>
+                        <span className="client-text-wrap">{vm.relationshipOwnerName}</span>
+                      </td>
+                      <td>
+                        <span className="status tone-default">
+                          {vm.activeAssignmentsLabel}
+                        </span>
+                      </td>
+                      <td>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                          <span className="client-text-wrap" style={{ fontSize: 11, color: 'var(--ink)' }}>{vm.email}</span>
+                          <span className="client-text-wrap" style={{ fontSize: 10, color: 'var(--ink-muted)' }}>{vm.phone}</span>
+                        </div>
+                      </td>
+                      <td>
                         <button
                           className="text-button"
                           type="button"
                           onClick={(e) => {
                             e.stopPropagation();
-                            setSelectedClient(client);
-                            setStartInEditMode(false);
+                            void selectClient(vm.id);
                           }}
                         >
                           View <ChevronRight aria-hidden="true" />
                         </button>
-                        {leadership ? (
-                          <button
-                            className="icon-button"
-                            type="button"
-                            title={`Edit ${client.name}`}
-                            aria-label={`Edit ${client.name}`}
-                            style={{ width: 28, height: 28 }}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setSelectedClient(client);
-                              setStartInEditMode(true);
-                            }}
-                          >
-                            <Pencil size={12} />
-                          </button>
-                        ) : null}
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
       </Card>
 
-      {selectedClient ? (
+      {/* Detail Drawer */}
+      {selectedClientId ? (
         <ClientProfileDrawer
-          client={selectedClient}
-          schedules={schedules}
-          leadership={leadership}
-          role={role}
-          invoices={invoices}
-          receipts={receipts}
-          onClose={() => {
-            setSelectedClient(null);
-            setStartInEditMode(false);
-          }}
-          onToast={notify}
-          onCompose={compose}
-          onRecordPaymentForInvoice={recordPaymentForInvoice}
-          onUpdateClient={(updated) => {
-            setSelectedClient(updated);
-            if (updateClient) updateClient(updated);
-          }}
-          initialEditing={startInEditMode}
+          client={selectedDetail ? toClientDetailViewModel(selectedDetail) : null}
+          loading={detailLoading}
+          error={detailError}
+          onClose={clearSelection}
+          onRetry={() => void selectClient(selectedClientId)}
         />
       ) : null}
     </div>
