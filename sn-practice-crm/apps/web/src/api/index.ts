@@ -10,3 +10,7 @@ export * from './work-items-mapper';
 export * from './http-work-items-adapter';
 export * from './work-items-coordinator';
 export * from './use-work-items';
+export * from './clients-types';
+export * from './http-clients-adapter';
+export * from './clients-coordinator';
+export * from './use-clients';
