@@ -33,6 +33,89 @@ export const localDate = z
   .string()
   .regex(/^\d{4}-\d{2}-\d{2}$/, 'Must be YYYY-MM-DD');
 
+const PAN_REGEX = /^[A-Z]{5}[0-9]{4}[A-Z]$/;
+const GSTIN_REGEX = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/;
+
+function sanitizeOptionalString(val: unknown): unknown {
+  if (val === undefined || val === null) return null;
+  if (typeof val === 'string') {
+    const trimmed = val.trim();
+    return trimmed.length === 0 ? null : trimmed;
+  }
+  return val;
+}
+
+function sanitizeOptionalTaxId(val: unknown): unknown {
+  if (val === undefined || val === null) return null;
+  if (typeof val === 'string') {
+    const trimmed = val.trim();
+    return trimmed.length === 0 ? null : trimmed.toUpperCase();
+  }
+  return val;
+}
+
+export const createClientSchema = z
+  .object({
+    displayName: z
+      .string({ required_error: 'Display name is required.' })
+      .trim()
+      .min(2, 'Display name must be between 2 and 180 characters.')
+      .max(180, 'Display name must be between 2 and 180 characters.'),
+    legalName: z.preprocess(
+      sanitizeOptionalString,
+      z.string().max(200, 'Legal name must not exceed 200 characters.').nullable().optional(),
+    ),
+    pan: z.preprocess(
+      sanitizeOptionalTaxId,
+      z
+        .string({ invalid_type_error: 'PAN must be a string.' })
+        .regex(PAN_REGEX, 'Invalid Indian PAN format. Expected 5 letters, 4 digits, 1 letter.')
+        .nullable()
+        .optional(),
+    ),
+    gstin: z.preprocess(
+      sanitizeOptionalTaxId,
+      z
+        .string({ invalid_type_error: 'GSTIN must be a string.' })
+        .regex(
+          GSTIN_REGEX,
+          'Invalid Indian GSTIN format. Expected 15 characters (2 state digits, 10-character PAN, 1 entity character, Z, 1 checksum digit).',
+        )
+        .nullable()
+        .optional(),
+    ),
+    email: z.preprocess(
+      sanitizeOptionalString,
+      z.string().email('Invalid email address format.').nullable().optional(),
+    ),
+    phone: z.preprocess(
+      sanitizeOptionalString,
+      z.string().min(7, 'Phone number must be at least 7 characters.').max(20, 'Phone number must not exceed 20 characters.').nullable().optional(),
+    ),
+    relationshipOwnerId: z.preprocess(
+      sanitizeOptionalString,
+      entityUuid.nullable().optional(),
+    ),
+    notes: z.preprocess(
+      sanitizeOptionalString,
+      z.string().max(2000, 'Notes must not exceed 2000 characters.').nullable().optional(),
+    ),
+  })
+  .strict()
+  .refine(
+    (data) => {
+      if (data.pan && data.gstin) {
+        const embeddedPan = data.gstin.slice(2, 12);
+        return embeddedPan === data.pan;
+      }
+      return true;
+    },
+    {
+      message: 'GSTIN characters 3–12 must match the provided PAN.',
+      path: ['gstin'],
+    },
+  );
+
 export const createAssignmentSchema = z
   .object({
     clientId: entityUuid,

@@ -19,6 +19,7 @@ import { isProductionEnvironment } from './http';
 import type {
   ClientReference,
   CreateAssignmentRecord,
+  CreateClientRecord,
   CreateWorkItemRecord,
   CrmRepository,
   DevActorDirectory,
@@ -154,6 +155,41 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
     try {
       return await this.runner.withUserContext(ctx, async (tx) => {
         return await this.queryClientDtos(tx);
+      });
+    } catch (error) {
+      sanitizeDatabaseError(error);
+    }
+  }
+
+  async createClient(ctx: RepositoryContext, record: CreateClientRecord): Promise<ClientDto> {
+    try {
+      return await this.runner.withUserContext(ctx, async (tx) => {
+        // Live write: omit code to use client_code_seq default, omit is_demo to default false
+        await tx`
+          INSERT INTO public.clients (
+            id, display_name, legal_name, gstin, pan, email, phone,
+            relationship_owner_id, notes, status, created_by
+          ) VALUES (
+            ${record.id}::uuid,
+            ${record.displayName},
+            ${record.legalName ?? null},
+            ${record.gstin ?? null},
+            ${record.pan ?? null},
+            ${record.email ?? null},
+            ${record.phone ?? null},
+            ${record.relationshipOwnerId ? record.relationshipOwnerId : null}::uuid,
+            ${record.notes ?? null},
+            'active'::public.client_status,
+            ${ctx.actorId}::uuid
+          );
+        `;
+
+        const dtos = await this.queryClientDtos(tx, record.id);
+        const created = dtos[0];
+        if (!created) {
+          throw new ApiError(500, 'internal_error', 'Created client could not be retrieved.');
+        }
+        return created;
       });
     } catch (error) {
       sanitizeDatabaseError(error);

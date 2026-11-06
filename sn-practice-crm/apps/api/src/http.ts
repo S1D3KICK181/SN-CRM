@@ -9,6 +9,7 @@ import { ApiError } from './errors';
 import {
   assignmentTransitionSchema,
   createAssignmentSchema,
+  createClientSchema,
   createLedgerEntrySchema,
   createRecurringScheduleSchema,
   createWorkItemSchema,
@@ -346,6 +347,18 @@ export function createApiServer(application: CrmApplication, options: ApiServerO
 
       if (request.method === 'GET' && pathname === '/api/v1/clients') {
         sendData(response, context, allowedOrigins, 200, await application.listClients(actor));
+        return;
+      }
+      if (request.method === 'POST' && pathname === '/api/v1/clients') {
+        application.assertClientCreateAuthority(actor);
+        const input = await readJson(request, createClientSchema);
+        sendData(
+          response,
+          context,
+          allowedOrigins,
+          201,
+          await application.createClient(actor, input as import('@sn/contracts').CreateClientInput),
+        );
         return;
       }
       const clientId = routeId(pathname, /^\/api\/v1\/clients\/([^/]+)$/);

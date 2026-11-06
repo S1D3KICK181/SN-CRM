@@ -895,5 +895,362 @@ describe('HTTP API', () => {
       });
       expect(hiddenBody.error).toEqual(absentBody.error);
     });
+
+    it('requires authentication for POST /api/v1/clients', async () => {
+      const baseUrl = await startServer();
+      const res = await fetch(`${baseUrl}/api/v1/clients`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ displayName: 'Unauthenticated Client' }),
+      });
+      expect(res.status).toBe(401);
+      const body = await res.json();
+      expect(body.error.code).toBe('demo_session_required');
+    });
+
+    it('enforces application/json content-type for POST /api/v1/clients', async () => {
+      const baseUrl = await startServer();
+      const res = await fetch(`${baseUrl}/api/v1/clients`, {
+        method: 'POST',
+        headers: {
+          'x-demo-user-id': DEMO_ACTOR_IDS.founder,
+          'content-type': 'text/plain',
+        },
+        body: 'displayName=Plain+Text',
+      });
+      expect(res.status).toBe(415);
+      const body = await res.json();
+      expect(body.error.code).toBe('json_content_type_required');
+    });
+
+    it('enforces authorization precedence: non-leadership roles receive 403 role_not_permitted before content-type or body parsing', async () => {
+      const baseUrl = await startServer();
+      const nonLeadershipRoles = [
+        { role: 'senior_staff', id: DEMO_ACTOR_IDS.senior },
+        { role: 'staff', id: DEMO_ACTOR_IDS.staff },
+        { role: 'trainee', id: DEMO_ACTOR_IDS.trainee },
+      ];
+
+      for (const { id } of nonLeadershipRoles) {
+        // Case 1: Wrong Content-Type (text/plain) -> 403 role_not_permitted, NOT 415
+        const wrongCtRes = await fetch(`${baseUrl}/api/v1/clients`, {
+          method: 'POST',
+          headers: {
+            'x-demo-user-id': id,
+            'content-type': 'text/plain',
+            'x-request-id': 'req-auth-precedence-ct',
+          },
+          body: 'Not even JSON',
+        });
+        expect(wrongCtRes.status).toBe(403);
+        expect(wrongCtRes.headers.get('x-request-id')).toBe('req-auth-precedence-ct');
+        const wrongCtBody = await wrongCtRes.json();
+        expect(wrongCtBody.error.code).toBe('role_not_permitted');
+        expect(wrongCtBody.requestId).toBe('req-auth-precedence-ct');
+
+        // Case 2: Malformed JSON body -> 403 role_not_permitted, NOT 400
+        const malformedRes = await fetch(`${baseUrl}/api/v1/clients`, {
+          method: 'POST',
+          headers: {
+            'x-demo-user-id': id,
+            'content-type': 'application/json',
+            'x-request-id': 'req-auth-precedence-malformed',
+          },
+          body: '{"invalidJson": ',
+        });
+        expect(malformedRes.status).toBe(403);
+        const malformedBody = await malformedRes.json();
+        expect(malformedBody.error.code).toBe('role_not_permitted');
+        expect(malformedBody.requestId).toBe('req-auth-precedence-malformed');
+
+        // Case 3: Strict schema invalid input ({}) -> 403 role_not_permitted, NOT 422
+        const invalidSchemaRes = await fetch(`${baseUrl}/api/v1/clients`, {
+          method: 'POST',
+          headers: {
+            'x-demo-user-id': id,
+            'content-type': 'application/json',
+            'x-request-id': 'req-auth-precedence-schema',
+          },
+          body: JSON.stringify({}),
+        });
+        expect(invalidSchemaRes.status).toBe(403);
+        const invalidSchemaBody = await invalidSchemaRes.json();
+        expect(invalidSchemaBody.error.code).toBe('role_not_permitted');
+        expect(invalidSchemaBody.requestId).toBe('req-auth-precedence-schema');
+      }
+
+      // Conversely, Founder still receives normal content-type and parsing errors
+      const founderWrongCt = await fetch(`${baseUrl}/api/v1/clients`, {
+        method: 'POST',
+        headers: {
+          'x-demo-user-id': DEMO_ACTOR_IDS.founder,
+          'content-type': 'text/plain',
+        },
+        body: 'Not even JSON',
+      });
+      expect(founderWrongCt.status).toBe(415);
+      const founderWrongCtBody = await founderWrongCt.json();
+      expect(founderWrongCtBody.error.code).toBe('json_content_type_required');
+
+      const founderMalformed = await fetch(`${baseUrl}/api/v1/clients`, {
+        method: 'POST',
+        headers: {
+          'x-demo-user-id': DEMO_ACTOR_IDS.founder,
+          'content-type': 'application/json',
+        },
+        body: '{"invalidJson": ',
+      });
+      expect(founderMalformed.status).toBe(400);
+      const founderMalformedBody = await founderMalformed.json();
+      expect(founderMalformedBody.error.code).toBe('invalid_json');
+    });
+
+    it('enforces role matrix: founder and manager succeed with 201; senior_staff, staff, and trainee fail with 403', async () => {
+      const baseUrl = await startServer();
+
+      // Founder succeeds
+      const founderRes = await fetch(`${baseUrl}/api/v1/clients`, {
+        method: 'POST',
+        headers: {
+          'x-demo-user-id': DEMO_ACTOR_IDS.founder,
+          'content-type': 'application/json',
+          'x-request-id': 'req-create-founder',
+        },
+        body: JSON.stringify({
+          displayName: 'Founder Created Client',
+          pan: 'ABCDE1234F',
+          gstin: '27ABCDE1234F1Z5',
+          relationshipOwnerId: DEMO_ACTOR_IDS.manager,
+        }),
+      });
+      expect(founderRes.status).toBe(201);
+      expect(founderRes.headers.get('x-request-id')).toBe('req-create-founder');
+      const founderBody = await founderRes.json();
+      expect(founderBody.requestId).toBe('req-create-founder');
+      expect(founderBody.data.displayName).toBe('Founder Created Client');
+      expect(founderBody.data.code).toMatch(/^CL-\d{6}$/);
+      expect(founderBody.data.panMasked).toBe('******1234');
+      expect(founderBody.data.gstinMasked).toBe('27**********1Z5');
+
+      // Manager succeeds
+      const managerRes = await fetch(`${baseUrl}/api/v1/clients`, {
+        method: 'POST',
+        headers: {
+          'x-demo-user-id': DEMO_ACTOR_IDS.manager,
+          'content-type': 'application/json',
+          'x-request-id': 'req-create-manager',
+        },
+        body: JSON.stringify({
+          displayName: 'Manager Created Client',
+        }),
+      });
+      expect(managerRes.status).toBe(201);
+      const managerBody = await managerRes.json();
+      expect(managerBody.data.displayName).toBe('Manager Created Client');
+
+      // Senior staff, staff, and trainee are forbidden
+      const forbiddenRoles = [
+        DEMO_ACTOR_IDS.senior,
+        DEMO_ACTOR_IDS.staff,
+        DEMO_ACTOR_IDS.trainee,
+      ];
+      for (const actorId of forbiddenRoles) {
+        const deniedRes = await fetch(`${baseUrl}/api/v1/clients`, {
+          method: 'POST',
+          headers: {
+            'x-demo-user-id': actorId,
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({ displayName: 'Forbidden Role Client' }),
+        });
+        expect(deniedRes.status).toBe(403);
+        const deniedBody = await deniedRes.json();
+        expect(deniedBody.error.code).toBe('role_not_permitted');
+      }
+    });
+
+    it('preserves privacy invariant: normalizes uppercase, masks IDs, and serializes zero raw PAN/GSTIN in response', async () => {
+      const baseUrl = await startServer();
+      const rawPan = 'XYZAB5678M';
+      const rawGstin = '29XYZAB5678M1Z8';
+
+      const res = await fetch(`${baseUrl}/api/v1/clients`, {
+        method: 'POST',
+        headers: {
+          'x-demo-user-id': DEMO_ACTOR_IDS.founder,
+          'content-type': 'application/json',
+        },
+        // Send lowercase identifiers
+        body: JSON.stringify({
+          displayName: 'Secured Identifiers Pvt Ltd',
+          legalName: 'Secured Identifiers Private Limited',
+          pan: rawPan.toLowerCase(),
+          gstin: rawGstin.toLowerCase(),
+          email: 'contact@secured.in',
+          phone: '9876543210',
+        }),
+      });
+      expect(res.status).toBe(201);
+      const body = await res.json();
+      expect(body.data.panMasked).toBe('******5678');
+      expect(body.data.gstinMasked).toBe('29**********1Z8');
+
+      // Verify serialized JSON payload does NOT contain raw secrets or raw keys
+      const serialized = JSON.stringify(body);
+      expect(serialized).not.toContain(rawPan);
+      expect(serialized).not.toContain(rawPan.toLowerCase());
+      expect(serialized).not.toContain(rawGstin);
+      expect(serialized).not.toContain(rawGstin.toLowerCase());
+      expect(serialized).not.toContain('"pan":');
+      expect(serialized).not.toContain('"gstin":');
+    });
+
+    it('rejects unknown and server-owned field injection via strict schema', async () => {
+      const baseUrl = await startServer();
+      const res = await fetch(`${baseUrl}/api/v1/clients`, {
+        method: 'POST',
+        headers: {
+          'x-demo-user-id': DEMO_ACTOR_IDS.founder,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          displayName: 'Injected Fields Corp',
+          id: '00000000-0000-4000-a000-999999999999',
+          code: 'CL-999999',
+          createdById: '00000000-0000-4000-a000-888888888888',
+          createdAt: '2026-01-01T00:00:00Z',
+          panMasked: '******1234',
+        }),
+      });
+      expect(res.status).toBe(422);
+      const body = await res.json();
+      expect(body.error.code).toBe('validation_failed');
+      const errorText = JSON.stringify(body);
+      expect(errorText).toContain('Unrecognized key(s) in object');
+    });
+
+    it('validates Indian PAN format and never leaks invalid PAN in error response', async () => {
+      const baseUrl = await startServer();
+      const badPan = 'BAD_PAN_12345';
+      const res = await fetch(`${baseUrl}/api/v1/clients`, {
+        method: 'POST',
+        headers: {
+          'x-demo-user-id': DEMO_ACTOR_IDS.founder,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          displayName: 'Malformed PAN Client',
+          pan: badPan,
+        }),
+      });
+      expect(res.status).toBe(422);
+      const body = await res.json();
+      expect(body.error.code).toBe('validation_failed');
+      const errorText = JSON.stringify(body);
+      expect(errorText).toContain('Invalid Indian PAN format');
+      expect(errorText).not.toContain(badPan);
+    });
+
+    it('validates Indian GSTIN format and never leaks invalid GSTIN in error response', async () => {
+      const baseUrl = await startServer();
+      const badGstin = 'NOT_A_VALID_GSTIN';
+      const res = await fetch(`${baseUrl}/api/v1/clients`, {
+        method: 'POST',
+        headers: {
+          'x-demo-user-id': DEMO_ACTOR_IDS.founder,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          displayName: 'Malformed GSTIN Client',
+          gstin: badGstin,
+        }),
+      });
+      expect(res.status).toBe(422);
+      const body = await res.json();
+      expect(body.error.code).toBe('validation_failed');
+      const errorText = JSON.stringify(body);
+      expect(errorText).toContain('Invalid Indian GSTIN format');
+      expect(errorText).not.toContain(badGstin);
+    });
+
+    it('rejects PAN/GSTIN mismatch without echoing either identifier in error response', async () => {
+      const baseUrl = await startServer();
+      const panA = 'ABCDE1234F';
+      const gstinB = '27ZZZZZ9999Z1Z5'; // Embedded PAN is ZZZZZ9999Z !== ABCDE1234F
+
+      const res = await fetch(`${baseUrl}/api/v1/clients`, {
+        method: 'POST',
+        headers: {
+          'x-demo-user-id': DEMO_ACTOR_IDS.founder,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          displayName: 'Mismatch Identifiers Client',
+          pan: panA,
+          gstin: gstinB,
+        }),
+      });
+      expect(res.status).toBe(422);
+      const body = await res.json();
+      expect(body.error.code).toBe('validation_failed');
+      const errorText = JSON.stringify(body);
+      expect(errorText).toContain('GSTIN characters 3–12 must match the provided PAN');
+      expect(errorText).not.toContain(panA);
+      expect(errorText).not.toContain(gstinB);
+    });
+
+    it('handles blank/whitespace optional identifiers cleanly by persisting them as null', async () => {
+      const baseUrl = await startServer();
+      const res = await fetch(`${baseUrl}/api/v1/clients`, {
+        method: 'POST',
+        headers: {
+          'x-demo-user-id': DEMO_ACTOR_IDS.founder,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          displayName: 'Blank Identifiers Client',
+          pan: '   ',
+          gstin: '',
+          legalName: '   ',
+          email: '',
+          phone: '   ',
+          notes: '',
+        }),
+      });
+      expect(res.status).toBe(201);
+      const body = await res.json();
+      expect(body.data.panMasked).toBeNull();
+      expect(body.data.gstinMasked).toBeNull();
+      expect(body.data.legalName).toBeNull();
+      expect(body.data.email).toBeNull();
+      expect(body.data.phone).toBeNull();
+      expect(body.data.notes).toBeNull();
+    });
+
+    it('enforces display name length bounds (min 2, max 180)', async () => {
+      const baseUrl = await startServer();
+
+      // Too short (1 char)
+      const shortRes = await fetch(`${baseUrl}/api/v1/clients`, {
+        method: 'POST',
+        headers: {
+          'x-demo-user-id': DEMO_ACTOR_IDS.founder,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ displayName: 'A' }),
+      });
+      expect(shortRes.status).toBe(422);
+
+      // Too long (>180 chars)
+      const longRes = await fetch(`${baseUrl}/api/v1/clients`, {
+        method: 'POST',
+        headers: {
+          'x-demo-user-id': DEMO_ACTOR_IDS.founder,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ displayName: 'A'.repeat(181) }),
+      });
+      expect(longRes.status).toBe(422);
+    });
   });
 });

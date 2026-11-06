@@ -15,6 +15,7 @@ import { maskGstinForRoutineRead, maskPanForRoutineRead } from './client-privacy
 import type {
   ClientReference,
   CreateAssignmentRecord,
+  CreateClientRecord,
   CreateWorkItemRecord,
   CrmRepository,
   DevActorDirectory,
@@ -77,11 +78,21 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
   private assignmentCounter = 1000;
   private workItemCounter = 1000;
   private scheduleCounter = 1000;
+  private clientCounter = 1000;
 
   constructor(seed: DemoSeed) {
     seed.employees.forEach((value) => this.employees.set(value.id, copy(value)));
 
-    seed.clients.forEach((value) => this.clients.set(value.id, copy(value)));
+    seed.clients.forEach((value) => {
+      this.clients.set(value.id, copy(value));
+      const match = value.code?.match(/CL-(\d+)/);
+      if (match?.[1]) {
+        const num = parseInt(match[1], 10);
+        if (!isNaN(num) && num > this.clientCounter) {
+          this.clientCounter = num;
+        }
+      }
+    });
 
     const servicesToLoad = seed.services ?? DEFAULT_SERVICES;
     servicesToLoad.forEach((value) => this.services.set(value.id, copy(value)));
@@ -286,6 +297,59 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
       return [];
     }
     return copy(result.clients.map((c) => this.toClientDto(result.actor, c)));
+  }
+
+  async createClient(ctx: RepositoryContext, record: CreateClientRecord): Promise<ClientDto> {
+    const actor = this.getActor(ctx);
+    if (!actor) {
+      throw new ApiError(401, 'unauthorized', 'Unknown actor');
+    }
+    if (!this.isManagement(actor)) {
+      throw new ApiError(403, 'forbidden', 'You do not have permission to perform this operation.');
+    }
+    if (this.clients.has(record.id)) {
+      throw new ApiError(409, 'conflict', 'A record with this identifier already exists.');
+    }
+    if (record.relationshipOwnerId) {
+      const owner = this.employees.get(record.relationshipOwnerId);
+      if (!owner) {
+        throw new ApiError(422, 'referenced_entity_not_found', 'The referenced entity does not exist.');
+      }
+      if (!owner.active || owner.role === 'trainee') {
+        throw new ApiError(
+          422,
+          'validation_failed',
+          'A Client relationship owner must be active and cannot be a Trainee.',
+        );
+      }
+    }
+
+    this.clientCounter += 1;
+    let code = `CL-${String(this.clientCounter).padStart(6, '0')}`;
+    while ([...this.clients.values()].some((c) => c.code === code)) {
+      this.clientCounter += 1;
+      code = `CL-${String(this.clientCounter).padStart(6, '0')}`;
+    }
+
+    const seedRecord: ClientSeedRecord = {
+      id: record.id,
+      code,
+      displayName: record.displayName,
+      legalName: record.legalName ?? null,
+      pan: record.pan ?? null,
+      gstin: record.gstin ?? null,
+      email: record.email ?? null,
+      phone: record.phone ?? null,
+      relationshipOwnerId: record.relationshipOwnerId ?? null,
+      status: 'active',
+      notes: record.notes ?? null,
+      createdById: actor.id,
+      createdAt: record.createdAt,
+      updatedAt: record.updatedAt,
+    };
+
+    this.clients.set(seedRecord.id, copy(seedRecord));
+    return copy(this.toClientDto(actor, seedRecord));
   }
 
   // --- Reference Lookups ---

@@ -164,3 +164,20 @@ describe('client read authority', () => {
     expect(authorize({ action: 'client.read', actor: actor(role) })).toEqual({ allowed: true });
   });
 });
+
+describe('client creation authority', () => {
+  it.each(['founder', 'manager'] as const)('allows %s to create clients', (role) => {
+    expect(authorize({ action: 'client.create', actor: actor(role) })).toEqual({ allowed: true });
+  });
+
+  it.each(['senior_staff', 'staff', 'trainee'] as const)(
+    'denies %s from creating clients with role_not_permitted',
+    (role) => {
+      expect(authorize({ action: 'client.create', actor: actor(role) })).toEqual({
+        allowed: false,
+        code: 'role_not_permitted',
+        reason: 'Only Founder and Manager may create new clients.',
+      });
+    },
+  );
+});

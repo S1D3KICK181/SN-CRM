@@ -38,7 +38,7 @@ export type AuthorityRequest =
     }
   | { action: 'task.create_internal'; actor: Actor; target: EmployeeRef }
   | { action: 'task.create_personal'; actor: Actor; ownerId: string }
-  | { action: 'client.read'; actor: Actor }
+  | { action: 'client.read' | 'client.create'; actor: Actor }
   | { action: 'finance.manage' | 'reports.view_practice' | 'team.manage_access'; actor: Actor }
   | { action: 'team.manage_reporting'; actor: Actor; subject: EmployeeRef; proposedManager: EmployeeRef | null };
 
@@ -156,6 +156,11 @@ export function authorize(request: AuthorityRequest): AuthorityDecision {
       // Practice-level read authority: all authenticated roles may request clients.
       // Individual client row visibility is enforced downstream at the repository/RLS layer.
       return ALLOWED;
+
+    case 'client.create':
+      return isLeadership(actor.role)
+        ? ALLOWED
+        : deny('role_not_permitted', 'Only Founder and Manager may create new clients.');
 
     case 'team.manage_access':
       return actor.role === 'founder'

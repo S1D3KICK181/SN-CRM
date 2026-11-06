@@ -261,6 +261,17 @@ export interface OfficeAccountsSummaryDto {
 export const CLIENT_STATUSES = ['active', 'on_hold', 'archived'] as const;
 export type ClientStatus = (typeof CLIENT_STATUSES)[number];
 
+export interface CreateClientInput {
+  readonly displayName: string;
+  readonly legalName?: string | null;
+  readonly pan?: string | null;
+  readonly gstin?: string | null;
+  readonly email?: string | null;
+  readonly phone?: string | null;
+  readonly relationshipOwnerId?: string | null; // RFC 4122 UUID references public.profiles(user_id)
+  readonly notes?: string | null;
+}
+
 export interface ClientDto {
   readonly id: string; // RFC 4122 UUID
   readonly code: string; // Output-only: CL-xxxxxx

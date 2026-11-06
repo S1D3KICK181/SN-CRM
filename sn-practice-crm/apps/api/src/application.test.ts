@@ -16,6 +16,7 @@ import { InMemoryCrmRepository } from "./in-memory-repository";
 import type {
   ClientReference,
   CreateAssignmentRecord,
+  CreateClientRecord,
   CreateWorkItemRecord,
   CrmApplicationDependencies,
   EmployeeRecord,
@@ -818,6 +819,10 @@ describe("CrmApplication authority and workflow rules", () => {
           callLog.push({ method: "listClients", actorId: ctx.actorId });
           return underlying.listClients(ctx);
         },
+        async createClient(ctx: RepositoryContext, record: CreateClientRecord): Promise<ClientDto> {
+          callLog.push({ method: "createClient", actorId: ctx.actorId, targetId: record.id });
+          return underlying.createClient(ctx, record);
+        },
         async resolveDevActor(id: string): Promise<EmployeeRecord | null> {
           callLog.push({ method: "resolveDevActor", targetId: id });
           return underlying.resolveDevActor(id);
@@ -1296,6 +1301,152 @@ describe("CrmApplication authority and workflow rules", () => {
       expect(repoCalled).toBe(false);
 
       authorizeSpy.mockRestore();
+    });
+
+    it("allows Founder and Manager to create client and returns routine-safe ClientDto with masked IDs", async () => {
+      const { application } = createFixture();
+      const founder = await application.requireActor(DEMO_ACTOR_IDS.founder);
+      const manager = await application.requireActor(DEMO_ACTOR_IDS.manager);
+
+      const client1 = await application.createClient(founder, {
+        displayName: "Paramount Logistics",
+        legalName: "Paramount Logistics Private Limited",
+        pan: "ABCDE1234F",
+        gstin: "27ABCDE1234F1Z5",
+        email: "accounts@paramount.in",
+        phone: "9123456780",
+        relationshipOwnerId: DEMO_ACTOR_IDS.manager,
+        notes: "Onboarded for annual direct tax compliance",
+      });
+
+      expect(client1.id).toBeDefined();
+      expect(client1.code).toMatch(/^CL-\d{6}$/);
+      expect(client1.displayName).toBe("Paramount Logistics");
+      expect(client1.legalName).toBe("Paramount Logistics Private Limited");
+      expect(client1.panMasked).toBe("******1234");
+      expect(client1.gstinMasked).toBe("27**********1Z5");
+      expect(client1.relationshipOwnerId).toBe(DEMO_ACTOR_IDS.manager);
+      expect(client1.relationshipOwnerName).toBe("Priya Desai");
+      expect(client1.createdById).toBe(founder.id);
+      expect(client1.status).toBe("active");
+      expect(client1.activeAssignmentsCount).toBe(0);
+
+      // Verify listClients includes the newly created client
+      const list = await application.listClients(founder);
+      expect(list.some((c) => c.id === client1.id)).toBe(true);
+
+      // Verify Manager can also create client
+      const client2 = await application.createClient(manager, {
+        displayName: "Zenith Retail Corp",
+        pan: "ZXCVB9876Q",
+      });
+      expect(client2.code).toMatch(/^CL-\d{6}$/);
+      expect(client2.createdById).toBe(manager.id);
+      expect(client2.panMasked).toBe("******9876");
+      expect(client2.gstinMasked).toBeNull();
+    });
+
+    it("prevents senior_staff, staff, and trainee from creating clients with 403 role_not_permitted", async () => {
+      const { application } = createFixture();
+      const nonLeadershipRoles = [
+        DEMO_ACTOR_IDS.senior,
+        DEMO_ACTOR_IDS.staff,
+        DEMO_ACTOR_IDS.trainee,
+      ];
+
+      for (const actorId of nonLeadershipRoles) {
+        const actor = await application.requireActor(actorId);
+        expect(() => application.assertClientCreateAuthority(actor)).toThrowError(
+          expect.objectContaining({
+            status: 403,
+            code: "role_not_permitted",
+          }),
+        );
+        await expect(
+          application.createClient(actor, {
+            displayName: "Unauthorized New Client",
+          }),
+        ).rejects.toMatchObject({
+          status: 403,
+          code: "role_not_permitted",
+        });
+      }
+    });
+
+    it("fails with 404 not_found when relationshipOwnerId references non-existent employee", async () => {
+      const { application } = createFixture();
+      const founder = await application.requireActor(DEMO_ACTOR_IDS.founder);
+
+      await expect(
+        application.createClient(founder, {
+          displayName: "Ghost Owner Client",
+          relationshipOwnerId: "00000000-0000-4000-a000-999999999999",
+        }),
+      ).rejects.toMatchObject({
+        status: 404,
+        code: "not_found",
+        message: "Employee was not found.",
+      });
+    });
+
+    it("fails with 422 validation_failed when relationshipOwnerId is a trainee", async () => {
+      const { application } = createFixture();
+      const founder = await application.requireActor(DEMO_ACTOR_IDS.founder);
+
+      await expect(
+        application.createClient(founder, {
+          displayName: "Trainee Owner Client",
+          relationshipOwnerId: DEMO_ACTOR_IDS.trainee,
+        }),
+      ).rejects.toMatchObject({
+        status: 422,
+        code: "validation_failed",
+        message: "A Client relationship owner must be active and cannot be a Trainee.",
+      });
+    });
+
+    it("fails with 422 validation_failed when relationshipOwnerId is an inactive employee", async () => {
+      const seed = createDemoSeed();
+      const staffEmp = seed.employees.find((e) => e.id === DEMO_ACTOR_IDS.staff);
+      if (staffEmp) {
+        (staffEmp as { active: boolean }).active = false;
+      }
+      const repository = new InMemoryCrmRepository(seed);
+      const application = new CrmApplication(repository, {
+        now: () => new Date("2026-10-30T12:00:00.000Z"),
+        createId: () => "00000000-0000-4000-e000-000000000001",
+      });
+      const founder = await application.requireActor(DEMO_ACTOR_IDS.founder);
+
+      await expect(
+        application.createClient(founder, {
+          displayName: "Inactive Owner Client",
+          relationshipOwnerId: DEMO_ACTOR_IDS.staff,
+        }),
+      ).rejects.toMatchObject({
+        status: 422,
+        code: "validation_failed",
+        message: "A Client relationship owner must be active and cannot be a Trainee.",
+      });
+    });
+
+    it("allows senior_staff or staff to be assigned as relationship owner", async () => {
+      const { application } = createFixture();
+      const founder = await application.requireActor(DEMO_ACTOR_IDS.founder);
+
+      const clientWithSenior = await application.createClient(founder, {
+        displayName: "Senior Owned Client",
+        relationshipOwnerId: DEMO_ACTOR_IDS.senior,
+      });
+      expect(clientWithSenior.relationshipOwnerId).toBe(DEMO_ACTOR_IDS.senior);
+      expect(clientWithSenior.relationshipOwnerName).toBe("Ananya Rao");
+
+      const clientWithStaff = await application.createClient(founder, {
+        displayName: "Staff Owned Client",
+        relationshipOwnerId: DEMO_ACTOR_IDS.staff,
+      });
+      expect(clientWithStaff.relationshipOwnerId).toBe(DEMO_ACTOR_IDS.staff);
+      expect(clientWithStaff.relationshipOwnerName).toBe("Rohan Mehta");
     });
   });
 });

@@ -3,6 +3,7 @@ import { createDemoSeed, DEMO_ACTOR_IDS } from './demo-seed';
 import { InMemoryCrmRepository } from './in-memory-repository';
 import type {
   CreateAssignmentRecord,
+  CreateClientRecord,
   CreateWorkItemRecord,
   RepositoryContext,
   UpdateAssignmentStatusCommand,
@@ -479,5 +480,167 @@ describe('Client visibility and read operations (CL-02A parity)', () => {
       'CL-001001', // Aster (via delegated work item)
       'CL-001003', // Sharma (via personal work item)
     ]);
+  });
+
+  describe('createClient persistence and invariants', () => {
+    const founderCtx: RepositoryContext = { actorId: DEMO_ACTOR_IDS.founder };
+
+    it('persists a new client with auto-generated CL-###### code, relationship owner name, masked identifiers, and actor-derived createdById', async () => {
+      const repository = new InMemoryCrmRepository(createDemoSeed());
+      const newClientId = '10000000-0000-4000-a000-000000000099';
+      const created = await repository.createClient(founderCtx, {
+        id: newClientId,
+        displayName: 'Apex Global Enterprises',
+        legalName: 'Apex Global Enterprises LLP',
+        pan: 'ABCDE1234F',
+        gstin: '27ABCDE1234F1Z5',
+        email: 'info@apexglobal.in',
+        phone: '9876543210',
+        relationshipOwnerId: DEMO_ACTOR_IDS.manager,
+        notes: 'Priority tax account',
+        createdAt: '2026-11-06T12:00:00.000Z',
+        updatedAt: '2026-11-06T12:00:00.000Z',
+      });
+
+      expect(created.id).toBe(newClientId);
+      expect(created.code).toMatch(/^CL-\d{6}$/);
+      expect(created.displayName).toBe('Apex Global Enterprises');
+      expect(created.legalName).toBe('Apex Global Enterprises LLP');
+      expect(created.panMasked).toBe('******1234');
+      expect(created.gstinMasked).toBe('27**********1Z5');
+      expect(created.relationshipOwnerId).toBe(DEMO_ACTOR_IDS.manager);
+      expect(created.relationshipOwnerName).toBe('Priya Desai');
+      expect(created.status).toBe('active');
+      expect(created.activeAssignmentsCount).toBe(0);
+      expect(created.createdById).toBe(DEMO_ACTOR_IDS.founder);
+
+      // Subsequent getClient verifies visibility and persistence
+      const fetched = await repository.getClient(founderCtx, newClientId);
+      expect(fetched).toEqual(created);
+
+      // Verify that createdById is strictly derived from actorId, e.g. for manager
+      const managerClientId = '10000000-0000-4000-a000-000000000096';
+      const managerCreated = await repository.createClient(managerCtx, {
+        id: managerClientId,
+        displayName: 'Manager Created Client',
+        createdAt: '2026-11-06T12:00:00.000Z',
+        updatedAt: '2026-11-06T12:00:00.000Z',
+      });
+      expect(managerCreated.createdById).toBe(DEMO_ACTOR_IDS.manager);
+    });
+
+    it('denies creation for non-management actors with 403 forbidden', async () => {
+      const repository = new InMemoryCrmRepository(createDemoSeed());
+      const staffCtx: RepositoryContext = { actorId: DEMO_ACTOR_IDS.staff };
+
+      await expect(
+        repository.createClient(staffCtx, {
+          id: '10000000-0000-4000-a000-000000000098',
+          displayName: 'Unauthorized Client',
+          createdAt: '2026-11-06T12:00:00.000Z',
+          updatedAt: '2026-11-06T12:00:00.000Z',
+        }),
+      ).rejects.toMatchObject({
+        status: 403,
+        code: 'forbidden',
+      });
+    });
+
+    it('rejects duplicate client ID with 409 conflict', async () => {
+      const repository = new InMemoryCrmRepository(createDemoSeed());
+      const existingId = '10000000-0000-4000-a000-000000000001'; // Aster Foods
+
+      await expect(
+        repository.createClient(founderCtx, {
+          id: existingId,
+          displayName: 'Duplicate Client Name',
+          createdAt: '2026-11-06T12:00:00.000Z',
+          updatedAt: '2026-11-06T12:00:00.000Z',
+        }),
+      ).rejects.toMatchObject({
+        status: 409,
+        code: 'conflict',
+      });
+    });
+
+    it('rejects nonexistent relationship owner with 422 referenced_entity_not_found', async () => {
+      const repository = new InMemoryCrmRepository(createDemoSeed());
+
+      await expect(
+        repository.createClient(founderCtx, {
+          id: '10000000-0000-4000-a000-000000000097',
+          displayName: 'Client With Ghost Owner',
+          relationshipOwnerId: '00000000-0000-4000-a000-999999999999',
+          createdAt: '2026-11-06T12:00:00.000Z',
+          updatedAt: '2026-11-06T12:00:00.000Z',
+        }),
+      ).rejects.toMatchObject({
+        status: 422,
+        code: 'referenced_entity_not_found',
+      });
+    });
+
+    it('rejects trainee relationship owner with 422 validation_failed', async () => {
+      const repository = new InMemoryCrmRepository(createDemoSeed());
+
+      await expect(
+        repository.createClient(founderCtx, {
+          id: '10000000-0000-4000-a000-000000000095',
+          displayName: 'Client With Trainee Owner',
+          relationshipOwnerId: DEMO_ACTOR_IDS.trainee,
+          createdAt: '2026-11-06T12:00:00.000Z',
+          updatedAt: '2026-11-06T12:00:00.000Z',
+        }),
+      ).rejects.toMatchObject({
+        status: 422,
+        code: 'validation_failed',
+        message: 'A Client relationship owner must be active and cannot be a Trainee.',
+      });
+    });
+
+    it('rejects inactive relationship owner with 422 validation_failed', async () => {
+      const seed = createDemoSeed();
+      const staffEmp = seed.employees.find((e) => e.id === DEMO_ACTOR_IDS.staff);
+      if (staffEmp) {
+        (staffEmp as { active: boolean }).active = false;
+      }
+      const repository = new InMemoryCrmRepository(seed);
+
+      await expect(
+        repository.createClient(founderCtx, {
+          id: '10000000-0000-4000-a000-000000000094',
+          displayName: 'Client With Inactive Owner',
+          relationshipOwnerId: DEMO_ACTOR_IDS.staff,
+          createdAt: '2026-11-06T12:00:00.000Z',
+          updatedAt: '2026-11-06T12:00:00.000Z',
+        }),
+      ).rejects.toMatchObject({
+        status: 422,
+        code: 'validation_failed',
+        message: 'A Client relationship owner must be active and cannot be a Trainee.',
+      });
+    });
+
+    it('allows senior_staff or staff relationship owner', async () => {
+      const repository = new InMemoryCrmRepository(createDemoSeed());
+
+      const seniorClient = await repository.createClient(founderCtx, {
+        id: '10000000-0000-4000-a000-000000000093',
+        displayName: 'Client With Senior Staff Owner',
+        relationshipOwnerId: DEMO_ACTOR_IDS.senior,
+        createdAt: '2026-11-06T12:00:00.000Z',
+        updatedAt: '2026-11-06T12:00:00.000Z',
+      });
+      expect(seniorClient.relationshipOwnerId).toBe(DEMO_ACTOR_IDS.senior);
+
+      const staffClient = await repository.createClient(founderCtx, {
+        id: '10000000-0000-4000-a000-000000000092',
+        displayName: 'Client With Staff Owner',
+        relationshipOwnerId: DEMO_ACTOR_IDS.staff,
+        createdAt: '2026-11-06T12:00:00.000Z',
+        updatedAt: '2026-11-06T12:00:00.000Z',
+      });
+      expect(staffClient.relationshipOwnerId).toBe(DEMO_ACTOR_IDS.staff);
+    });
   });
 });

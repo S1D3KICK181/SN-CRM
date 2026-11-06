@@ -44,6 +44,20 @@ export interface ServiceReference {
 
 // --- Granular Command Payloads ---
 
+export interface CreateClientRecord {
+  readonly id: string; // RFC 4122 UUID (pre-generated)
+  readonly displayName: string;
+  readonly legalName?: string | null;
+  readonly pan?: string | null;
+  readonly gstin?: string | null;
+  readonly email?: string | null;
+  readonly phone?: string | null;
+  readonly relationshipOwnerId?: string | null; // RFC 4122 UUID
+  readonly notes?: string | null;
+  readonly createdAt: string; // ISO-8601 UTC
+  readonly updatedAt: string; // ISO-8601 UTC
+}
+
 export interface CreateAssignmentRecord {
   readonly id: string; // RFC 4122 UUID (pre-generated)
   readonly clientId: string; // RFC 4122 UUID
@@ -108,9 +122,10 @@ export interface UpdateWorkItemStatusCommand {
 }
 
 export interface CrmRepository {
-  // Clients (Read-Only)
+  // Clients
   getClient(ctx: RepositoryContext, clientId: string): Promise<ClientDto | null>;
   listClients(ctx: RepositoryContext): Promise<ClientDto[]>;
+  createClient(ctx: RepositoryContext, record: CreateClientRecord): Promise<ClientDto>;
 
   // Reference Lookups (Repository-backed, split for SQL safety)
   getClientReference(ctx: RepositoryContext, clientId: string): Promise<ClientReference | null>;

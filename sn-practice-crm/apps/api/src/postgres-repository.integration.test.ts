@@ -30,7 +30,8 @@ describe('PostgresCrmRepository Integration Suite', () => {
 
   let seqAssSnapshot: { last_value: string; is_called: boolean };
   let seqWorkSnapshot: { last_value: string; is_called: boolean };
-  let initialCounts: { assignments: number; reviewers: number; workItems: number };
+  let seqClientSnapshot: { last_value: string; is_called: boolean };
+  let initialCounts: { assignments: number; reviewers: number; workItems: number; clients: number };
 
   beforeAll(async () => {
     // 1. Dedicated session-stable advisory lock on pinned single-connection client
@@ -41,28 +42,34 @@ describe('PostgresCrmRepository Integration Suite', () => {
     rootClient = postgres(DATABASE_URL, { max: 1 });
     const assSeqRows = await rootClient`SELECT last_value::text, is_called FROM public.assignment_code_seq`;
     const workSeqRows = await rootClient`SELECT last_value::text, is_called FROM public.work_item_code_seq`;
+    const clientSeqRows = await rootClient`SELECT last_value::text, is_called FROM public.client_code_seq`;
     const assSeq = assSeqRows[0];
     const workSeq = workSeqRows[0];
-    if (!assSeq || !workSeq) {
+    const clientSeq = clientSeqRows[0];
+    if (!assSeq || !workSeq || !clientSeq) {
       throw new Error('Failed to snapshot sequences.');
     }
     seqAssSnapshot = { last_value: String(assSeq['last_value']), is_called: Boolean(assSeq['is_called']) };
     seqWorkSnapshot = { last_value: String(workSeq['last_value']), is_called: Boolean(workSeq['is_called']) };
+    seqClientSnapshot = { last_value: String(clientSeq['last_value']), is_called: Boolean(clientSeq['is_called']) };
 
     // 3. Dynamic baseline row counts
     const assCountRows = await rootClient`SELECT count(*)::int as c FROM public.assignments`;
     const revCountRows = await rootClient`SELECT count(*)::int as c FROM public.assignment_reviewers`;
     const workCountRows = await rootClient`SELECT count(*)::int as c FROM public.work_items`;
+    const clientCountRows = await rootClient`SELECT count(*)::int as c FROM public.clients`;
     const assCount = assCountRows[0];
     const revCount = revCountRows[0];
     const workCount = workCountRows[0];
-    if (!assCount || !revCount || !workCount) {
+    const clientCount = clientCountRows[0];
+    if (!assCount || !revCount || !workCount || !clientCount) {
       throw new Error('Failed to read initial counts.');
     }
     initialCounts = {
       assignments: Number(assCount['c']),
       reviewers: Number(revCount['c']),
       workItems: Number(workCount['c']),
+      clients: Number(clientCount['c']),
     };
 
     // 4. Standard application pool
@@ -75,18 +82,22 @@ describe('PostgresCrmRepository Integration Suite', () => {
         // Restore sequence state
         await rootClient`SELECT setval('public.assignment_code_seq', ${seqAssSnapshot.last_value}::bigint, ${seqAssSnapshot.is_called})`;
         await rootClient`SELECT setval('public.work_item_code_seq', ${seqWorkSnapshot.last_value}::bigint, ${seqWorkSnapshot.is_called})`;
+        await rootClient`SELECT setval('public.client_code_seq', ${seqClientSnapshot.last_value}::bigint, ${seqClientSnapshot.is_called})`;
 
         // Post-condition: assert 0 table count drift
         const assCountRows = await rootClient`SELECT count(*)::int as c FROM public.assignments`;
         const revCountRows = await rootClient`SELECT count(*)::int as c FROM public.assignment_reviewers`;
         const workCountRows = await rootClient`SELECT count(*)::int as c FROM public.work_items`;
+        const clientCountRows = await rootClient`SELECT count(*)::int as c FROM public.clients`;
         const assCount = assCountRows[0];
         const revCount = revCountRows[0];
         const workCount = workCountRows[0];
-        if (assCount && revCount && workCount) {
+        const clientCount = clientCountRows[0];
+        if (assCount && revCount && workCount && clientCount) {
           expect(Number(assCount['c'])).toBe(initialCounts.assignments);
           expect(Number(revCount['c'])).toBe(initialCounts.reviewers);
           expect(Number(workCount['c'])).toBe(initialCounts.workItems);
+          expect(Number(clientCount['c'])).toBe(initialCounts.clients);
         }
       }
     } finally {
@@ -653,6 +664,75 @@ describe('PostgresCrmRepository Integration Suite', () => {
       // Trainee Aster count remains exactly 1 (the new active assignment is hidden by assignment RLS)
       const traineeAster = await repo.getClient(traineeCtx, asterId);
       expect(traineeAster?.activeAssignmentsCount).toBe(1);
+    });
+  });
+
+  it('IT-13: createClient persists client with auto CL-###### sequence code and returns routine-safe masked ClientDto', async () => {
+    await runIsolatedTest(async (repo, tx) => {
+      const founderCtx = { actorId: FOUNDER_ID };
+      const newClientId = '90000000-0000-4000-a000-000000000099';
+      const created = await repo.createClient(founderCtx, {
+        id: newClientId,
+        displayName: 'Integration Test Client Ltd',
+        legalName: 'Integration Test Client Limited',
+        pan: 'ABCDE1234F',
+        gstin: '27ABCDE1234F1Z5',
+        email: 'billing@testclient.com',
+        phone: '9876543210',
+        relationshipOwnerId: MANAGER_ID,
+        notes: 'Created during integration test',
+        createdAt: '2026-11-06T12:00:00.000Z',
+        updatedAt: '2026-11-06T12:00:00.000Z',
+      });
+
+      expect(created.id).toBe(newClientId);
+      expect(created.code).toMatch(/^CL-\d{6}$/);
+      expect(created.displayName).toBe('Integration Test Client Ltd');
+      expect(created.legalName).toBe('Integration Test Client Limited');
+      expect(created.panMasked).toBe('******1234');
+      expect(created.gstinMasked).toBe('27**********1Z5');
+      expect(created.relationshipOwnerId).toBe(MANAGER_ID);
+      expect(created.relationshipOwnerName).toBe('Priya Desai');
+      expect(created.status).toBe('active');
+      expect(created.activeAssignmentsCount).toBe(0);
+      expect(created.createdById).toBe(FOUNDER_ID);
+
+      // Verify raw database row has plaintext stored securely and is_demo = false
+      const rawRows = await tx`SELECT pan, gstin, code, created_by, is_demo FROM public.clients WHERE id = ${newClientId}::uuid`;
+      expect(rawRows.length).toBe(1);
+      expect(rawRows[0]!['pan']).toBe('ABCDE1234F');
+      expect(rawRows[0]!['gstin']).toBe('27ABCDE1234F1Z5');
+      expect(rawRows[0]!['created_by']).toBe(FOUNDER_ID);
+      expect(rawRows[0]!['is_demo']).toBe(false);
+
+      // Verify real database trigger validate_client_relationship_owner rejects trainee ownership with 422
+      await expect(
+        repo.createClient(founderCtx, {
+          id: '90000000-0000-4000-a000-000000000097',
+          displayName: 'Trainee Owned Client',
+          relationshipOwnerId: TRAINEE_ID,
+          createdAt: '2026-11-06T12:00:00.000Z',
+          updatedAt: '2026-11-06T12:00:00.000Z',
+        }),
+      ).rejects.toMatchObject({
+        status: 422,
+        code: 'validation_failed',
+        message: 'A Client relationship owner must be active and cannot be a Trainee.',
+      });
+
+      // Verify RLS client_insert blocks non-management roles (e.g. staff)
+      const staffCtx = { actorId: STAFF_ID };
+      await expect(
+        repo.createClient(staffCtx, {
+          id: '90000000-0000-4000-a000-000000000098',
+          displayName: 'Unauthorized Staff Insert',
+          createdAt: '2026-11-06T12:00:00.000Z',
+          updatedAt: '2026-11-06T12:00:00.000Z',
+        }),
+      ).rejects.toMatchObject({
+        status: 403,
+        code: 'forbidden',
+      });
     });
   });
 });

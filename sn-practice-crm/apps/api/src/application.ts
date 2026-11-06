@@ -5,6 +5,7 @@ import type {
   AssignmentTransition,
   ClientDto,
   CreateAssignmentInput,
+  CreateClientInput,
   CreateLedgerEntryInput,
   CreateRecurringScheduleInput,
   CreateWorkItemInput,
@@ -20,6 +21,7 @@ import type {
 import { ApiError, forbidden, notFound } from './errors';
 import type {
   CreateAssignmentRecord,
+  CreateClientRecord,
   CreateWorkItemRecord,
   CrmApplicationDependencies,
   EmployeeRecord,
@@ -115,6 +117,48 @@ export class CrmApplication {
       throw notFound('Client');
     }
     return client;
+  }
+
+  assertClientCreateAuthority(actor: SessionActor): void {
+    requireAuthority({ action: 'client.create', actor: asActor(actor) });
+  }
+
+  async createClient(actor: SessionActor, input: CreateClientInput): Promise<ClientDto> {
+    const ctx: RepositoryContext = { actorId: actor.id };
+    this.assertClientCreateAuthority(actor);
+
+    let relationshipOwnerId: string | null = null;
+    if (input.relationshipOwnerId) {
+      const owner = await this.repository.getEmployee(ctx, input.relationshipOwnerId);
+      if (!owner) {
+        throw notFound('Employee');
+      }
+      if (!owner.active || owner.role === 'trainee') {
+        throw new ApiError(
+          422,
+          'validation_failed',
+          'A Client relationship owner must be active and cannot be a Trainee.',
+        );
+      }
+      relationshipOwnerId = owner.id;
+    }
+
+    const timestamp = this.now().toISOString();
+    const record: CreateClientRecord = {
+      id: this.createId('cli'),
+      displayName: input.displayName,
+      legalName: input.legalName ?? null,
+      pan: input.pan ?? null,
+      gstin: input.gstin ?? null,
+      email: input.email ?? null,
+      phone: input.phone ?? null,
+      relationshipOwnerId,
+      notes: input.notes ?? null,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+
+    return await this.repository.createClient(ctx, record);
   }
 
   async listAssignments(actor: SessionActor): Promise<AssignmentDto[]> {
