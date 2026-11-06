@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { authorize, validateReportingLine, type Actor, type CompanyRole, type EmployeeRef } from './authority';
+import {
+  authorize,
+  validateReportingLine,
+  COMPANY_ROLES,
+  type Actor,
+  type CompanyRole,
+  type EmployeeRef,
+} from './authority';
 
 const actor = (role: CompanyRole, id: string = role): Actor => ({ id, role });
 const employee = (role: CompanyRole, id: string = role): EmployeeRef => ({ id, role });
@@ -147,5 +154,13 @@ describe('assignment change requests', () => {
         reviewerIds: ['other-reviewer'],
       }),
     ).toMatchObject({ allowed: false, code: 'not_assignment_owner_or_reviewer' });
+  });
+});
+
+describe('client read authority', () => {
+  // Practice-level authority allows all active roles to initiate client reads.
+  // Row-level visibility filtering (client_visible) is enforced downstream at the repository/RLS layer.
+  it.each(COMPANY_ROLES)('allows %s to request client reads', (role) => {
+    expect(authorize({ action: 'client.read', actor: actor(role) })).toEqual({ allowed: true });
   });
 });

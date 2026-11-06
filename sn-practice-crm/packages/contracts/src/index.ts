@@ -255,3 +255,27 @@ export interface OfficeAccountsSummaryDto {
   readonly totalOutflowsPaise: number;
   readonly recentEntries: readonly LedgerEntryDto[];
 }
+
+// --- Client Domain ---
+
+export const CLIENT_STATUSES = ['active', 'on_hold', 'archived'] as const;
+export type ClientStatus = (typeof CLIENT_STATUSES)[number];
+
+export interface ClientDto {
+  readonly id: string; // RFC 4122 UUID
+  readonly code: string; // Output-only: CL-xxxxxx
+  readonly displayName: string;
+  readonly legalName: string | null;
+  readonly gstin: string | null;
+  readonly pan: string | null;
+  readonly email: string | null;
+  readonly phone: string | null;
+  readonly relationshipOwnerId: string | null; // RFC 4122 UUID references public.profiles(user_id)
+  readonly relationshipOwnerName: string | null; // Read-model join; null when no owner
+  readonly status: ClientStatus;
+  readonly notes: string | null;
+  readonly activeAssignmentsCount: number; // Server-derived read-model value
+  readonly createdById: string; // RFC 4122 UUID references public.profiles(user_id)
+  readonly createdAt: string; // ISO-8601 UTC
+  readonly updatedAt: string; // ISO-8601 UTC
+}

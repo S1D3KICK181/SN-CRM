@@ -38,6 +38,7 @@ export type AuthorityRequest =
     }
   | { action: 'task.create_internal'; actor: Actor; target: EmployeeRef }
   | { action: 'task.create_personal'; actor: Actor; ownerId: string }
+  | { action: 'client.read'; actor: Actor }
   | { action: 'finance.manage' | 'reports.view_practice' | 'team.manage_access'; actor: Actor }
   | { action: 'team.manage_reporting'; actor: Actor; subject: EmployeeRef; proposedManager: EmployeeRef | null };
 
@@ -150,6 +151,11 @@ export function authorize(request: AuthorityRequest): AuthorityDecision {
       return actor.id === request.ownerId
         ? ALLOWED
         : deny('personal_task_must_be_self_owned', 'A Personal Task must be created for and owned by the same employee.');
+
+    case 'client.read':
+      // Practice-level read authority: all authenticated roles may request clients.
+      // Individual client row visibility is enforced downstream at the repository/RLS layer.
+      return ALLOWED;
 
     case 'team.manage_access':
       return actor.role === 'founder'

@@ -4,7 +4,10 @@ import {
   WORK_ITEM_STATUSES,
   ASSIGNMENT_TRANSITIONS,
   WORK_ITEM_TRANSITIONS,
+  CLIENT_STATUSES,
   type AssignmentDto,
+  type ClientDto,
+  type ClientStatus,
   type WorkItemDto,
   type CreateAssignmentInput,
   type CreateRecurringScheduleInput,
@@ -60,9 +63,18 @@ describe('Contracts Single Status Truth & Runtime Tuples', () => {
     ]);
   });
 
+  it('exports CLIENT_STATUSES matching exactly 3 PostgreSQL enum states', () => {
+    expect(CLIENT_STATUSES).toHaveLength(3);
+    expect(CLIENT_STATUSES).toEqual(['active', 'on_hold', 'archived']);
+  });
+
   it('verifies DTO and Input type shapes at compile time', () => {
     expectTypeOf<WorkItemDto>().toHaveProperty('code').toBeString();
     expectTypeOf<AssignmentDto>().toHaveProperty('serviceId').toBeString();
+    expectTypeOf<ClientDto>().toHaveProperty('code').toBeString();
+    expectTypeOf<ClientDto>().toHaveProperty('status').toMatchTypeOf<ClientStatus>();
+    expectTypeOf<ClientDto>().toHaveProperty('relationshipOwnerName').toBeNullable();
+    expectTypeOf<ClientDto>().toHaveProperty('activeAssignmentsCount').toBeNumber();
     expectTypeOf<CreateAssignmentInput>().not.toHaveProperty('clientName');
     expectTypeOf<CreateRecurringScheduleInput>().not.toHaveProperty('clientName');
   });
