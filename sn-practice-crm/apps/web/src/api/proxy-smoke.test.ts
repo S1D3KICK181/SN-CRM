@@ -166,7 +166,7 @@ describe('Vite Proxy & Live API Smoke', () => {
       /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
     );
     expect(created.title).toBe('Statutory Compliance Engagement');
-    expect(created.client).toBe('Aster Foods Private Limited');
+    expect(created.client).toBe('Aster Foods');
     expect(created.owner).toBe('Priya Desai');
     expect(created.reviewer).toBe('Ananya Rao');
     expect(created.status).toBe('Awaiting documents');
