@@ -1,14 +1,13 @@
-import { isProductionEnvironment } from './http';
+import { configureDevEnvironment } from './dev-env';
 
-if (isProductionEnvironment(process.env['NODE_ENV'])) {
-  console.error('FATAL CONFIGURATION ERROR: Cannot run dev entrypoint when NODE_ENV is production.');
+try {
+  configureDevEnvironment();
+} catch (error) {
+  const message = error instanceof Error ? error.message : String(error);
+  console.error(message);
   process.exit(1);
 }
 
-process.env['ALLOW_DEV_ACTOR_HEADER'] = 'true';
-if (process.env['CRM_STORAGE'] === 'postgres' && !process.env['DATABASE_URL']) {
-  process.env['DATABASE_URL'] = 'postgresql://postgres:postgres@127.0.0.1:54322/postgres';
-}
 await import('./index');
 
 export {};
