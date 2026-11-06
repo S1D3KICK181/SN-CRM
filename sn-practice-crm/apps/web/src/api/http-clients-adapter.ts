@@ -296,7 +296,7 @@ export class HttpClientsAdapter implements ClientsPort {
   private readonly baseUrl: string;
 
   constructor(options: HttpClientsAdapterOptions = {}) {
-    this.fetchFn = options.fetchFn ?? globalThis.fetch;
+    this.fetchFn = options.fetchFn ?? ((input, init) => globalThis.fetch(input, init));
     this.baseUrl = options.baseUrl?.replace(/\/+$/, '') ?? '';
   }
 

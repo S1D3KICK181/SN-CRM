@@ -354,5 +354,47 @@ describe('HttpAssignmentsAdapter', () => {
       expect(mapStatusTransitionToAction('Awaiting documents', 'Completed')).toBeNull();
       expect(mapStatusTransitionToAction('Open', 'Completed')).toBeNull();
     });
+
+    it('executes default fetch path with globalThis receiver binding avoiding illegal invocation', async () => {
+      const originalFetch = globalThis.fetch;
+      let capturedUrl = '';
+      let capturedHeaders: Headers | undefined;
+
+      try {
+        globalThis.fetch = function (this: unknown, input: RequestInfo | URL, init?: RequestInit) {
+          if (this !== globalThis) {
+            throw new TypeError("Failed to execute 'fetch' on 'Window': Illegal invocation");
+          }
+          capturedUrl = String(input);
+          capturedHeaders = new Headers(init?.headers);
+          return Promise.resolve(
+            new Response(
+              JSON.stringify({
+                data: [],
+                requestId: 'req-bound-assignments',
+              }),
+              {
+                status: 200,
+                headers: {
+                  'content-type': 'application/json',
+                  'x-request-id': 'req-bound-assignments',
+                },
+              },
+            ),
+          );
+        } as typeof fetch;
+
+        // Instantiate without fetchFn injection
+        const adapter = new HttpAssignmentsAdapter();
+        const rows = await adapter.list('founder', { requestId: 'req-asn-bind' });
+
+        expect(rows).toEqual([]);
+        expect(capturedUrl).toBe('/api/v1/assignments');
+        expect(capturedHeaders?.get('x-demo-user-id')).toBe('00000000-0000-4000-a000-000000000001');
+        expect(capturedHeaders?.get('x-request-id')).toBe('req-asn-bind');
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    });
   });
 });

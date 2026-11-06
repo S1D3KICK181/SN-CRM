@@ -24,7 +24,7 @@ export class HttpWorkItemsAdapter implements WorkItemsPort {
   private readonly baseUrl: string;
 
   constructor(options: HttpWorkItemsAdapterOptions = {}) {
-    this.fetchFn = options.fetchFn ?? globalThis.fetch;
+    this.fetchFn = options.fetchFn ?? ((input, init) => globalThis.fetch(input, init));
     this.baseUrl = options.baseUrl?.replace(/\/+$/, '') ?? '';
   }
 

@@ -22,7 +22,7 @@ export class HttpAssignmentsAdapter implements AssignmentsPort {
   private readonly baseUrl: string;
 
   constructor(options: HttpAssignmentsAdapterOptions = {}) {
-    this.fetchFn = options.fetchFn ?? globalThis.fetch;
+    this.fetchFn = options.fetchFn ?? ((input, init) => globalThis.fetch(input, init));
     this.baseUrl = options.baseUrl?.replace(/\/+$/, '') ?? '';
   }
 

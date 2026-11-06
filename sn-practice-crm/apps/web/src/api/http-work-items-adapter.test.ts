@@ -166,4 +166,46 @@ describe('HttpWorkItemsAdapter', () => {
       return true;
     });
   });
+
+  it('executes default fetch path with globalThis receiver binding avoiding illegal invocation', async () => {
+    const originalFetch = globalThis.fetch;
+    let capturedUrl = '';
+    let capturedHeaders: Headers | undefined;
+
+    try {
+      globalThis.fetch = function (this: unknown, input: RequestInfo | URL, init?: RequestInit) {
+        if (this !== globalThis) {
+          throw new TypeError("Failed to execute 'fetch' on 'Window': Illegal invocation");
+        }
+        capturedUrl = String(input);
+        capturedHeaders = new Headers(init?.headers);
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              data: [],
+              requestId: 'req-bound-work-items',
+            }),
+            {
+              status: 200,
+              headers: {
+                'content-type': 'application/json',
+                'x-request-id': 'req-bound-work-items',
+              },
+            },
+          ),
+        );
+      } as typeof fetch;
+
+      // Instantiate without fetchFn injection
+      const adapter = new HttpWorkItemsAdapter();
+      const items = await adapter.list('staff', { requestId: 'req-work-bind' });
+
+      expect(items).toEqual([]);
+      expect(capturedUrl).toBe('/api/v1/work-items');
+      expect(capturedHeaders?.get('x-demo-user-id')).toBe('00000000-0000-4000-a000-000000000004');
+      expect(capturedHeaders?.get('x-request-id')).toBe('req-work-bind');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
 });
