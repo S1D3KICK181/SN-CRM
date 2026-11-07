@@ -2,7 +2,12 @@ import { describe, expect, it, vi } from 'vitest';
 import type { ClientDto } from '@sn/contracts';
 import type { CompanyRole } from '@sn/domain';
 import { HttpClientsAdapter } from './http-clients-adapter';
-import { ClientOperationError } from './clients-types';
+import {
+  ClientOperationError,
+  sanitizeCreateClientError,
+  sanitizeRequestId,
+  sanitizeServerCode,
+} from './clients-types';
 import { ROLE_TO_DEMO_ACTOR_ID } from './dev-auth';
 
 describe('HttpClientsAdapter', () => {
@@ -902,6 +907,315 @@ describe('HttpClientsAdapter', () => {
       } finally {
         globalThis.fetch = originalFetch;
       }
+    });
+
+    it('creates client with POST /api/v1/clients and parses 201 ClientDto', async () => {
+      let capturedMethod = '';
+      let capturedUrl = '';
+      let capturedBody = '';
+      let capturedHeaders: Headers | undefined;
+
+      const mockClientDto: ClientDto = {
+        id: '90000000-0000-4000-a000-000000000099',
+        code: 'CL-001099',
+        displayName: 'Acme Advisory Services',
+        legalName: 'Acme Advisory Services LLP',
+        panMasked: '******1234',
+        gstinMasked: '27**********1Z5',
+        email: null,
+        phone: null,
+        relationshipOwnerId: null,
+        relationshipOwnerName: null,
+        status: 'active',
+        notes: null,
+        activeAssignmentsCount: 0,
+        createdById: '00000000-0000-4000-a000-000000000001',
+        createdAt: '2026-11-06T12:00:00.000Z',
+        updatedAt: '2026-11-06T12:00:00.000Z',
+      };
+
+      const fetchFn = vi.fn().mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+        capturedUrl = String(input);
+        capturedMethod = init?.method ?? '';
+        capturedBody = String(init?.body ?? '');
+        capturedHeaders = new Headers(init?.headers);
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              data: mockClientDto,
+              requestId: 'req-create-success',
+            }),
+            {
+              status: 201,
+              headers: {
+                'content-type': 'application/json',
+                'x-request-id': 'req-create-success',
+              },
+            },
+          ),
+        );
+      });
+
+      const adapter = new HttpClientsAdapter({ fetchFn });
+      const created = await adapter.create(
+        'founder',
+        {
+          displayName: 'Acme Advisory Services',
+          legalName: 'Acme Advisory Services LLP',
+          pan: 'ABCDE1234F',
+          gstin: '27ABCDE1234F1Z5',
+          relationshipOwnerId: null,
+        },
+        { requestId: 'req-create-success' },
+      );
+
+      expect(capturedMethod).toBe('POST');
+      expect(capturedUrl).toBe('/api/v1/clients');
+      expect(capturedHeaders?.get('content-type')).toBe('application/json');
+      expect(capturedHeaders?.get('x-demo-user-id')).toBe('00000000-0000-4000-a000-000000000001');
+      expect(JSON.parse(capturedBody)).toEqual({
+        displayName: 'Acme Advisory Services',
+        legalName: 'Acme Advisory Services LLP',
+        pan: 'ABCDE1234F',
+        gstin: '27ABCDE1234F1Z5',
+        relationshipOwnerId: null,
+      });
+
+      expect(created.id).toBe('90000000-0000-4000-a000-000000000099');
+      expect(created.code).toBe('CL-001099');
+      expect(created.displayName).toBe('Acme Advisory Services');
+      expect(created.panMasked).toBe('******1234');
+      expect(created.gstinMasked).toBe('27**********1Z5');
+    });
+
+    it('maps create error responses to sanitized ClientOperationError preserving safe metadata but stripping unsafe copy and causes', async () => {
+      const errorCases = [
+        {
+          status: 401,
+          body: { error: { code: 'session_expired', message: 'JWT token expired' }, requestId: 'req-err-401' },
+          expectedCode: 'unauthorized',
+          expectedMessage: 'Session expired. Please sign in again to continue.',
+          expectedServerCode: 'session_expired',
+        },
+        {
+          status: 403,
+          body: { error: { code: 'role_not_permitted', message: 'Only Founder and Manager may create new clients.' }, requestId: 'req-err-403' },
+          expectedCode: 'forbidden',
+          expectedMessage: 'You do not have permission to create client records.',
+          expectedServerCode: 'role_not_permitted',
+        },
+        {
+          status: 409,
+          body: { error: { code: 'duplicate_entity', message: 'Client already exists.' }, requestId: 'req-err-409' },
+          expectedCode: 'conflict',
+          expectedMessage: 'A client record with conflicting identifiers already exists in the directory.',
+          expectedServerCode: 'duplicate_entity',
+        },
+        {
+          status: 415,
+          body: { error: { code: 'unsupported_media_type', message: 'Content-Type must be application/json' }, requestId: 'req-err-415' },
+          expectedCode: 'validation',
+          expectedMessage: 'The submitted client details could not be validated. Please check the entered fields.',
+          expectedServerCode: 'unsupported_media_type',
+        },
+        {
+          status: 422,
+          body: { error: { code: 'validation_failed', message: 'Display name too short' }, requestId: 'req-err-422' },
+          expectedCode: 'validation',
+          expectedMessage: 'The submitted client details could not be validated. Please check the entered fields.',
+          expectedServerCode: 'validation_failed',
+        },
+      ];
+
+      for (const tc of errorCases) {
+        const fetchFn = vi.fn().mockResolvedValue(
+          new Response(JSON.stringify(tc.body), {
+            status: tc.status,
+            headers: { 'content-type': 'application/json', 'x-request-id': tc.body.requestId },
+          }),
+        );
+        const adapter = new HttpClientsAdapter({ fetchFn });
+        await expect(
+          adapter.create('founder', { displayName: 'Test Entity' }),
+        ).rejects.toMatchObject({
+          code: tc.expectedCode,
+          status: tc.status,
+          serverCode: tc.expectedServerCode,
+          requestId: tc.body.requestId,
+          message: tc.expectedMessage,
+        });
+      }
+    });
+
+    it('sanitizes malicious server responses containing raw tax identifiers across message, requestId, serverCode, and cause', async () => {
+      const maliciousBody = {
+        error: {
+          code: '27ABCDE1234F1Z5',
+          message: 'Client with PAN ABCDE1234F and GSTIN 27ABCDE1234F1Z5 already registered by owner.',
+          cause: 'Database error reflecting PAN ABCDE1234F',
+        },
+        requestId: 'ABCDE1234F',
+      };
+
+      const fetchFn = vi.fn().mockResolvedValue(
+        new Response(JSON.stringify(maliciousBody), {
+          status: 409,
+          headers: { 'content-type': 'application/json', 'x-request-id': 'ABCDE1234F' },
+        }),
+      );
+
+      const adapter = new HttpClientsAdapter({ fetchFn });
+      let caughtError!: ClientOperationError;
+
+      try {
+        await adapter.create('founder', { displayName: 'Adversarial Client' });
+      } catch (err: unknown) {
+        caughtError = err as ClientOperationError;
+      }
+
+      expect(caughtError).toBeInstanceOf(ClientOperationError);
+      expect(caughtError.code).toBe('conflict');
+      expect(caughtError.status).toBe(409);
+
+      // Raw tax IDs in requestId, serverCode, and message are completely stripped
+      expect(caughtError.requestId).toBeUndefined();
+      expect(caughtError.serverCode).toBeUndefined();
+      expect(caughtError.message).toBe('A client record with conflicting identifiers already exists in the directory.');
+      expect(caughtError.message).not.toContain('ABCDE1234F');
+      expect(caughtError.message).not.toContain('27ABCDE1234F1Z5');
+
+      // Unsafe cause is discarded
+      expect(caughtError.cause).toBeUndefined();
+    });
+
+    it('preserves valid machine serverCode and conservative req-* support reference while stripping raw tax IDs', async () => {
+      const legitBody = {
+        error: {
+          code: 'conflict',
+          message: 'Conflict occurred',
+        },
+        requestId: 'req-support-trace-789',
+      };
+
+      const fetchFn = vi.fn().mockResolvedValue(
+        new Response(JSON.stringify(legitBody), {
+          status: 409,
+          headers: { 'content-type': 'application/json', 'x-request-id': 'req-support-trace-789' },
+        }),
+      );
+
+      const adapter = new HttpClientsAdapter({ fetchFn });
+      let caughtError!: ClientOperationError;
+
+      try {
+        await adapter.create('founder', { displayName: 'Legit Error Client' });
+      } catch (err: unknown) {
+        caughtError = err as ClientOperationError;
+      }
+
+      expect(caughtError).toBeInstanceOf(ClientOperationError);
+      expect(caughtError.code).toBe('conflict');
+      expect(caughtError.serverCode).toBe('conflict');
+      expect(caughtError.requestId).toBe('req-support-trace-789');
+      expect(caughtError.message).toBe('A client record with conflicting identifiers already exists in the directory.');
+    });
+
+    it('unit tests metadata sanitization helpers: sanitizeServerCode and sanitizeRequestId', () => {
+      // serverCode: conservative lower-snake-case ^[a-z][a-z0-9_]{0,63}$
+      expect(sanitizeServerCode('client_code_conflict')).toBe('client_code_conflict');
+      expect(sanitizeServerCode('validation')).toBe('validation');
+      expect(sanitizeServerCode('already_exists_123')).toBe('already_exists_123');
+      expect(sanitizeServerCode('ABCDE1234F')).toBeUndefined();
+      expect(sanitizeServerCode('27ABCDE1234F1Z5')).toBeUndefined();
+      expect(sanitizeServerCode('Invalid-Code')).toBeUndefined();
+      expect(sanitizeServerCode('123_starts_with_digit')).toBeUndefined();
+      expect(sanitizeServerCode('a'.repeat(65))).toBeUndefined();
+      expect(sanitizeServerCode(undefined)).toBeUndefined();
+
+      // requestId: RFC4122 UUID or req-, req_, req: form up to 80 chars
+      expect(sanitizeRequestId('c636f955-c636-4000-a000-000000000001')).toBe('c636f955-c636-4000-a000-000000000001');
+      expect(sanitizeRequestId('req-trace-001')).toBe('req-trace-001');
+      expect(sanitizeRequestId('req_worker_42')).toBe('req_worker_42');
+      expect(sanitizeRequestId('req:gateway-99.beta')).toBe('req:gateway-99.beta');
+      expect(sanitizeRequestId('ABCDE1234F')).toBeUndefined();
+      expect(sanitizeRequestId('27ABCDE1234F1Z5')).toBeUndefined();
+      expect(sanitizeRequestId('arbitrary_id_without_prefix')).toBeUndefined();
+      expect(sanitizeRequestId(`req-${'a'.repeat(80)}`)).toBeUndefined();
+      expect(sanitizeRequestId(undefined)).toBeUndefined();
+    });
+
+    it('handles network failure during create with sanitized network error', async () => {
+      const fetchFn = vi.fn().mockRejectedValue(new TypeError('Failed to fetch'));
+      const adapter = new HttpClientsAdapter({ fetchFn });
+
+      await expect(
+        adapter.create('founder', { displayName: 'Offline Client' }),
+      ).rejects.toMatchObject({
+        code: 'network',
+        message: 'Unable to reach the server. Please check your network connection and try again.',
+      });
+    });
+
+    it('rejects with unexpected error when 201 response contains invalid DTO', async () => {
+      const invalid201 = {
+        data: { id: 'not-a-uuid', displayName: '' },
+        requestId: 'req-corrupt-201',
+      };
+      const fetchFn = vi.fn().mockResolvedValue(
+        new Response(JSON.stringify(invalid201), {
+          status: 201,
+          headers: { 'content-type': 'application/json', 'x-request-id': 'req-corrupt-201' },
+        }),
+      );
+      const adapter = new HttpClientsAdapter({ fetchFn });
+
+      await expect(
+        adapter.create('founder', { displayName: 'Corrupt DTO Client' }),
+      ).rejects.toMatchObject({
+        code: 'unexpected',
+        status: 201,
+        requestId: 'req-corrupt-201',
+        message: 'An unexpected error occurred while creating the client. Please try again.',
+      });
+    });
+
+    it('rejects create operation with aborted error if signal is pre-aborted or in-flight aborted', async () => {
+      // Pre-aborted
+      const preController = new AbortController();
+      preController.abort();
+
+      const adapter = new HttpClientsAdapter({ fetchFn: vi.fn() });
+      await expect(
+        adapter.create('founder', { displayName: 'Pre-aborted Client' }, { signal: preController.signal }),
+      ).rejects.toMatchObject({
+        code: 'aborted',
+        message: 'Client creation was cancelled.',
+      });
+
+      // In-flight abort
+      const inFlightController = new AbortController();
+      const inFlightFetch = vi.fn().mockImplementation((_url: string, init: RequestInit) => {
+        return new Promise<Response>((_, reject) => {
+          init.signal?.addEventListener('abort', () => {
+            const err = new Error('The user aborted a request.');
+            err.name = 'AbortError';
+            reject(err);
+          });
+        });
+      });
+
+      const inFlightAdapter = new HttpClientsAdapter({ fetchFn: inFlightFetch });
+      const createPromise = inFlightAdapter.create(
+        'founder',
+        { displayName: 'In-flight Abort Client' },
+        { signal: inFlightController.signal },
+      );
+      inFlightController.abort();
+
+      await expect(createPromise).rejects.toMatchObject({
+        code: 'aborted',
+        message: 'Client creation was cancelled.',
+      });
     });
   });
 });

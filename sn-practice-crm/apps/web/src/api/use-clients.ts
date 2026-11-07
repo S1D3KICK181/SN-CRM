@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { CompanyRole } from '@sn/domain';
-import type { ClientDto } from '@sn/contracts';
+import type { ClientDto, CreateClientInput } from '@sn/contracts';
 import { ClientsCoordinator } from './clients-coordinator';
 import { HttpClientsAdapter } from './http-clients-adapter';
 import {
@@ -31,6 +31,7 @@ export interface UseClientsResult {
   readonly selectClient: (id: string) => Promise<void>;
   readonly clearSelection: () => void;
   readonly refresh: () => Promise<void>;
+  readonly createClient: (input: CreateClientInput) => Promise<ClientDto | null>;
 }
 
 interface CoordinatorSession {
@@ -148,6 +149,16 @@ export function useClients(
     await session.coordinator.sync();
   }, [session]);
 
+  const createClient = useCallback(
+    async (input: CreateClientInput): Promise<ClientDto | null> => {
+      if (activeTokenRef.current !== session.token) {
+        return null;
+      }
+      return await session.coordinator.createClient(input);
+    },
+    [session],
+  );
+
   return {
     items,
     loading,
@@ -161,5 +172,6 @@ export function useClients(
     selectClient,
     clearSelection,
     refresh,
+    createClient,
   };
 }

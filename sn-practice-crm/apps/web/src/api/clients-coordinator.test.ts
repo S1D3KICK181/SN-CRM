@@ -359,4 +359,354 @@ describe('ClientsCoordinator', () => {
 
     expect(listener).not.toHaveBeenCalled();
   });
+
+  describe('createClient mutation and concurrency invariants', () => {
+    const NEW_CLIENT: ClientDto = {
+      id: '90000000-0000-4000-a000-000000000099',
+      code: 'CL-001099',
+      displayName: 'Zenith Global Advisory',
+      legalName: 'Zenith Global Advisory LLP',
+      panMasked: '******9999',
+      gstinMasked: '27**********9Z9',
+      email: 'contact@zenith.in',
+      phone: '9876543210',
+      relationshipOwnerId: null,
+      relationshipOwnerName: null,
+      status: 'active',
+      notes: 'New client record',
+      activeAssignmentsCount: 0,
+      createdById: '00000000-0000-4000-a000-000000000001',
+      createdAt: '2026-11-07T12:00:00.000Z',
+      updatedAt: '2026-11-07T12:00:00.000Z',
+    };
+
+    it('successfully prepends and dedupes created client, sets hasLiveSnapshot, and notifies listeners', async () => {
+      const port = new DeterministicTestClientsAdapter();
+      port.setListResponse('founder', [SAMPLE_CLIENT_ASTER]);
+      port.setCreateResponse(NEW_CLIENT);
+
+      const onToast = vi.fn();
+      const onError = vi.fn();
+      const coordinator = new ClientsCoordinator({ port, initialRole: 'founder', onToast, onError });
+
+      await coordinator.sync();
+      expect(coordinator.getState().items).toEqual([SAMPLE_CLIENT_ASTER]);
+
+      const listener = vi.fn();
+      coordinator.subscribe(listener);
+
+      const created = await coordinator.createClient({
+        displayName: 'Zenith Global Advisory',
+        legalName: 'Zenith Global Advisory LLP',
+        relationshipOwnerId: null,
+      });
+
+      expect(created).toEqual(NEW_CLIENT);
+      const state = coordinator.getState();
+      expect(state.items).toEqual([NEW_CLIENT, SAMPLE_CLIENT_ASTER]);
+      expect(state.hasLiveSnapshot).toBe(true);
+      expect(listener).toHaveBeenCalled();
+      // Crucial: Coordinator does NOT produce a generic onToast or onError on create
+      expect(onToast).not.toHaveBeenCalled();
+      expect(onError).not.toHaveBeenCalled();
+    });
+
+    it('prevents an in-flight list request from overwriting a newly created client', async () => {
+      const port = new DeterministicTestClientsAdapter();
+      port.setIgnoreAbortSignals(true); // Simulate un-abortable or slow list response
+
+      let resolveSlowList!: (items: ClientDto[]) => void;
+      const slowListPromise = new Promise<ClientDto[]>((resolve) => {
+        resolveSlowList = resolve;
+      });
+      port.enqueueDeferredList(slowListPromise, 'founder');
+      port.setCreateResponse(NEW_CLIENT);
+
+      const coordinator = new ClientsCoordinator({ port, initialRole: 'founder' });
+
+      // 1. In-flight list starts
+      const listPromise = coordinator.sync();
+
+      // 2. While list is in-flight, a create succeeds
+      const createPromise = coordinator.createClient({
+        displayName: 'Zenith Global Advisory',
+      });
+      const created = await createPromise;
+      expect(created).toEqual(NEW_CLIENT);
+      expect(coordinator.getState().items).toEqual([NEW_CLIENT]);
+
+      // 3. Late list resolves with old Aster client
+      resolveSlowList([SAMPLE_CLIENT_ASTER]);
+      await listPromise;
+
+      // Invalidation guard ensures the late list cannot wipe the newly created client
+      expect(coordinator.getState().items).toEqual([NEW_CLIENT]);
+    });
+
+    it('propagates sanitized create error to caller without corrupting directory or emitting generic toast', async () => {
+      const port = new DeterministicTestClientsAdapter();
+      port.setListResponse('founder', [SAMPLE_CLIENT_ASTER]);
+      const createErr = new ClientOperationError({
+        code: 'validation',
+        status: 422,
+        serverCode: 'validation_failed',
+        message: 'Invalid Indian PAN format with reflected identifier ABCDE1234F',
+      });
+      port.setCreateError(createErr);
+
+      const onToast = vi.fn();
+      const onError = vi.fn();
+      const coordinator = new ClientsCoordinator({ port, initialRole: 'founder', onToast, onError });
+      await coordinator.sync();
+
+      await expect(
+        coordinator.createClient({ displayName: 'Bad PAN Client', pan: 'INVALID' }),
+      ).rejects.toMatchObject({
+        code: 'validation',
+        message: 'The submitted client details could not be validated. Please check the entered fields.',
+      });
+
+      // Directory snapshot intact
+      expect(coordinator.getState().items).toEqual([SAMPLE_CLIENT_ASTER]);
+      expect(coordinator.getState().error).toBeNull();
+      // No duplicate generic toast/error
+      expect(onToast).not.toHaveBeenCalled();
+      expect(onError).not.toHaveBeenCalled();
+    });
+
+    it('suppresses stale rejected create after role switch, dispose, and replaced operation', async () => {
+      // 1. Stale rejected create after role switch
+      const port1 = new DeterministicTestClientsAdapter();
+      port1.setIgnoreAbortSignals(true);
+      port1.setListResponse('founder', [SAMPLE_CLIENT_ASTER]);
+      port1.setListResponse('staff', [SAMPLE_CLIENT_BLUEPEAK]);
+
+      let rejectDeferredCreate1!: (err: Error) => void;
+      const deferredCreatePromise1 = new Promise<ClientDto>((_, reject) => {
+        rejectDeferredCreate1 = reject;
+      });
+      port1.setDeferredCreate(deferredCreatePromise1, 'founder');
+
+      const onToast1 = vi.fn();
+      const coordinator1 = new ClientsCoordinator({ port: port1, initialRole: 'founder', onToast: onToast1 });
+      await coordinator1.sync();
+
+      const createPromise1 = coordinator1.createClient({ displayName: 'Stale Error Client' });
+      await coordinator1.switchRole('staff');
+
+      rejectDeferredCreate1(new Error('Network or server failure'));
+      const result1 = await createPromise1;
+      expect(result1).toBeNull();
+      expect(coordinator1.getState().items).toEqual([SAMPLE_CLIENT_BLUEPEAK]);
+      expect(onToast1).not.toHaveBeenCalled();
+
+      // 2. Stale rejected create after dispose
+      const port2 = new DeterministicTestClientsAdapter();
+      port2.setIgnoreAbortSignals(true);
+
+      let rejectDeferredCreate2!: (err: Error) => void;
+      const deferredCreatePromise2 = new Promise<ClientDto>((_, reject) => {
+        rejectDeferredCreate2 = reject;
+      });
+      port2.setDeferredCreate(deferredCreatePromise2, 'founder');
+
+      const coordinator2 = new ClientsCoordinator({ port: port2, initialRole: 'founder' });
+      const createPromise2 = coordinator2.createClient({ displayName: 'Disposed Error Client' });
+
+      coordinator2.dispose();
+      rejectDeferredCreate2(new Error('Rejected after dispose'));
+      const result2 = await createPromise2;
+      expect(result2).toBeNull();
+
+      // 3. Replaced/aborted operation: starting second create cancels first
+      const port3 = new DeterministicTestClientsAdapter();
+      port3.setIgnoreAbortSignals(true);
+
+      let resolveCreateFirst!: (c: ClientDto) => void;
+      const createFirstPromise = new Promise<ClientDto>((resolve) => {
+        resolveCreateFirst = resolve;
+      });
+      port3.enqueueDeferredCreate(createFirstPromise, 'founder');
+      port3.setCreateResponse(NEW_CLIENT);
+
+      const coordinator3 = new ClientsCoordinator({ port: port3, initialRole: 'founder' });
+      const firstCreate = coordinator3.createClient({ displayName: 'First Client' });
+      const secondCreate = coordinator3.createClient({ displayName: 'Second Client' });
+
+      const secondResult = await secondCreate;
+      expect(secondResult).toEqual(NEW_CLIENT);
+
+      resolveCreateFirst(SAMPLE_CLIENT_ASTER);
+      const firstResult = await firstCreate;
+      expect(firstResult).toBeNull();
+    });
+
+    it('reconciles with fresh committed server list post-create and ensures created client is authoritative', async () => {
+      const port = new DeterministicTestClientsAdapter();
+      port.setListResponse('founder', [SAMPLE_CLIENT_ASTER]);
+      port.setCreateResponse(NEW_CLIENT);
+
+      const coordinator = new ClientsCoordinator({ port, initialRole: 'founder' });
+      await coordinator.sync();
+      expect(coordinator.getState().items).toEqual([SAMPLE_CLIENT_ASTER]);
+
+      // Create client
+      const created = await coordinator.createClient({
+        displayName: 'Zenith Global Advisory',
+      });
+      expect(created).toEqual(NEW_CLIENT);
+
+      // Immediately prepended in state
+      expect(coordinator.getState().items).toEqual([NEW_CLIENT, SAMPLE_CLIENT_ASTER]);
+
+      // Post-create reconciliation: deterministic adapter truthfully updated list response with NEW_CLIENT
+      // Wait for non-blocking reconciliation to complete
+      await vi.waitFor(() => {
+        expect(coordinator.getState().items).toEqual([NEW_CLIENT, SAMPLE_CLIENT_ASTER]);
+        expect(coordinator.getState().error).toBeNull();
+      });
+
+      // Verify that a late pre-create list cannot overwrite post-create state
+      expect(coordinator.getState().items[0]?.id).toBe(NEW_CLIENT.id);
+    });
+
+    it('cancels post-create reconciliation cleanly if role switches or coordinator is disposed', async () => {
+      const port = new DeterministicTestClientsAdapter();
+      port.setIgnoreAbortSignals(true);
+      port.setListResponse('founder', [SAMPLE_CLIENT_ASTER]);
+      port.setListResponse('staff', [SAMPLE_CLIENT_BLUEPEAK]);
+      port.setCreateResponse(NEW_CLIENT);
+
+      let resolveReconciliationList!: (items: ClientDto[]) => void;
+      const reconciliationListPromise = new Promise<ClientDto[]>((resolve) => {
+        resolveReconciliationList = resolve;
+      });
+
+      const coordinator = new ClientsCoordinator({ port, initialRole: 'founder' });
+      await coordinator.sync();
+
+      // Configure next list (reconciliation) to be deferred
+      port.setDeferredList('founder', reconciliationListPromise);
+
+      await coordinator.createClient({ displayName: 'Zenith Global Advisory' });
+
+      // Immediate state has newly created client
+      expect(coordinator.getState().items[0]?.id).toBe(NEW_CLIENT.id);
+
+      // Switch role to staff while reconciliation is pending
+      await coordinator.switchRole('staff');
+      expect(coordinator.getState().role).toBe('staff');
+      expect(coordinator.getState().items).toEqual([SAMPLE_CLIENT_BLUEPEAK]);
+
+      // Reconciliation resolves late
+      resolveReconciliationList([NEW_CLIENT, SAMPLE_CLIENT_ASTER]);
+
+      // Role isolation: founder reconciliation must not leak into staff
+      expect(coordinator.getState().items).toEqual([SAMPLE_CLIENT_BLUEPEAK]);
+    });
+
+    it('handles reconciliation failure non-destructively: preserves created client snapshot and triggers refresh warning', async () => {
+      const port = new DeterministicTestClientsAdapter();
+      port.setListResponse('founder', [SAMPLE_CLIENT_ASTER]);
+      port.setCreateResponse(NEW_CLIENT);
+
+      const onToast = vi.fn();
+      const onError = vi.fn();
+      const coordinator = new ClientsCoordinator({ port, initialRole: 'founder', onToast, onError });
+      await coordinator.sync();
+      expect(onError).not.toHaveBeenCalled();
+      expect(onToast).not.toHaveBeenCalled();
+
+      // Set port list error for the subsequent reconciliation list call
+      port.setListError(
+        'founder',
+        new ClientOperationError({
+          code: 'network',
+          message: 'Server connection dropped during refresh.',
+        }),
+      );
+
+      // Create succeeds
+      const created = await coordinator.createClient({ displayName: 'Zenith Global Advisory' });
+      expect(created).toEqual(NEW_CLIENT);
+
+      // Created snapshot is immediately live
+      expect(coordinator.getState().items).toEqual([NEW_CLIENT, SAMPLE_CLIENT_ASTER]);
+
+      // Await reconciliation failure handling
+      await vi.waitFor(() => {
+        expect(coordinator.getState().error?.code).toBe('network');
+      });
+
+      // Crucial: Items snapshot is PRESERVED, hasLiveSnapshot remains true
+      expect(coordinator.getState().items).toEqual([NEW_CLIENT, SAMPLE_CLIENT_ASTER]);
+      expect(coordinator.getState().hasLiveSnapshot).toBe(true);
+
+      // Parity check: exactly one onError and one refresh-error toast fire
+      expect(onError).toHaveBeenCalledTimes(1);
+      expect(onError).toHaveBeenCalledWith(
+        expect.objectContaining({
+          code: 'network',
+          message: 'Server connection dropped during refresh.',
+        }),
+      );
+      expect(onToast).toHaveBeenCalledTimes(1);
+      expect(onToast).toHaveBeenCalledWith('Server connection dropped during refresh.');
+    });
+
+    it('suppresses create completion and returns null when role is switched while in-flight', async () => {
+      const port = new DeterministicTestClientsAdapter();
+      port.setIgnoreAbortSignals(true);
+      port.setListResponse('founder', [SAMPLE_CLIENT_ASTER]);
+      port.setListResponse('staff', [SAMPLE_CLIENT_BLUEPEAK]);
+
+      let resolveDeferredCreate!: (c: ClientDto) => void;
+      const deferredCreatePromise = new Promise<ClientDto>((resolve) => {
+        resolveDeferredCreate = resolve;
+      });
+      port.setDeferredCreate(deferredCreatePromise, 'founder');
+
+      const onToast = vi.fn();
+      const coordinator = new ClientsCoordinator({ port, initialRole: 'founder', onToast });
+      await coordinator.sync();
+
+      // Start create under founder
+      const createPromise = coordinator.createClient({ displayName: 'Founder Only Client' });
+
+      // Role switches to staff immediately
+      await coordinator.switchRole('staff');
+      expect(coordinator.getState().role).toBe('staff');
+      expect(coordinator.getState().items).toEqual([SAMPLE_CLIENT_BLUEPEAK]);
+
+      // Stale create resolves later
+      resolveDeferredCreate(NEW_CLIENT);
+      const result = await createPromise;
+
+      // Stale completion must be suppressed: returns null, items unaltered, no toast
+      expect(result).toBeNull();
+      expect(coordinator.getState().items).toEqual([SAMPLE_CLIENT_BLUEPEAK]);
+      expect(onToast).not.toHaveBeenCalled();
+    });
+
+    it('suppresses create completion and returns null when coordinator is disposed while in-flight', async () => {
+      const port = new DeterministicTestClientsAdapter();
+      port.setIgnoreAbortSignals(true);
+
+      let resolveDeferredCreate!: (c: ClientDto) => void;
+      const deferredCreatePromise = new Promise<ClientDto>((resolve) => {
+        resolveDeferredCreate = resolve;
+      });
+      port.setDeferredCreate(deferredCreatePromise, 'founder');
+
+      const coordinator = new ClientsCoordinator({ port, initialRole: 'founder' });
+      const createPromise = coordinator.createClient({ displayName: 'Disposed Client' });
+
+      coordinator.dispose();
+      resolveDeferredCreate(NEW_CLIENT);
+      const result = await createPromise;
+
+      expect(result).toBeNull();
+      expect(coordinator.getState().items).toEqual([]);
+    });
+  });
 });

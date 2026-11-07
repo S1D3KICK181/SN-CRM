@@ -3,7 +3,7 @@ import React from 'react';
 import { flushSync } from 'react-dom';
 import { createRoot } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { act, cleanup, renderHook } from '@testing-library/react';
+import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
 import type { ClientDto } from '@sn/contracts';
 import type { CompanyRole } from '@sn/domain';
 import { DeterministicTestClientsAdapter } from './test-clients-adapter';
@@ -777,5 +777,213 @@ describe('useClients React hook', () => {
     expect(consoleErrorSpy).not.toHaveBeenCalled();
 
     consoleErrorSpy.mockRestore();
+  });
+
+  describe('createClient mutation in useClients hook', () => {
+    const CREATED_CLIENT: ClientDto = {
+      id: '90000000-0000-4000-a000-000000000099',
+      code: 'CL-001099',
+      displayName: 'Zenith Global Advisory',
+      legalName: 'Zenith Global Advisory LLP',
+      panMasked: '******9999',
+      gstinMasked: '27**********9Z9',
+      email: 'contact@zenith.in',
+      phone: '9876543210',
+      relationshipOwnerId: null,
+      relationshipOwnerName: null,
+      status: 'active',
+      notes: 'New client record',
+      activeAssignmentsCount: 0,
+      createdById: '00000000-0000-4000-a000-000000000001',
+      createdAt: '2026-11-07T12:00:00.000Z',
+      updatedAt: '2026-11-07T12:00:00.000Z',
+    };
+
+    it('delegates to coordinator and updates state upon successful creation', async () => {
+      const port = new DeterministicTestClientsAdapter();
+      port.setListResponse('founder', [SAMPLE_ASTER]);
+      port.setCreateResponse(CREATED_CLIENT);
+
+      const onToast = vi.fn();
+      const { result } = renderHook(() => useClients('founder', { port, onToast }));
+
+      await waitFor(() => {
+        expect(result.current.hasLiveSnapshot).toBe(true);
+      });
+      expect(result.current.items).toEqual([SAMPLE_ASTER]);
+
+      let createdResult: ClientDto | null = null;
+      await act(async () => {
+        createdResult = await result.current.createClient({
+          displayName: 'Zenith Global Advisory',
+        });
+      });
+
+      expect(createdResult).toEqual(CREATED_CLIENT);
+      expect(result.current.items).toEqual([CREATED_CLIENT, SAMPLE_ASTER]);
+      // Coordinator does not auto-toast; toast will be triggered by workspace UI
+      expect(onToast).not.toHaveBeenCalled();
+    });
+
+    it('suppresses create completion when role changes while create is in-flight', async () => {
+      const port = new DeterministicTestClientsAdapter();
+      port.setIgnoreAbortSignals(true);
+      port.setListResponse('founder', [SAMPLE_ASTER]);
+      port.setListResponse('staff', [SAMPLE_BLUEPEAK]);
+
+      let resolveCreate!: (c: ClientDto) => void;
+      const deferredCreate = new Promise<ClientDto>((resolve) => {
+        resolveCreate = resolve;
+      });
+      port.setDeferredCreate(deferredCreate, 'founder');
+
+      const { result, rerender } = renderHook(
+        ({ role }: { role: CompanyRole }) => useClients(role, { port }),
+        { initialProps: { role: 'founder' } },
+      );
+
+      await waitFor(() => {
+        expect(result.current.hasLiveSnapshot).toBe(true);
+      });
+
+      // Start create in founder scope
+      let createPromise!: Promise<ClientDto | null>;
+      act(() => {
+        createPromise = result.current.createClient({ displayName: 'Founder Client' });
+      });
+
+      // Switch to staff
+      act(() => {
+        rerender({ role: 'staff' });
+      });
+
+      await waitFor(() => {
+        expect(result.current.role).toBe('staff');
+        expect(result.current.items).toEqual([SAMPLE_BLUEPEAK]);
+      });
+
+      // Resolve old create
+      await act(async () => {
+        resolveCreate(CREATED_CLIENT);
+      });
+
+      const outcome = await createPromise;
+      expect(outcome).toBeNull();
+      // Staff items never contaminated with founder's created client
+      expect(result.current.items).toEqual([SAMPLE_BLUEPEAK]);
+    });
+
+    it('handles in-flight create followed by unmount without errors or state leaks', async () => {
+      const port = new DeterministicTestClientsAdapter();
+      port.setIgnoreAbortSignals(true);
+      port.setListResponse('founder', [SAMPLE_ASTER]);
+
+      let resolveCreate!: (c: ClientDto) => void;
+      const deferredCreate = new Promise<ClientDto>((resolve) => {
+        resolveCreate = resolve;
+      });
+      port.setDeferredCreate(deferredCreate, 'founder');
+
+      const { result, unmount } = renderHook(() => useClients('founder', { port }));
+
+      await waitFor(() => {
+        expect(result.current.hasLiveSnapshot).toBe(true);
+      });
+
+      let createPromise!: Promise<ClientDto | null>;
+      act(() => {
+        createPromise = result.current.createClient({ displayName: 'Unmounting Client' });
+      });
+
+      unmount();
+
+      resolveCreate(CREATED_CLIENT);
+      const outcome = await createPromise;
+      expect(outcome).toBeNull();
+    });
+
+    it('handles in-flight create followed by port replacement without contamination', async () => {
+      const port1 = new DeterministicTestClientsAdapter();
+      port1.setIgnoreAbortSignals(true);
+      port1.setListResponse('founder', [SAMPLE_ASTER]);
+
+      const port2 = new DeterministicTestClientsAdapter();
+      port2.setListResponse('founder', [SAMPLE_BLUEPEAK]);
+
+      let resolveCreate1!: (c: ClientDto) => void;
+      const deferredCreate1 = new Promise<ClientDto>((resolve) => {
+        resolveCreate1 = resolve;
+      });
+      port1.setDeferredCreate(deferredCreate1, 'founder');
+
+      const { result, rerender } = renderHook(
+        ({ activePort }: { activePort: DeterministicTestClientsAdapter }) =>
+          useClients('founder', { port: activePort }),
+        { initialProps: { activePort: port1 } },
+      );
+
+      await waitFor(() => {
+        expect(result.current.items).toEqual([SAMPLE_ASTER]);
+      });
+
+      let createPromise!: Promise<ClientDto | null>;
+      act(() => {
+        createPromise = result.current.createClient({ displayName: 'Port1 Client' });
+      });
+
+      // Replace port
+      rerender({ activePort: port2 });
+
+      await waitFor(() => {
+        expect(result.current.items).toEqual([SAMPLE_BLUEPEAK]);
+      });
+
+      resolveCreate1(CREATED_CLIENT);
+      const outcome = await createPromise;
+      expect(outcome).toBeNull();
+      expect(result.current.items).toEqual([SAMPLE_BLUEPEAK]);
+    });
+
+    it('suppresses stale error after role switch: returns null without throwing or triggering toast', async () => {
+      const port = new DeterministicTestClientsAdapter();
+      port.setIgnoreAbortSignals(true);
+      port.setListResponse('founder', [SAMPLE_ASTER]);
+      port.setListResponse('staff', [SAMPLE_BLUEPEAK]);
+
+      let rejectCreate!: (err: Error) => void;
+      const deferredCreate = new Promise<ClientDto>((_, reject) => {
+        rejectCreate = reject;
+      });
+      port.setDeferredCreate(deferredCreate, 'founder');
+
+      const onToast = vi.fn();
+      const { result, rerender } = renderHook(
+        ({ role }: { role: CompanyRole }) => useClients(role, { port, onToast }),
+        { initialProps: { role: 'founder' } },
+      );
+
+      await waitFor(() => {
+        expect(result.current.hasLiveSnapshot).toBe(true);
+      });
+
+      let createPromise!: Promise<ClientDto | null>;
+      act(() => {
+        createPromise = result.current.createClient({ displayName: 'Failing Client' });
+      });
+
+      rerender({ role: 'staff' });
+
+      await waitFor(() => {
+        expect(result.current.role).toBe('staff');
+        expect(result.current.items).toEqual([SAMPLE_BLUEPEAK]);
+      });
+
+      rejectCreate(new Error('Server error occurred'));
+      const outcome = await createPromise;
+
+      expect(outcome).toBeNull();
+      expect(onToast).not.toHaveBeenCalled();
+      expect(result.current.items).toEqual([SAMPLE_BLUEPEAK]);
+    });
   });
 });

@@ -1,12 +1,13 @@
-import type { ClientDto } from '@sn/contracts';
+import type { ClientDto, CreateClientInput } from '@sn/contracts';
 import type { CompanyRole } from '@sn/domain';
 import type { PortExecutionOptions } from './types';
 import { ClientOperationError, type ClientsPort } from './clients-types';
 
 export interface RecordedClientCall {
-  action: 'list' | 'get';
+  action: 'list' | 'get' | 'create';
   role: CompanyRole;
   id?: string;
+  input?: CreateClientInput;
   signal?: AbortSignal;
   requestId?: string;
 }
@@ -21,6 +22,13 @@ export class DeterministicTestClientsAdapter implements ClientsPort {
   private readonly deferredGets = new Map<string, Promise<ClientDto>>();
   private readonly getQueue: Array<{ id?: string; promise: Promise<ClientDto> }> = [];
   private readonly getErrors = new Map<string, Error>();
+
+  private readonly createResponses = new Map<CompanyRole, ClientDto>();
+  private defaultCreateResponse?: ClientDto;
+  private readonly deferredCreates = new Map<CompanyRole, Promise<ClientDto>>();
+  private readonly createQueue: Array<{ role?: CompanyRole; promise: Promise<ClientDto> }> = [];
+  private readonly createErrors = new Map<CompanyRole, Error>();
+  private defaultCreateError?: Error;
 
   private ignoreAbortSignals = false;
 
@@ -60,6 +68,34 @@ export class DeterministicTestClientsAdapter implements ClientsPort {
 
   setGetError(id: string, error: Error): void {
     this.getErrors.set(id, error);
+  }
+
+  setCreateResponse(client: ClientDto, role?: CompanyRole): void {
+    if (role) {
+      this.createResponses.set(role, client);
+    } else {
+      this.defaultCreateResponse = client;
+    }
+  }
+
+  setDeferredCreate(promise: Promise<ClientDto>, role?: CompanyRole): void {
+    if (role) {
+      this.deferredCreates.set(role, promise);
+    } else {
+      this.createQueue.push({ promise });
+    }
+  }
+
+  enqueueDeferredCreate(promise: Promise<ClientDto>, role?: CompanyRole): void {
+    this.createQueue.push({ role, promise });
+  }
+
+  setCreateError(error: Error, role?: CompanyRole): void {
+    if (role) {
+      this.createErrors.set(role, error);
+    } else {
+      this.defaultCreateError = error;
+    }
   }
 
   async list(role: CompanyRole, options?: PortExecutionOptions): Promise<ClientDto[]> {
@@ -175,5 +211,92 @@ export class DeterministicTestClientsAdapter implements ClientsPort {
       message: `Client ${id} not found`,
       status: 404,
     });
+  }
+
+  async create(
+    role: CompanyRole,
+    input: CreateClientInput,
+    options?: PortExecutionOptions,
+  ): Promise<ClientDto> {
+    this.calls.push({
+      action: 'create',
+      role,
+      input: { ...input },
+      signal: options?.signal,
+      requestId: options?.requestId,
+    });
+
+    if (!this.ignoreAbortSignals && options?.signal?.aborted) {
+      throw new ClientOperationError({
+        code: 'aborted',
+        message: 'The create operation was aborted.',
+      });
+    }
+
+    const queueIndex = this.createQueue.findIndex((entry) => !entry.role || entry.role === role);
+    let deferredPromise: Promise<ClientDto> | undefined;
+    if (queueIndex >= 0) {
+      deferredPromise = this.createQueue.splice(queueIndex, 1)[0]!.promise;
+    } else {
+      deferredPromise = this.deferredCreates.get(role);
+    }
+
+    if (deferredPromise) {
+      const wrapped = deferredPromise.then((created) => {
+        const existingList = this.listResponses.get(role) ?? [];
+        this.listResponses.set(role, [created, ...existingList.filter((item: ClientDto) => item.id !== created.id)]);
+        return created;
+      });
+
+      if (!this.ignoreAbortSignals && options?.signal) {
+        return Promise.race([
+          wrapped,
+          new Promise<ClientDto>((_, reject) => {
+            options.signal?.addEventListener('abort', () => {
+              reject(
+                new ClientOperationError({
+                  code: 'aborted',
+                  message: 'The create operation was aborted.',
+                }),
+              );
+            });
+          }),
+        ]);
+      }
+      return wrapped;
+    }
+
+    const error = this.createErrors.get(role) ?? this.defaultCreateError;
+    if (error) {
+      throw error;
+    }
+
+    const response = this.createResponses.get(role) ?? this.defaultCreateResponse;
+    const fallbackId = '90000000-0000-4000-a000-000000000099';
+    const createdResult: ClientDto = response
+      ? { ...response }
+      : {
+          id: fallbackId,
+          code: 'CL-001099',
+          displayName: input.displayName,
+          legalName: input.legalName ?? null,
+          panMasked: input.pan ? `******${input.pan.slice(-4)}` : null,
+          gstinMasked: input.gstin ? `${input.gstin.slice(0, 2)}**********${input.gstin.slice(-3)}` : null,
+          email: input.email ?? null,
+          phone: input.phone ?? null,
+          relationshipOwnerId: input.relationshipOwnerId ?? null,
+          relationshipOwnerName: null,
+          status: 'active',
+          notes: input.notes ?? null,
+          activeAssignmentsCount: 0,
+          createdById: '00000000-0000-4000-a000-000000000001',
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        };
+
+    const existingList = this.listResponses.get(role) ?? [];
+    this.listResponses.set(role, [createdResult, ...existingList.filter((item: ClientDto) => item.id !== createdResult.id)]);
+
+    return createdResult;
   }
 }

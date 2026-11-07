@@ -1,9 +1,10 @@
-import type { ClientDto } from '@sn/contracts';
+import type { ClientDto, CreateClientInput } from '@sn/contracts';
 import type { CompanyRole } from '@sn/domain';
 import { ROLE_TO_DEMO_ACTOR_ID } from './dev-auth';
 import type { PortExecutionOptions } from './types';
 import {
   ClientOperationError,
+  sanitizeCreateClientError,
   type ClientErrorCode,
   type ClientsPort,
 } from './clients-types';
@@ -315,6 +316,7 @@ export class HttpClientsAdapter implements ClientsPort {
         return 'not_found';
       case 409:
         return 'conflict';
+      case 415:
       case 422:
         return 'validation';
       default:
@@ -506,6 +508,37 @@ export class HttpClientsAdapter implements ClientsPort {
         });
       }
       throw err;
+    }
+  }
+
+  async create(
+    role: CompanyRole,
+    input: CreateClientInput,
+    options?: PortExecutionOptions,
+  ): Promise<ClientDto> {
+    try {
+      const result = await this.execute<unknown>(
+        role,
+        '/api/v1/clients',
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(input),
+        },
+        options,
+      );
+      try {
+        return parseClientDto(result.data);
+      } catch {
+        throw new ClientOperationError({
+          code: 'unexpected',
+          message: 'Failed to parse created client record.',
+          requestId: result.requestId ?? options?.requestId,
+          status: 201,
+        });
+      }
+    } catch (err: unknown) {
+      throw sanitizeCreateClientError(err);
     }
   }
 }

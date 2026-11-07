@@ -2081,6 +2081,145 @@ tbody tr:hover {
   line-height: 1.45;
 }
 
+.dialog-close-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--canvas);
+  color: var(--ink-muted);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: color 120ms var(--ease-out), background-color 120ms var(--ease-out), border-color 120ms var(--ease-out);
+}
+
+.dialog-close-btn:hover:not(:disabled) {
+  background: var(--surface);
+  color: var(--ink-strong);
+  border-color: var(--ink-muted);
+}
+
+.dialog-close-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.create-client-dialog-layer {
+  backdrop-filter: none;
+  background: color-mix(in srgb, var(--ink-strong) 42%, transparent);
+}
+
+.client-add-btn {
+  height: 38px;
+  padding: 0 14px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.create-client-dialog {
+  width: min(640px, calc(100vw - 64px));
+}
+
+.create-client-dialog .dialog-close-btn {
+  width: 38px;
+  height: 38px;
+  border-radius: var(--radius-control);
+}
+
+.create-client-dialog-title-group h2 {
+  margin: 0;
+  color: var(--ink-strong);
+  font-size: 19px;
+  font-weight: 700;
+  letter-spacing: -0.025em;
+}
+
+.create-client-dialog-title-group p {
+  margin: 4px 0 0;
+  color: var(--ink-muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.create-client-dialog .field-label-text,
+.create-client-dialog .field > span:first-of-type:not(.field-error-text) {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink-strong);
+}
+
+.create-client-dialog .field > small {
+  font-size: 11px;
+  color: var(--ink-muted);
+  line-height: 1.4;
+}
+
+.create-client-dialog .field-error-text,
+.create-client-dialog .field > span.field-error-text {
+  font-size: 11px;
+  color: var(--danger);
+  font-weight: 500;
+  line-height: 1.35;
+}
+
+.create-client-dialog .field input {
+  min-height: 40px;
+  font-size: 12px;
+  padding: 0 12px;
+}
+
+.create-client-dialog .field textarea {
+  font-size: 12px;
+  padding: 10px 12px;
+}
+
+.create-client-dialog .form-banner-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: var(--radius-control);
+  background: var(--danger-soft);
+  color: var(--danger);
+  margin-bottom: 16px;
+}
+
+.create-client-dialog .form-banner-icon {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.create-client-dialog .form-banner-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.create-client-dialog .form-banner-reference {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--ink-muted);
+}
+
+.create-client-dialog .dialog-info-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: var(--radius-control);
+  background: var(--canvas);
+  border: 1px solid var(--border);
+  color: var(--ink-muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
 .dialog form {
   padding: 21px 24px 24px;
 }
@@ -2140,6 +2279,50 @@ tbody tr:hover {
   color: var(--ink-muted);
   font-size: 8px;
   font-weight: 500;
+  line-height: 1.4;
+}
+
+.field-error-text {
+  color: var(--danger);
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.field input[aria-invalid='true'],
+.field textarea[aria-invalid='true'] {
+  border-color: var(--danger);
+}
+
+.field input[aria-invalid='true']:focus,
+.field textarea[aria-invalid='true']:focus {
+  border-color: var(--danger);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 12%, transparent);
+}
+
+.form-banner-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: var(--radius-control);
+  background: var(--danger-soft);
+  color: var(--danger);
+  font-size: 11px;
+  font-weight: 600;
+  margin-bottom: 16px;
+}
+
+.dialog-info-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: var(--radius-control);
+  background: var(--canvas);
+  border: 1px solid var(--border);
+  color: var(--ink-muted);
+  font-size: 10px;
   line-height: 1.4;
 }
 

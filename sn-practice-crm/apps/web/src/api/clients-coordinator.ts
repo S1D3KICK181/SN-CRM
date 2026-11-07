@@ -1,7 +1,8 @@
-import type { ClientDto } from '@sn/contracts';
+import type { ClientDto, CreateClientInput } from '@sn/contracts';
 import type { CompanyRole } from '@sn/domain';
 import {
   ClientOperationError,
+  sanitizeCreateClientError,
   type ClientsCoordinatorState,
   type ClientsPort,
 } from './clients-types';
@@ -27,8 +28,10 @@ export class ClientsCoordinator {
 
   private currentGeneration = 0;
   private detailGeneration = 0;
+  private createGeneration = 0;
   private listAbortController: AbortController | null = null;
   private detailAbortController: AbortController | null = null;
+  private createAbortController: AbortController | null = null;
   private disposed = false;
 
   private readonly port: ClientsPort;
@@ -69,6 +72,7 @@ export class ClientsCoordinator {
     const shouldNotify = options.notify ?? true;
     this.currentGeneration++;
     this.detailGeneration++;
+    this.createGeneration++;
 
     if (this.listAbortController) {
       this.listAbortController.abort();
@@ -77,6 +81,10 @@ export class ClientsCoordinator {
     if (this.detailAbortController) {
       this.detailAbortController.abort();
       this.detailAbortController = null;
+    }
+    if (this.createAbortController) {
+      this.createAbortController.abort();
+      this.createAbortController = null;
     }
 
     const wasLoading = this.loading || this.detailLoading;
@@ -264,5 +272,134 @@ export class ClientsCoordinator {
     this.detailLoading = false;
     this.detailError = null;
     this.notify();
+  }
+
+  async createClient(input: CreateClientInput): Promise<ClientDto | null> {
+    if (this.disposed) return null;
+
+    if (this.createAbortController) {
+      this.createAbortController.abort();
+    }
+
+    const generation = ++this.createGeneration;
+    const role = this.currentRole;
+    const controller = new AbortController();
+    this.createAbortController = controller;
+
+    try {
+      const created = await this.port.create(role, input, { signal: controller.signal });
+
+      if (
+        this.disposed ||
+        generation !== this.createGeneration ||
+        role !== this.currentRole ||
+        controller.signal.aborted
+      ) {
+        return null;
+      }
+
+      // Invalidate any pre-existing in-flight list request so it cannot overwrite the newly created client
+      if (this.listAbortController) {
+        this.listAbortController.abort();
+        this.listAbortController = null;
+      }
+      this.currentGeneration++;
+      this.loading = false;
+
+      // Prepend & dedupe newly created client
+      const existingWithoutCreated = this.items.filter((item) => item.id !== created.id);
+      this.items = [created, ...existingWithoutCreated];
+      this.hasLiveSnapshot = true;
+      this.notify();
+
+      // Guarded non-blocking fresh sync against committed server state
+      void this.reconcileAfterCreate(role, created);
+
+      return created;
+    } catch (err: unknown) {
+      if (
+        this.disposed ||
+        generation !== this.createGeneration ||
+        role !== this.currentRole ||
+        controller.signal.aborted
+      ) {
+        return null;
+      }
+
+      const opError = sanitizeCreateClientError(err);
+
+      if (opError.code === 'aborted') {
+        return null;
+      }
+
+      // Propagate sanitized create errors to the caller for the dialog; do not trigger generic toast
+      throw opError;
+    } finally {
+      if (this.createAbortController === controller) {
+        this.createAbortController = null;
+      }
+    }
+  }
+
+  private async reconcileAfterCreate(role: CompanyRole, created: ClientDto): Promise<void> {
+    if (this.disposed || role !== this.currentRole) return;
+
+    const generation = ++this.currentGeneration;
+    const controller = new AbortController();
+    this.listAbortController = controller;
+
+    try {
+      const serverItems = await this.port.list(role, { signal: controller.signal });
+
+      if (
+        this.disposed ||
+        generation !== this.currentGeneration ||
+        role !== this.currentRole ||
+        controller.signal.aborted
+      ) {
+        return;
+      }
+
+      // Authoritative committed server list: ensure created client is present
+      const containsCreated = serverItems.some((item) => item.id === created.id);
+      this.items = containsCreated ? serverItems : [created, ...serverItems];
+      this.error = null;
+      this.hasLiveSnapshot = true;
+      this.loading = false;
+      this.notify();
+    } catch (err: unknown) {
+      if (
+        this.disposed ||
+        generation !== this.currentGeneration ||
+        role !== this.currentRole ||
+        controller.signal.aborted
+      ) {
+        return;
+      }
+
+      const opError =
+        err instanceof ClientOperationError
+          ? err
+          : new ClientOperationError({
+              code: 'unexpected',
+              message: err instanceof Error ? err.message : 'Failed to refresh client list.',
+              cause: err,
+            });
+
+      if (opError.code === 'aborted') {
+        return;
+      }
+
+      // Reconciliation failure preserves the created snapshot and uses existing non-destructive refresh error behavior
+      this.error = opError;
+      this.loading = false;
+      this.onError?.(opError);
+      this.onToast?.(opError.message || 'Failed to refresh client list.');
+      this.notify();
+    } finally {
+      if (this.listAbortController === controller) {
+        this.listAbortController = null;
+      }
+    }
   }
 }

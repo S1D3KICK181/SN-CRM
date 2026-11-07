@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/react';
 import { ClientsWorkspace } from './clients-workspace';
 import { DeterministicTestClientsAdapter } from '../../api/test-clients-adapter';
@@ -360,17 +360,17 @@ describe('ClientsWorkspace', () => {
     });
   });
 
-  it('strictly excludes unsupported create and edit controls from the workspace surface', async () => {
+  it('strictly excludes unsupported create and edit controls from the workspace surface for non-manager roles', async () => {
     const adapter = new DeterministicTestClientsAdapter();
-    adapter.setListResponse('founder', [createClientDto()]);
+    adapter.setListResponse('staff', [createClientDto()]);
 
-    render(<ClientsWorkspace role="founder" port={adapter} />);
+    render(<ClientsWorkspace role="staff" port={adapter} />);
 
     await waitFor(() => {
       expect(screen.getByText('Aster Foods')).toBeTruthy();
     });
 
-    // No "+ Add client" button
+    // No "+ Add client" button for staff
     expect(screen.queryByRole('button', { name: /add client/i })).toBeNull();
     expect(screen.queryByRole('button', { name: /new client/i })).toBeNull();
 
@@ -433,5 +433,314 @@ describe('ClientsWorkspace', () => {
     });
     expect(screen.queryByText('Founder Client Account')).toBeNull();
     expect(screen.queryByLabelText('Loading client directory')).toBeNull();
+  });
+
+  describe('Client creation workflow and role gating', () => {
+    it('displays "+ Add client" button for founder and manager, but omits it for senior_staff, staff, and trainee', async () => {
+      const adapter = new DeterministicTestClientsAdapter();
+      adapter.setListResponse('founder', [createClientDto()]);
+      adapter.setListResponse('manager', [createClientDto()]);
+      adapter.setListResponse('senior_staff', [createClientDto()]);
+      adapter.setListResponse('staff', [createClientDto()]);
+      adapter.setListResponse('trainee', [createClientDto()]);
+
+      // Founder: can create
+      const { rerender } = render(<ClientsWorkspace role="founder" port={adapter} />);
+      expect(screen.getByRole('button', { name: 'Add client' })).toBeTruthy();
+
+      // Manager: can create
+      rerender(<ClientsWorkspace role="manager" port={adapter} />);
+      expect(screen.getByRole('button', { name: 'Add client' })).toBeTruthy();
+
+      // Senior staff: cannot create
+      rerender(<ClientsWorkspace role="senior_staff" port={adapter} />);
+      expect(screen.queryByRole('button', { name: 'Add client' })).toBeNull();
+
+      // Staff: cannot create
+      rerender(<ClientsWorkspace role="staff" port={adapter} />);
+      expect(screen.queryByRole('button', { name: 'Add client' })).toBeNull();
+
+      // Trainee: cannot create
+      rerender(<ClientsWorkspace role="trainee" port={adapter} />);
+      expect(screen.queryByRole('button', { name: 'Add client' })).toBeNull();
+    });
+
+    it('opens CreateClientDialog and creates client successfully with toast notification and live directory update', async () => {
+      const adapter = new DeterministicTestClientsAdapter();
+      const initialClient = createClientDto({
+        id: 'c1111111-1111-4111-8111-111111111111',
+        displayName: 'Existing Client One',
+      });
+      adapter.setListResponse('founder', [initialClient]);
+
+      const createdClient: ClientDto = {
+        id: 'c9999999-9999-4999-8999-999999999999',
+        code: 'CL-001099',
+        displayName: 'Zenith Advisory Services',
+        legalName: 'Zenith Advisory Services LLP',
+        panMasked: '******5678',
+        gstinMasked: '27**********2Z8',
+        email: 'accounts@zenith.local',
+        phone: '+91 98111 22334',
+        relationshipOwnerId: null,
+        relationshipOwnerName: null,
+        status: 'active',
+        notes: 'Priority onboarding',
+        activeAssignmentsCount: 0,
+        createdById: '00000000-0000-4000-a000-000000000001',
+        createdAt: '2026-11-06T12:00:00.000Z',
+        updatedAt: '2026-11-06T12:00:00.000Z',
+      };
+      adapter.setCreateResponse(createdClient);
+
+      const onToast = vi.fn();
+      render(<ClientsWorkspace role="founder" port={adapter} onToast={onToast} />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Existing Client One')).toBeTruthy();
+      });
+
+      // Click "Add client" button
+      const addBtn = screen.getByRole('button', { name: 'Add client' });
+      fireEvent.click(addBtn);
+
+      // Dialog is open
+      const dialog = screen.getByRole('dialog');
+      expect(dialog).toBeTruthy();
+      expect(screen.getByRole('heading', { name: 'Add client' })).toBeTruthy();
+
+      // Fill in form
+      const displayNameInput = screen.getByLabelText(/display name \*/i);
+      const legalNameInput = screen.getByLabelText(/legal registered name/i);
+      const panInput = screen.getByLabelText(/income tax pan/i);
+      const gstinInput = screen.getByLabelText(/gstin/i);
+      const submitBtn = screen.getByTestId('create-client-submit-btn');
+
+      fireEvent.change(displayNameInput, { target: { value: 'Zenith Advisory Services' } });
+      fireEvent.change(legalNameInput, { target: { value: 'Zenith Advisory Services LLP' } });
+      fireEvent.change(panInput, { target: { value: 'ABCDE5678F' } });
+      fireEvent.change(gstinInput, { target: { value: '27ABCDE5678F2Z8' } });
+
+      // Submit
+      fireEvent.click(submitBtn);
+
+      // Dialog closes and toast is emitted exactly once
+      await waitFor(() => {
+        expect(screen.queryByRole('dialog')).toBeNull();
+      });
+
+      expect(onToast).toHaveBeenCalledTimes(1);
+      expect(onToast).toHaveBeenCalledWith('Client "Zenith Advisory Services" created successfully.');
+
+      // Focus restored to trigger button after success
+      expect(document.activeElement).toBe(addBtn);
+
+      // Directory table updated with new client prepended
+      expect(screen.getByText('Zenith Advisory Services')).toBeTruthy();
+      expect(screen.getByText('Zenith Advisory Services LLP')).toBeTruthy();
+      expect(screen.getByText('******5678')).toBeTruthy();
+      expect(screen.getByText('27**********2Z8')).toBeTruthy();
+
+      // ADVERSARIAL PRIVACY CHECK:
+      // Raw PAN and GSTIN must never exist in the DOM outside the unmounted form
+      expect(document.body.textContent).not.toContain('ABCDE5678F');
+      expect(document.body.textContent).not.toContain('27ABCDE5678F2Z8');
+
+      // Verify adapter recorded create call with relationshipOwnerId: null
+      const createCall = adapter.calls.find((c) => c.action === 'create');
+      expect(createCall).toBeDefined();
+      expect(createCall?.role).toBe('founder');
+      expect(createCall?.input?.displayName).toBe('Zenith Advisory Services');
+      expect(createCall?.input?.relationshipOwnerId).toBeNull();
+    });
+
+    it('emits exactly one success toast and one refresh error toast on post-create reconciliation failure without duplicating success toast', async () => {
+      const adapter = new DeterministicTestClientsAdapter();
+      adapter.setListResponse('founder', [createClientDto({ id: 'client-1', displayName: 'Existing Client One' })]);
+      adapter.setCreateResponse(
+        createClientDto({
+          id: 'client-2',
+          displayName: 'Reconciliation Test Client',
+          status: 'active',
+        }),
+      );
+
+      const onToast = vi.fn();
+      render(<ClientsWorkspace role="founder" port={adapter} onToast={onToast} />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Existing Client One')).toBeTruthy();
+      });
+
+      // Configure next list (reconciliation call) to fail with a network error
+      adapter.setListError(
+        'founder',
+        new ClientOperationError({
+          code: 'network',
+          message: 'Server connection dropped during refresh.',
+        }),
+      );
+
+      // Open dialog and submit
+      const addBtn = screen.getByRole('button', { name: 'Add client' });
+      fireEvent.click(addBtn);
+
+      const displayNameInput = screen.getByLabelText(/display name \*/i);
+      fireEvent.change(displayNameInput, { target: { value: 'Reconciliation Test Client' } });
+
+      const submitBtn = screen.getByTestId('create-client-submit-btn');
+      fireEvent.click(submitBtn);
+
+      // Dialog closes
+      await waitFor(() => {
+        expect(screen.queryByRole('dialog')).toBeNull();
+      });
+
+      // Non-destructive refresh warning banner appears
+      await waitFor(() => {
+        expect(screen.getByText('Failed to refresh client list. Showing last loaded data.')).toBeTruthy();
+      });
+
+      // Snapshot is preserved in directory table
+      expect(screen.getByText('Reconciliation Test Client')).toBeTruthy();
+      expect(screen.getByText('Existing Client One')).toBeTruthy();
+
+      // Toast parity: exactly 1 create success toast and 1 refresh error toast, no duplicated success toast
+      expect(onToast).toHaveBeenCalledTimes(2);
+      expect(onToast).toHaveBeenCalledWith('Client "Reconciliation Test Client" created successfully.');
+      expect(onToast).toHaveBeenCalledWith('Server connection dropped during refresh.');
+    });
+
+    it('restores focus to trigger button when dialog is explicitly cancelled', async () => {
+      const adapter = new DeterministicTestClientsAdapter();
+      adapter.setListResponse('founder', [createClientDto()]);
+
+      render(<ClientsWorkspace role="founder" port={adapter} />);
+
+      await waitFor(() => {
+        expect(screen.getByRole('button', { name: 'Add client' })).toBeTruthy();
+      });
+
+      const addBtn = screen.getByRole('button', { name: 'Add client' });
+      fireEvent.click(addBtn);
+      expect(screen.getByRole('dialog')).toBeTruthy();
+
+      // Cancel
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+      expect(screen.queryByRole('dialog')).toBeNull();
+      expect(document.activeElement).toBe(addBtn);
+    });
+
+    it('synchronously closes open dialog if role switches to unauthorized role', async () => {
+      const adapter = new DeterministicTestClientsAdapter();
+      adapter.setListResponse('founder', [createClientDto()]);
+      adapter.setListResponse('staff', [createClientDto()]);
+
+      const { rerender } = render(<ClientsWorkspace role="founder" port={adapter} />);
+
+      await waitFor(() => {
+        expect(screen.getByRole('button', { name: 'Add client' })).toBeTruthy();
+      });
+
+      // Open dialog under founder
+      fireEvent.click(screen.getByRole('button', { name: 'Add client' }));
+      expect(screen.getByRole('dialog')).toBeTruthy();
+
+      // Switch role to staff
+      rerender(<ClientsWorkspace role="staff" port={adapter} />);
+
+      // Dialog is synchronously closed and button is absent
+      expect(screen.queryByRole('dialog')).toBeNull();
+      expect(screen.queryByRole('button', { name: 'Add client' })).toBeNull();
+    });
+
+    it('suppresses pending create when role switches while create is in-flight', async () => {
+      const adapter = new DeterministicTestClientsAdapter();
+      adapter.setIgnoreAbortSignals(true);
+      adapter.setListResponse('founder', [createClientDto({ id: 'c1', displayName: 'Founder Client' })]);
+      adapter.setListResponse('staff', [createClientDto({ id: 'c2', displayName: 'Staff Client' })]);
+
+      let resolveDeferredCreate!: (c: ClientDto) => void;
+      const deferredCreate = new Promise<ClientDto>((resolve) => {
+        resolveDeferredCreate = resolve;
+      });
+      adapter.setDeferredCreate(deferredCreate, 'founder');
+
+      const onToast = vi.fn();
+      const { rerender } = render(<ClientsWorkspace role="founder" port={adapter} onToast={onToast} />);
+
+      await waitFor(() => {
+        expect(screen.getByRole('button', { name: 'Add client' })).toBeTruthy();
+      });
+
+      fireEvent.click(screen.getByRole('button', { name: 'Add client' }));
+      const displayNameInput = screen.getByLabelText(/display name \*/i);
+      fireEvent.change(displayNameInput, { target: { value: 'In-flight Client' } });
+
+      fireEvent.click(screen.getByTestId('create-client-submit-btn'));
+
+      // Role switches while create is pending
+      rerender(<ClientsWorkspace role="staff" port={adapter} onToast={onToast} />);
+
+      // Modal immediately gone
+      expect(screen.queryByRole('dialog')).toBeNull();
+
+      // Resolve stale create
+      resolveDeferredCreate(
+        createClientDto({ id: 'c99', displayName: 'In-flight Client' }),
+      );
+
+      await waitFor(() => {
+        expect(screen.getByText('Staff Client')).toBeTruthy();
+      });
+
+      // No toast emitted and staff list never contaminated
+      expect(onToast).not.toHaveBeenCalled();
+      expect(screen.queryByText('In-flight Client')).toBeNull();
+    });
+
+    it('preserves dialog and input when creation fails with sanitized server error', async () => {
+      const adapter = new DeterministicTestClientsAdapter();
+      adapter.setListResponse('founder', [createClientDto()]);
+      adapter.setCreateError(
+        new ClientOperationError({
+          code: 'conflict',
+          status: 409,
+          serverCode: 'client_code_conflict',
+          requestId: 'req_ws_err_555',
+          message: 'Client with PAN ABCDE1234F already registered in directory.',
+        })
+      );
+
+      render(<ClientsWorkspace role="founder" port={adapter} />);
+
+      await waitFor(() => {
+        expect(screen.getByRole('button', { name: 'Add client' })).toBeTruthy();
+      });
+
+      fireEvent.click(screen.getByRole('button', { name: 'Add client' }));
+
+      const displayNameInput = screen.getByLabelText(/display name \*/i);
+      const submitBtn = screen.getByTestId('create-client-submit-btn');
+
+      fireEvent.change(displayNameInput, { target: { value: 'Duplicate Client' } });
+      fireEvent.click(submitBtn);
+
+      await waitFor(() => {
+        expect(screen.getByTestId('create-client-server-error')).toBeTruthy();
+      });
+
+      // Sanitized user copy rendered
+      expect(
+        screen.getByText('A client record with conflicting identifiers already exists in the directory.')
+      ).toBeTruthy();
+
+      // Subdued support reference rendered
+      expect(screen.getByText('Support reference: req_ws_err_555')).toBeTruthy();
+
+      // Dialog still open, input preserved
+      expect(screen.getByRole('dialog')).toBeTruthy();
+      expect((displayNameInput as HTMLInputElement).value).toBe('Duplicate Client');
+    });
   });
 });

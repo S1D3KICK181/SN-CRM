@@ -1,10 +1,11 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   Building2,
   CheckCircle2,
   ChevronRight,
   Files,
+  Plus,
   RotateCcw,
   Search,
   UserCheck,
@@ -15,6 +16,7 @@ import { useClients } from '../../api/use-clients';
 import type { ClientsPort } from '../../api/clients-types';
 import { Card } from '../../ui/workspace-primitives';
 import { ClientProfileDrawer } from './client-profile-drawer';
+import { CreateClientDialog } from './create-client-dialog';
 import {
   computeClientDirectoryStats,
   matchesClientSearch,
@@ -45,17 +47,23 @@ export function ClientsWorkspace({
     selectClient,
     clearSelection,
     refresh,
+    createClient,
   } = useClients(role, { port, onToast });
+
+  const canCreateClient = role === 'founder' || role === 'manager';
+  const [isCreateOpen, setIsCreateOpen] = useState(false);
+  const addClientBtnRef = useRef<HTMLButtonElement>(null);
 
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | ClientStatus>('all');
 
-  // Synchronously reset local search and filter on role transition
+  // Synchronously reset local search, filter, and open dialog on role transition
   const [prevRole, setPrevRole] = useState(role);
   if (prevRole !== role) {
     setPrevRole(role);
     setSearch('');
     setStatusFilter('all');
+    setIsCreateOpen(false);
   }
 
   const stats = useMemo(() => computeClientDirectoryStats(items), [items]);
@@ -225,6 +233,18 @@ export function ClientsWorkspace({
             />
             <span>Refresh</span>
           </button>
+          {canCreateClient ? (
+            <button
+              ref={addClientBtnRef}
+              className="primary-button client-add-btn"
+              type="button"
+              onClick={() => setIsCreateOpen(true)}
+              aria-label="Add client"
+            >
+              <Plus size={14} aria-hidden="true" />
+              <span>Add client</span>
+            </button>
+          ) : null}
         </div>
       </div>
 
@@ -396,6 +416,26 @@ export function ClientsWorkspace({
           error={detailError}
           onClose={clearSelection}
           onRetry={() => void selectClient(selectedClientId)}
+        />
+      ) : null}
+
+      {/* Create Client Dialog */}
+      {isCreateOpen && canCreateClient ? (
+        <CreateClientDialog
+          isOpen={isCreateOpen}
+          onClose={() => {
+            setIsCreateOpen(false);
+            addClientBtnRef.current?.focus();
+          }}
+          onSubmit={async (input) => {
+            const created = await createClient(input);
+            if (created) {
+              onToast?.(`Client "${created.displayName}" created successfully.`);
+              setIsCreateOpen(false);
+              addClientBtnRef.current?.focus();
+            }
+            return created;
+          }}
         />
       ) : null}
     </div>
