@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/react';
 import { ClientsWorkspace } from './clients-workspace';
 import { DeterministicTestClientsAdapter } from '../../api/test-clients-adapter';
+import { DeterministicTestTeamDirectoryAdapter } from '../../api/test-team-directory-adapter';
 import { ClientOperationError } from '../../api/clients-types';
 import type { ClientDto } from '@sn/contracts';
 
@@ -552,6 +553,64 @@ describe('ClientsWorkspace', () => {
       expect(createCall?.role).toBe('founder');
       expect(createCall?.input?.displayName).toBe('Zenith Advisory Services');
       expect(createCall?.input?.relationshipOwnerId).toBeNull();
+    });
+
+    it('propagates teamPort to Add client dialog and submits chosen relationship owner', async () => {
+      const adapter = new DeterministicTestClientsAdapter();
+      adapter.setListResponse('founder', [createClientDto({ id: 'client-1', displayName: 'Existing Client One' })]);
+      adapter.setCreateResponse(
+        createClientDto({
+          id: 'client-2',
+          displayName: 'Horizon Advisory',
+          relationshipOwnerId: '00000000-0000-4000-a000-000000000002',
+          relationshipOwnerName: 'Ananya Rao',
+        })
+      );
+
+      const teamPort = new DeterministicTestTeamDirectoryAdapter();
+      teamPort.setReportingLinesResponse('founder', [
+        {
+          employee: {
+            id: '00000000-0000-4000-a000-000000000002',
+            name: 'Ananya Rao',
+            role: 'manager',
+            reportsToId: null,
+          },
+          manager: null,
+        },
+      ]);
+
+      const onToast = vi.fn();
+      render(<ClientsWorkspace role="founder" port={adapter} teamPort={teamPort} onToast={onToast} />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Existing Client One')).toBeTruthy();
+      });
+
+      const addBtn = screen.getByRole('button', { name: 'Add client' });
+      fireEvent.click(addBtn);
+
+      const select = screen.getByLabelText(/Client Relationship Owner/i) as HTMLSelectElement;
+      await waitFor(() => {
+        expect(select.querySelector('option[value="00000000-0000-4000-a000-000000000002"]')).toBeTruthy();
+      });
+
+      fireEvent.change(select, { target: { value: '00000000-0000-4000-a000-000000000002' } });
+
+      const displayNameInput = screen.getByLabelText(/display name \*/i);
+      fireEvent.change(displayNameInput, { target: { value: 'Horizon Advisory' } });
+
+      const submitBtn = screen.getByTestId('create-client-submit-btn');
+      fireEvent.click(submitBtn);
+
+      await waitFor(() => {
+        expect(screen.queryByRole('dialog')).toBeNull();
+      });
+
+      const createCall = adapter.calls.find((c) => c.action === 'create');
+      expect(createCall).toBeDefined();
+      expect(createCall?.input?.displayName).toBe('Horizon Advisory');
+      expect(createCall?.input?.relationshipOwnerId).toBe('00000000-0000-4000-a000-000000000002');
     });
 
     it('emits exactly one success toast and one refresh error toast on post-create reconciliation failure without duplicating success toast', async () => {

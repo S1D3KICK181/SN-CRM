@@ -1,15 +1,28 @@
-import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
 import { AlertCircle, X } from 'lucide-react';
-import type { ClientDto, CreateClientInput } from '@sn/contracts';
+import type { ClientDto, CreateClientInput, ReportingLineDto } from '@sn/contracts';
+import type { CompanyRole } from '@sn/domain';
+import { ROLE_LABELS } from '../../data';
 import {
   sanitizeCreateClientError,
   type ClientOperationError,
 } from '../../api/clients-types';
+import { useTeamDirectory } from '../../api/use-team-directory';
+import type {
+  TeamDirectoryOperationError,
+  TeamDirectoryPort,
+} from '../../api/team-directory-types';
 
 export interface CreateClientDialogProps {
   readonly isOpen: boolean;
   readonly onClose: () => void;
   readonly onSubmit: (input: CreateClientInput) => Promise<ClientDto | null>;
+  readonly role?: CompanyRole;
+  readonly teamPort?: TeamDirectoryPort;
+  readonly reportingLines?: ReportingLineDto[];
+  readonly teamLoading?: boolean;
+  readonly teamError?: TeamDirectoryOperationError | null;
+  readonly onRetryTeam?: () => void;
 }
 
 export type ClientField =
@@ -19,6 +32,7 @@ export type ClientField =
   | 'gstin'
   | 'email'
   | 'phone'
+  | 'relationshipOwnerId'
   | 'notes';
 
 export interface ClientDraft {
@@ -28,6 +42,7 @@ export interface ClientDraft {
   readonly gstin: string;
   readonly email: string;
   readonly phone: string;
+  readonly relationshipOwnerId: string;
   readonly notes: string;
 }
 
@@ -115,6 +130,12 @@ export function CreateClientDialog({
   isOpen,
   onClose,
   onSubmit,
+  role,
+  teamPort,
+  reportingLines,
+  teamLoading,
+  teamError,
+  onRetryTeam,
 }: CreateClientDialogProps) {
   const [draft, setDraft] = useState<ClientDraft>({
     displayName: '',
@@ -123,8 +144,30 @@ export function CreateClientDialog({
     gstin: '',
     email: '',
     phone: '',
+    relationshipOwnerId: '',
     notes: '',
   });
+
+  const teamDirectory = useTeamDirectory(role ?? 'founder', {
+    port: teamPort,
+    enabled: isOpen && !reportingLines,
+  });
+
+  const lines = reportingLines ?? teamDirectory.lines;
+  const isTeamLoading =
+    teamLoading ?? (reportingLines ? false : teamDirectory.loading && !teamDirectory.hasLiveSnapshot);
+  const teamErrorState = teamError ?? (reportingLines ? null : teamDirectory.error);
+  const retryTeam = onRetryTeam ?? (() => void teamDirectory.refresh());
+
+  const eligibleEmployees = useMemo(() => {
+    const map = new Map<string, { id: string; name: string; role: CompanyRole }>();
+    for (const line of lines) {
+      if (line.employee.role !== 'trainee') {
+        map.set(line.employee.id, line.employee);
+      }
+    }
+    return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name));
+  }, [lines]);
 
   const [errors, setErrors] = useState<ClientFormErrors>({});
   const [serverError, setServerError] = useState<string | null>(null);
@@ -141,6 +184,7 @@ export function CreateClientDialog({
   const gstinRef = useRef<HTMLInputElement>(null);
   const emailRef = useRef<HTMLInputElement>(null);
   const phoneRef = useRef<HTMLInputElement>(null);
+  const relationshipOwnerRef = useRef<HTMLSelectElement>(null);
   const notesRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
@@ -229,6 +273,7 @@ export function CreateClientDialog({
     else if (field === 'gstin') gstinRef.current?.focus();
     else if (field === 'email') emailRef.current?.focus();
     else if (field === 'phone') phoneRef.current?.focus();
+    else if (field === 'relationshipOwnerId') relationshipOwnerRef.current?.focus();
     else if (field === 'notes') notesRef.current?.focus();
   };
 
@@ -257,7 +302,7 @@ export function CreateClientDialog({
       gstin: draft.gstin.trim().toUpperCase() || null,
       email: draft.email.trim() || null,
       phone: draft.phone.trim() || null,
-      relationshipOwnerId: null,
+      relationshipOwnerId: draft.relationshipOwnerId ? draft.relationshipOwnerId : null,
       notes: draft.notes.trim() || null,
     };
 
@@ -503,11 +548,55 @@ export function CreateClientDialog({
             </label>
 
             <div className="field is-full">
-              <span className="field-label-text">Relationship owner</span>
-              <div className="dialog-info-banner" role="note">
-                <span>
-                  Relationship owner can be assigned from the team directory after the client is created.
-                </span>
+              <label className="field-label-text" htmlFor="create-client-relationship-owner">
+                Client Relationship Owner
+              </label>
+              <select
+                ref={relationshipOwnerRef}
+                id="create-client-relationship-owner"
+                name="relationshipOwnerId"
+                value={draft.relationshipOwnerId}
+                onChange={(e) => updateDraft('relationshipOwnerId', e.target.value)}
+                disabled={isSubmitting}
+                aria-describedby="create-client-relationship-owner-hint"
+              >
+                <option value="">(Unassigned)</option>
+                {eligibleEmployees.map((emp) => (
+                  <option key={emp.id} value={emp.id}>
+                    {emp.name} ({ROLE_LABELS[emp.role] ?? emp.role})
+                  </option>
+                ))}
+              </select>
+              <div id="create-client-relationship-owner-hint" className="field-status-hint">
+                {isTeamLoading ? (
+                  <span className="team-select-status" role="status" aria-live="polite">
+                    Loading practice team…
+                  </span>
+                ) : teamErrorState ? (
+                  <span className="team-select-status team-select-error" role="alert" aria-live="polite">
+                    Unable to load team list.{' '}
+                    <button
+                      type="button"
+                      className="inline-retry-btn"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        retryTeam();
+                      }}
+                      disabled={isSubmitting}
+                    >
+                      Retry
+                    </button>
+                  </span>
+                ) : eligibleEmployees.length === 0 ? (
+                  <span className="team-select-status" role="status" aria-live="polite">
+                    No eligible Employees available
+                  </span>
+                ) : (
+                  <span id="create-client-relationship-owner-help">
+                    Primary internal contact for the client entity. Assignment ownership remains separate.
+                  </span>
+                )}
               </div>
             </div>
 

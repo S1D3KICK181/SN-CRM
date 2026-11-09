@@ -461,4 +461,47 @@ describe('SessionManager State Machine & Lifecycle', () => {
     manager.start(); // Should do nothing after disposal
     expect(authSource.onAuthStateChange).toHaveBeenCalledTimes(2);
   });
+
+  it('TC-SM-17: getAccessToken() returns active token only when authUserId matches current session, and returns null when unauthenticated, disposed, or switched to different user', async () => {
+    const { manager, authSource } = createTestHarness({ accessToken: 'token-user-1', userId: user1 });
+
+    // 1. Before bootstrap/authentication: returns null
+    expect(await manager.getAccessToken()).toBeNull();
+
+    // 2. Start and authenticate user 1
+    manager.start();
+    await flushAsyncWork();
+    expect(manager.getState().status).toBe('authenticated');
+    expect(manager.getState().authUserId).toBe(user1);
+    expect(await manager.getAccessToken()).toBe('token-user-1');
+
+    // 3. Different-user token during account switch timing: returns null / fails closed
+    (authSource.getSession as any).mockResolvedValue({
+      accessToken: 'token-user-2-unverified',
+      userId: user2,
+    });
+    expect(await manager.getAccessToken()).toBeNull();
+
+    // 4. Blank/whitespace token: returns null
+    (authSource.getSession as any).mockResolvedValue({
+      accessToken: '   ',
+      userId: user1,
+    });
+    expect(await manager.getAccessToken()).toBeNull();
+
+    // 5. Restore valid user 1 token
+    (authSource.getSession as any).mockResolvedValue({
+      accessToken: 'token-user-1',
+      userId: user1,
+    });
+    expect(await manager.getAccessToken()).toBe('token-user-1');
+
+    // 6. Sign out: unauthenticated state returns null
+    await manager.signOut();
+    expect(await manager.getAccessToken()).toBeNull();
+
+    // 7. Disposed: returns null
+    manager.dispose();
+    expect(await manager.getAccessToken()).toBeNull();
+  });
 });

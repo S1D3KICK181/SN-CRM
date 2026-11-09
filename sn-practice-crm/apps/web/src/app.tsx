@@ -43,6 +43,7 @@ import { MODULE_DESCRIPTIONS, type PageKey } from './shell/navigation';
 import { Card, Field, MoreButton, Status } from './ui/workspace-primitives';
 import { ClientsWorkspace } from './workspaces/clients/clients-workspace';
 import { BillingWorkspace } from './workspaces/billing/billing-workspace';
+import { TeamWorkspace } from './workspaces/team/team-workspace';
 import { AssignmentDetailDrawer } from './workspaces/assignments/assignment-detail-drawer';
 import { AssignmentsTable } from './workspaces/assignments/assignments-table';
 import { AssignmentsWorkspace } from './workspaces/assignments/assignments-workspace';
@@ -1562,7 +1563,7 @@ function ModuleWorkspace({
         </div>
       ) : null}
       {page === 'Office Accounts' ? <AccountsWorkspace /> : null}
-      {page === 'Team' ? <TeamWorkspace role={role} /> : null}
+      {page === 'Team' ? <TeamWorkspace role={role} onToast={onToast} /> : null}
       {!['Clients', 'Assignments', 'Billing & Collections', 'My Tasks', 'Office Accounts', 'Team'].includes(page) ? (
         <ModuleFoundation page={page} />
       ) : null}
@@ -1603,10 +1604,6 @@ function CashLedger() {
 
 function AccountsWorkspace() {
   return <div className="dashboard-stack"><MetricStrip variant="manager" /><div className="dashboard-grid chart-and-snapshot"><CashLedger /><Card title="Recent ledger entries" description="Manager-operated · immutable audit trail" action={<IndianRupee aria-hidden="true" />}><div className="ledger-list">{[['Client receipt · Aster Foods', '+ ₹14,500', 'success'], ['Office stationery', '− ₹2,340', 'danger'], ['Travel reimbursement · Rohan', '− ₹1,280', 'danger'], ['Cash withdrawal from bank', '+ ₹10,000', 'success']].map(([label, value, tone]) => <div key={label}><span><strong>{label}</strong><small>29/10/2026 · Ananya Rao</small></span><b className={`tone-${tone}`}>{value}</b></div>)}</div></Card></div></div>;
-}
-
-function TeamWorkspace({ role }: { role: CompanyRole }) {
-  return <div className="dashboard-grid team-layout"><Card title="Reporting structure" description="Every non-Founder reports to Founder or Manager" action={<UsersRound aria-hidden="true" />}><div className="org-tree"><div className="org-founder"><span>SN</span><strong>S. Narayanan</strong><small>Founder</small></div><div className="org-branch"><div><span>AR</span><strong>Ananya Rao</strong><small>Manager · reports to Founder</small></div><div><span>PD</span><strong>Priya Desai</strong><small>Senior Staff · reports to Manager</small></div><div><span>RM</span><strong>Rohan Mehta</strong><small>Staff · reports to Manager</small></div><div><span>NK</span><strong>Neha Kapoor</strong><small>Trainee · reports to Manager</small></div></div></div></Card><Card title="Authority guardrails" description={`Visible while previewing as ${ROLE_LABELS[role]}`} action={<ShieldCheck aria-hidden="true" />}><div className="authority-list"><span><CheckCircle2 />Founder and Manager create Assignments</span><span><CheckCircle2 />Senior Staff delegate to Staff or Trainee</span><span><CheckCircle2 />Staff delegate only to Trainee</span><span><CheckCircle2 />Every role creates Personal Tasks for self</span><span><CheckCircle2 />Manager operates Office Accounts</span></div></Card></div>;
 }
 
 export function ComposerDialog({

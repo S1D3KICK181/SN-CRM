@@ -14,6 +14,7 @@ import type { CompanyRole } from '@sn/domain';
 import type { ClientStatus } from '@sn/contracts';
 import { useClients } from '../../api/use-clients';
 import type { ClientsPort } from '../../api/clients-types';
+import type { TeamDirectoryPort } from '../../api/team-directory-types';
 import { Card } from '../../ui/workspace-primitives';
 import { ClientProfileDrawer } from './client-profile-drawer';
 import { CreateClientDialog } from './create-client-dialog';
@@ -27,12 +28,14 @@ import {
 export interface ClientsWorkspaceProps {
   readonly role: CompanyRole;
   readonly port?: ClientsPort;
+  readonly teamPort?: TeamDirectoryPort;
   readonly onToast?: (message: string) => void;
 }
 
 export function ClientsWorkspace({
   role,
   port,
+  teamPort,
   onToast,
 }: ClientsWorkspaceProps) {
   const {
@@ -423,6 +426,8 @@ export function ClientsWorkspace({
       {isCreateOpen && canCreateClient ? (
         <CreateClientDialog
           isOpen={isCreateOpen}
+          role={role}
+          teamPort={teamPort}
           onClose={() => {
             setIsCreateOpen(false);
             addClientBtnRef.current?.focus();

@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { SessionClient } from '../api/auth/session-client';
 import { SessionManager } from '../api/auth/session-manager';
 import { getSupabaseAuthAdapter } from '../api/auth/supabase-client';
@@ -8,6 +8,7 @@ export interface SessionContextValue extends SessionState {
   retry: () => Promise<void>;
   signOut: (options?: { scope?: 'local' | 'global' }) => Promise<void>;
   signInWithPassword: (credentials: { email: string; password: string }) => Promise<AuthSession>;
+  getAccessToken?: () => Promise<string | null>;
 }
 
 const SessionContext = createContext<SessionContextValue | null>(null);
@@ -41,12 +42,21 @@ export function SessionProvider({ authSource, client, manager: injectedManager, 
     };
   }, [manager]);
 
+  const retry = useCallback(() => manager.retry(), [manager]);
+  const signOut = useCallback((options?: { scope?: 'local' | 'global' }) => manager.signOut(options), [manager]);
+  const signInWithPassword = useCallback(
+    (credentials: { email: string; password: string }) => manager.signInWithPassword(credentials),
+    [manager],
+  );
+  const getAccessToken = useCallback(() => manager.getAccessToken(), [manager]);
+
   const value = useMemo<SessionContextValue>(() => ({
     ...state,
-    retry: () => manager.retry(),
-    signOut: (options) => manager.signOut(options),
-    signInWithPassword: (credentials) => manager.signInWithPassword(credentials),
-  }), [state, manager]);
+    retry,
+    signOut,
+    signInWithPassword,
+    getAccessToken,
+  }), [state, retry, signOut, signInWithPassword, getAccessToken]);
 
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;
 }
@@ -57,4 +67,8 @@ export function useSessionActor(): SessionContextValue {
     throw new Error('useSessionActor must be used within a <SessionProvider>');
   }
   return ctx;
+}
+
+export function useOptionalSessionActor(): SessionContextValue | null {
+  return useContext(SessionContext);
 }

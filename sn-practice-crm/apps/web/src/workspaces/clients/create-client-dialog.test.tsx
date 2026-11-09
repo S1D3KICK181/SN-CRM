@@ -2,9 +2,11 @@
 import React from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import type { ClientDto, CreateClientInput } from '@sn/contracts';
+import type { ClientDto, CreateClientInput, ReportingLineDto } from '@sn/contracts';
 import { CreateClientDialog } from './create-client-dialog';
 import { ClientOperationError } from '../../api/clients-types';
+import { DeterministicTestTeamDirectoryAdapter } from '../../api/test-team-directory-adapter';
+import { TeamDirectoryOperationError } from '../../api/team-directory-types';
 
 afterEach(() => {
   cleanup();
@@ -474,5 +476,339 @@ describe('CreateClientDialog', () => {
     expect(() => {
       resolveSubmit(SAMPLE_CREATED_CLIENT);
     }).not.toThrow();
+  });
+
+  describe('relationship-owner selection from live team directory', () => {
+    const lineFounder: ReportingLineDto = {
+      employee: {
+        id: '00000000-0000-4000-a000-000000000001',
+        name: 'S. Narayanan',
+        role: 'founder',
+        reportsToId: null,
+      },
+      manager: null,
+    };
+    const lineManager: ReportingLineDto = {
+      employee: {
+        id: '00000000-0000-4000-a000-000000000002',
+        name: 'Ananya Rao',
+        role: 'manager',
+        reportsToId: '00000000-0000-4000-a000-000000000001',
+      },
+      manager: {
+        id: '00000000-0000-4000-a000-000000000001',
+        name: 'S. Narayanan',
+        role: 'founder',
+        reportsToId: null,
+      },
+    };
+    const lineSeniorStaff: ReportingLineDto = {
+      employee: {
+        id: '00000000-0000-4000-a000-000000000003',
+        name: 'Priya Desai',
+        role: 'senior_staff',
+        reportsToId: '00000000-0000-4000-a000-000000000002',
+      },
+      manager: {
+        id: '00000000-0000-4000-a000-000000000002',
+        name: 'Ananya Rao',
+        role: 'manager',
+        reportsToId: '00000000-0000-4000-a000-000000000001',
+      },
+    };
+    const lineStaff: ReportingLineDto = {
+      employee: {
+        id: '00000000-0000-4000-a000-000000000004',
+        name: 'Rohan Mehta',
+        role: 'staff',
+        reportsToId: '00000000-0000-4000-a000-000000000002',
+      },
+      manager: {
+        id: '00000000-0000-4000-a000-000000000002',
+        name: 'Ananya Rao',
+        role: 'manager',
+        reportsToId: '00000000-0000-4000-a000-000000000001',
+      },
+    };
+    const lineTrainee: ReportingLineDto = {
+      employee: {
+        id: '00000000-0000-4000-a000-000000000005',
+        name: 'Neha Kapoor',
+        role: 'trainee',
+        reportsToId: '00000000-0000-4000-a000-000000000002',
+      },
+      manager: {
+        id: '00000000-0000-4000-a000-000000000002',
+        name: 'Ananya Rao',
+        role: 'manager',
+        reportsToId: '00000000-0000-4000-a000-000000000001',
+      },
+    };
+
+    const standardTeamLines = [
+      lineFounder,
+      lineManager,
+      lineSeniorStaff,
+      lineStaff,
+      lineTrainee,
+    ];
+
+    it('defaults relationship owner select to Unassigned and sends relationshipOwnerId: null', async () => {
+      const onSubmit = vi.fn().mockResolvedValue(SAMPLE_CREATED_CLIENT);
+      const onClose = vi.fn();
+
+      render(
+        <CreateClientDialog
+          isOpen={true}
+          onClose={onClose}
+          onSubmit={onSubmit}
+          reportingLines={standardTeamLines}
+        />
+      );
+
+      const select = screen.getByLabelText(/Client Relationship Owner/i) as HTMLSelectElement;
+      expect(select.value).toBe('');
+
+      // Fill required display name and submit
+      const displayNameInput = screen.getByLabelText(/Display name \*/);
+      fireEvent.change(displayNameInput, { target: { value: 'Acme Advisory' } });
+
+      const submitBtn = screen.getByTestId('create-client-submit-btn');
+      fireEvent.click(submitBtn);
+
+      await waitFor(() => {
+        expect(onSubmit).toHaveBeenCalledTimes(1);
+      });
+
+      const payload = onSubmit.mock.calls[0]![0] as CreateClientInput;
+      expect(payload.displayName).toBe('Acme Advisory');
+      expect(payload.relationshipOwnerId).toBeNull();
+    });
+
+    it('populates eligible employees excluding trainees and formats label with name and role', () => {
+      const onSubmit = vi.fn();
+      const onClose = vi.fn();
+
+      render(
+        <CreateClientDialog
+          isOpen={true}
+          onClose={onClose}
+          onSubmit={onSubmit}
+          reportingLines={standardTeamLines}
+        />
+      );
+
+      const select = screen.getByLabelText(/Client Relationship Owner/i) as HTMLSelectElement;
+      const options = Array.from(select.querySelectorAll('option'));
+
+      // Check values and text
+      expect(options[0]?.value).toBe('');
+      expect(options[0]?.textContent).toBe('(Unassigned)');
+
+      const optionTexts = options.map((opt) => opt.textContent);
+      expect(optionTexts).toContain('Ananya Rao (Manager)');
+      expect(optionTexts).toContain('Priya Desai (Senior Staff)');
+      expect(optionTexts).toContain('Rohan Mehta (Staff)');
+      expect(optionTexts).toContain('S. Narayanan (Founder)');
+
+      // Trainee is strictly excluded from relationship owner choices
+      expect(optionTexts).not.toContain('Neha Kapoor (Trainee)');
+      expect(options.some((opt) => opt.value === lineTrainee.employee.id)).toBe(false);
+
+      // Email addresses must never be exposed in option text
+      options.forEach((opt) => {
+        expect(opt.textContent).not.toContain('@');
+      });
+    });
+
+    it('submits selected relationshipOwnerId UUID when chosen from dropdown', async () => {
+      const onSubmit = vi.fn().mockResolvedValue(SAMPLE_CREATED_CLIENT);
+      const onClose = vi.fn();
+
+      render(
+        <CreateClientDialog
+          isOpen={true}
+          onClose={onClose}
+          onSubmit={onSubmit}
+          reportingLines={standardTeamLines}
+        />
+      );
+
+      const select = screen.getByLabelText(/Client Relationship Owner/i) as HTMLSelectElement;
+      fireEvent.change(select, { target: { value: lineManager.employee.id } });
+      expect(select.value).toBe(lineManager.employee.id);
+
+      const displayNameInput = screen.getByLabelText(/Display name \*/);
+      fireEvent.change(displayNameInput, { target: { value: 'Delta Logistics' } });
+
+      const submitBtn = screen.getByTestId('create-client-submit-btn');
+      fireEvent.click(submitBtn);
+
+      await waitFor(() => {
+        expect(onSubmit).toHaveBeenCalledTimes(1);
+      });
+
+      const payload = onSubmit.mock.calls[0]![0] as CreateClientInput;
+      expect(payload.displayName).toBe('Delta Logistics');
+      expect(payload.relationshipOwnerId).toBe(lineManager.employee.id);
+    });
+
+    it('preserves selected relationshipOwnerId when creation fails on server', async () => {
+      const serverError = new ClientOperationError({
+        code: 'conflict',
+        status: 409,
+        message: 'A client with this identifier already exists.',
+      });
+      const onSubmit = vi.fn().mockRejectedValue(serverError);
+      const onClose = vi.fn();
+
+      render(
+        <CreateClientDialog
+          isOpen={true}
+          onClose={onClose}
+          onSubmit={onSubmit}
+          reportingLines={standardTeamLines}
+        />
+      );
+
+      const select = screen.getByLabelText(/Client Relationship Owner/i) as HTMLSelectElement;
+      fireEvent.change(select, { target: { value: lineSeniorStaff.employee.id } });
+
+      const displayNameInput = screen.getByLabelText(/Display name \*/);
+      fireEvent.change(displayNameInput, { target: { value: 'Conflict Client' } });
+
+      const submitBtn = screen.getByTestId('create-client-submit-btn');
+      fireEvent.click(submitBtn);
+
+      await waitFor(() => {
+        expect(screen.getByTestId('create-client-server-error')).toBeTruthy();
+      });
+
+      // Inputs preserved including relationshipOwnerId
+      expect((displayNameInput as HTMLInputElement).value).toBe('Conflict Client');
+      expect(select.value).toBe(lineSeniorStaff.employee.id);
+    });
+
+    it('handles team directory loading and error state without blocking submission and allows retry', async () => {
+      const onRetryTeam = vi.fn();
+      const onSubmit = vi.fn().mockResolvedValue(null);
+      const onClose = vi.fn();
+
+      const { rerender } = render(
+        <CreateClientDialog
+          isOpen={true}
+          onClose={onClose}
+          onSubmit={onSubmit}
+          reportingLines={[]}
+          teamLoading={true}
+        />
+      );
+
+      expect(screen.getByText('Loading practice team…')).toBeTruthy();
+
+      // Form submission can still occur with (Unassigned) while loading
+      const displayNameInput = screen.getByLabelText(/Display name \*/);
+      fireEvent.change(displayNameInput, { target: { value: 'Epsilon Tech' } });
+      const submitBtn = screen.getByTestId('create-client-submit-btn');
+      fireEvent.click(submitBtn);
+
+      await waitFor(() => {
+        expect(onSubmit).toHaveBeenCalledTimes(1);
+      });
+
+      // Rerender with error state
+      rerender(
+        <CreateClientDialog
+          isOpen={true}
+          onClose={onClose}
+          onSubmit={onSubmit}
+          reportingLines={[]}
+          teamLoading={false}
+          teamError={
+            new TeamDirectoryOperationError({
+              code: 'network',
+              message: 'Failed to load team list',
+            })
+          }
+          onRetryTeam={onRetryTeam}
+        />
+      );
+
+      expect(screen.getByText(/Unable to load team list\./)).toBeTruthy();
+      const retryBtn = screen.getByRole('button', { name: 'Retry' });
+      expect(retryBtn).toBeTruthy();
+
+      fireEvent.click(retryBtn);
+      expect(onRetryTeam).toHaveBeenCalledTimes(1);
+    });
+
+    it('fetches reporting lines through teamPort when reportingLines prop is not provided', async () => {
+      const port = new DeterministicTestTeamDirectoryAdapter();
+      port.setReportingLinesResponse('founder', [lineFounder, lineStaff]);
+
+      const onSubmit = vi.fn();
+      const onClose = vi.fn();
+
+      render(
+        <CreateClientDialog
+          isOpen={true}
+          role="founder"
+          teamPort={port}
+          onClose={onClose}
+          onSubmit={onSubmit}
+        />
+      );
+
+      const select = screen.getByLabelText(/Client Relationship Owner/i) as HTMLSelectElement;
+
+      await waitFor(() => {
+        const options = Array.from(select.querySelectorAll('option'));
+        expect(options.some((opt) => opt.value === lineStaff.employee.id)).toBe(true);
+      });
+
+      const optionTexts = Array.from(select.querySelectorAll('option')).map((o) => o.textContent);
+      expect(optionTexts).toContain('Rohan Mehta (Staff)');
+      expect(optionTexts).toContain('S. Narayanan (Founder)');
+    });
+
+    it('displays exact canonical label, helper copy separating assignment ownership, and empty state with role=status', () => {
+      const onSubmit = vi.fn();
+      const onClose = vi.fn();
+
+      const { rerender } = render(
+        <CreateClientDialog
+          isOpen={true}
+          onClose={onClose}
+          onSubmit={onSubmit}
+          reportingLines={standardTeamLines}
+        />
+      );
+
+      // Exact label
+      expect(screen.getByText('Client Relationship Owner')).toBeTruthy();
+
+      // Canonical helper copy
+      const helper = screen.getByText(
+        'Primary internal contact for the client entity. Assignment ownership remains separate.'
+      );
+      expect(helper).toBeTruthy();
+      // Must not contain forbidden "staff member"
+      expect(helper.textContent).not.toContain('staff member');
+
+      // Empty state when no eligible employees (only trainee)
+      rerender(
+        <CreateClientDialog
+          isOpen={true}
+          onClose={onClose}
+          onSubmit={onSubmit}
+          reportingLines={[lineTrainee]}
+        />
+      );
+
+      const emptyStatus = screen.getByText('No eligible Employees available');
+      expect(emptyStatus).toBeTruthy();
+      expect(emptyStatus.getAttribute('role')).toBe('status');
+      expect(emptyStatus.getAttribute('aria-live')).toBe('polite');
+    });
   });
 });

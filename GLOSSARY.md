@@ -24,6 +24,14 @@ _Avoid_: Executive, associate
 A supervised employee who completes assigned tasks and personal tasks but cannot delegate work or own practice-level authority.
 _Avoid_: Intern, junior
 
+**Employee**:
+A person working in the practice with exactly one company role and a Reporting Line where required.
+_Avoid_: Team member, user, staff member
+
+**Client Relationship Owner**:
+The active non-Trainee Employee designated as the practice's primary internal contact for a Client; it does not grant Assignment authority or replace an Assignment Owner.
+_Avoid_: Client owner, account manager, relationship manager
+
 **Reporting Line**:
 The single person responsible for an employee's operational supervision. Managers report to the Founder; Senior Staff, Staff, and Trainees report to either the Founder or a Manager.
 _Avoid_: Hierarchy level, parent user

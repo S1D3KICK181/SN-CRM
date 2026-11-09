@@ -36,6 +36,28 @@ export class SessionManager {
     return this.state;
   }
 
+  public async getAccessToken(): Promise<string | null> {
+    if (this.disposed) return null;
+    const currentAuthUserId = this.state.authUserId;
+    if (!currentAuthUserId || (this.state.status !== 'authenticated' && this.state.status !== 'refreshing')) {
+      return null;
+    }
+
+    try {
+      const session = await this.authSource.getSession();
+      if (!session || typeof session.accessToken !== 'string') {
+        return null;
+      }
+      if (session.userId !== currentAuthUserId) {
+        return null;
+      }
+      const token = session.accessToken.trim();
+      return token.length > 0 ? token : null;
+    } catch {
+      return null;
+    }
+  }
+
   public start(): void {
     if (this.disposed || this.started) return;
     this.started = true;

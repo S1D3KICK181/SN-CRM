@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import React from 'react';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SessionProvider, useSessionActor } from './session-context';
 import type { SessionManager } from '../api/auth/session-manager';
@@ -41,7 +41,14 @@ function createMockManager(initialState: Partial<SessionState> = {}): SessionMan
       accessToken: 'token-123',
       userId: '00000000-0000-4000-a000-000000000001',
     }),
-  } as unknown as SessionManager;
+    getAccessToken: vi.fn().mockResolvedValue('token-123'),
+    emitState: (nextState: Partial<SessionState>) => {
+      currentState = { ...currentState, ...nextState };
+      for (const listener of listeners) {
+        listener(currentState);
+      }
+    },
+  } as unknown as SessionManager & { emitState: (nextState: Partial<SessionState>) => void };
 }
 
 function TestConsumer() {
@@ -215,5 +222,53 @@ describe('SessionContext & SessionProvider', () => {
     const signOutBtn = screen.getByRole('button', { name: /sign out/i });
     fireEvent.click(signOutBtn);
     expect(manager.signOut).toHaveBeenCalled();
+  });
+
+  it('TC-CTX-07: getAccessToken callback identity remains stable across ordinary session state updates', () => {
+    const manager = createMockManager({
+      status: 'authenticated',
+      actor: {
+        id: '00000000-0000-4000-a000-000000000001',
+        name: 'Suresh Narayanan',
+        role: 'founder',
+        reportsToId: null,
+      },
+      authUserId: '00000000-0000-4000-a000-000000000001',
+    }) as any;
+
+    const capturedCallbacks: Array<(() => Promise<string | null>) | undefined> = [];
+
+    function StabilityConsumer() {
+      const { getAccessToken } = useSessionActor();
+      capturedCallbacks.push(getAccessToken);
+      return null;
+    }
+
+    render(
+      <SessionProvider manager={manager}>
+        <StabilityConsumer />
+      </SessionProvider>,
+    );
+
+    expect(capturedCallbacks).toHaveLength(1);
+    const initialCallback = capturedCallbacks[0];
+    expect(initialCallback).toBeDefined();
+
+    // Trigger ordinary state updates (e.g. background refresh)
+    act(() => {
+      manager.emitState({ isRefreshing: true });
+    });
+    act(() => {
+      manager.emitState({ refreshWarning: 'Transient refresh delay' });
+    });
+    act(() => {
+      manager.emitState({ isRefreshing: false, refreshWarning: null });
+    });
+
+    expect(capturedCallbacks.length).toBeGreaterThan(1);
+    for (const cb of capturedCallbacks) {
+      // Must maintain strict referential identity across renders
+      expect(cb).toBe(initialCallback);
+    }
   });
 });
