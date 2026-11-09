@@ -85,6 +85,7 @@ describe('HttpAssignmentsAdapter', () => {
     expect(rows).toHaveLength(1);
     const row = rows[0]!;
     expect(row.id).toBe('30000000-0000-4000-a000-000000000001');
+    expect(row.code).toBe('AS-001001');
     expect(row.title).toBe('GSTR-1 & 3B Compliance · Oct 2026');
     expect(row.client).toBe('Aster Foods Private Limited');
     expect(row.clientId).toBe('10000000-0000-4000-a000-000000000001');

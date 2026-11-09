@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import React from 'react';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, renderHook } from '@testing-library/react';
 import type { WorkItemDto } from '@sn/contracts';
 import type { CompanyRole } from '@sn/domain';
@@ -389,6 +389,165 @@ describe('useWorkItems React hook integration', () => {
         resolveStaff([]);
         await Promise.resolve();
       });
+    });
+
+    it('handleTogglePersonal rejects reopening an already completed task with user-facing notification', async () => {
+      const completedPersonalItem: WorkItemDto = {
+        id: 'wrk_p_done',
+        code: 'WI-001099',
+        kind: 'personal',
+        title: 'Already completed task',
+        notes: null,
+        assignmentId: null,
+        relatedClientId: null,
+        relatedPartyName: 'Personal',
+        assigneeId: '00000000-0000-4000-a000-000000000004',
+        createdById: '00000000-0000-4000-a000-000000000004',
+        status: 'completed',
+        dueAt: '2026-11-04T12:30:00.000Z',
+        reminderAt: null,
+        createdAt: '2026-11-01T04:00:00.000Z',
+        updatedAt: '2026-11-01T04:00:00.000Z',
+      };
+      const adapter = new DeterministicTestWorkItemsAdapter();
+      adapter.setListResponse('staff', [completedPersonalItem]);
+
+      const toasts: string[] = [];
+      const { result } = renderHook(() =>
+        useWorkItems('staff', [], {
+          port: adapter,
+          onToast: (msg) => toasts.push(msg),
+        }),
+      );
+
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      let toggleResult: boolean = true;
+      await act(async () => {
+        toggleResult = await result.current.handleTogglePersonal('wrk_p_done');
+      });
+
+      expect(toggleResult).toBe(false);
+      expect(toasts.some((t) => t.includes('Completed tasks are permanent audit records'))).toBe(true);
+      expect(adapter.calls.filter((c) => c.action === 'transition')).toHaveLength(0);
+    });
+
+    it('handleCreatePersonal supports exact dueDate and dueTime and rejects reminder after due time', async () => {
+      const adapter = new DeterministicTestWorkItemsAdapter();
+      const toasts: string[] = [];
+      const { result } = renderHook(() =>
+        useWorkItems('staff', [], {
+          port: adapter,
+          onToast: (msg) => toasts.push(msg),
+        }),
+      );
+
+      // Rejects when reminder is after due time
+      let failedCreation: boolean = true;
+      await act(async () => {
+        failedCreation = await result.current.handleCreatePersonal({
+          title: 'Invalid reminder task',
+          dueDate: '10/11/2026',
+          dueTime: '14:00',
+          reminderAt: '10/11/2026 15:00', // After 14:00
+        });
+      });
+      expect(failedCreation).toBe(false);
+      expect(toasts.some((t) => t.includes('reminder must occur on or before'))).toBe(true);
+
+      // Successfully creates when valid with genuine UUID
+      let successCreation: boolean = false;
+      const validClientUuid = '10000000-0000-4000-a000-000000000001';
+      await act(async () => {
+        successCreation = await result.current.handleCreatePersonal({
+          title: 'Valid client call reminder',
+          dueDate: '10/11/2026',
+          dueTime: '14:00',
+          relatedClientId: validClientUuid,
+          relatedPartyName: 'Aster Foods',
+        });
+      });
+      expect(successCreation).toBe(true);
+
+      const createCalls = adapter.calls.filter((c) => c.action === 'create');
+      expect(createCalls).toHaveLength(1);
+      expect(createCalls[0]?.input).toMatchObject({
+        kind: 'personal',
+        title: 'Valid client call reminder',
+        relatedClientId: validClientUuid,
+        relatedPartyName: 'Aster Foods',
+      });
+
+      // Proof: Non-UUID fixture codes like 'CLI-0001' are omitted from relatedClientId to avoid 422 API errors
+      await act(async () => {
+        await result.current.handleCreatePersonal({
+          title: 'Legacy code reminder',
+          dueDate: '10/11/2026',
+          dueTime: '15:00',
+          relatedClientId: 'CLI-0001',
+          relatedPartyName: 'Kedia Holdings',
+        });
+      });
+
+      const secondCreateCall = adapter.calls.filter((c) => c.action === 'create')[1];
+      expect(secondCreateCall).toBeDefined();
+      expect(secondCreateCall?.input).toMatchObject({
+        kind: 'personal',
+        title: 'Legacy code reminder',
+        relatedPartyName: 'Kedia Holdings',
+      });
+      if (secondCreateCall?.input && secondCreateCall.input.kind === 'personal') {
+        expect(secondCreateCall.input.relatedClientId).toBeUndefined();
+      } else {
+        expect.fail('Expected second create call to be kind: personal');
+      }
+    });
+
+    it('guarantees getAccessToken function identity churn does not cause coordinator recreation or refetch loops', async () => {
+      let fetchCount = 0;
+      const fetchFn = vi.fn().mockImplementation(async () => {
+        fetchCount++;
+        return new Response(
+          JSON.stringify({ data: [], requestId: `req_${fetchCount}` }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      });
+
+      // Render hook with an inline getter identity
+      const { rerender } = renderHook(
+        ({ getter }: { getter: () => Promise<string | null> }) =>
+          useWorkItems('staff', [], {
+            getAccessToken: getter,
+            baseUrl: 'http://localhost:3000',
+            fetchFn: fetchFn as any,
+          }),
+        {
+          initialProps: {
+            getter: () => Promise.resolve('initial_token_1'),
+          },
+        },
+      );
+
+      // Allow initial fetch to settle
+      await act(async () => {
+        await Promise.resolve();
+      });
+      const initialFetchCount = fetchCount;
+      expect(initialFetchCount).toBe(1);
+
+      // Re-render multiple times with completely new inline function identities
+      rerender({ getter: () => Promise.resolve('new_token_2') });
+      rerender({ getter: () => Promise.resolve('new_token_3') });
+      rerender({ getter: () => Promise.resolve('new_token_4') });
+
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      // Proves no coordinator recreation loop occurred due to function identity churn
+      expect(fetchCount).toBe(initialFetchCount);
     });
   });
 });

@@ -7,7 +7,10 @@ import { createDemoSeed, DEMO_ACTOR_IDS } from '../../../api/src/demo-seed';
 import { createApiServer } from '../../../api/src/http';
 import { InMemoryCrmRepository } from '../../../api/src/in-memory-repository';
 import { HttpWorkItemsAdapter } from './http-work-items-adapter';
-import { WorkItemOperationError } from './work-items-types';
+import {
+  SAFE_WORK_ITEMS_ERROR_MESSAGES,
+  WorkItemOperationError,
+} from './work-items-types';
 
 describe('Vite Proxy & Real Work Items API Smoke (Authentic Authority)', () => {
   let repository: InMemoryCrmRepository;
@@ -263,7 +266,8 @@ describe('Vite Proxy & Real Work Items API Smoke (Authentic Authority)', () => {
       const opErr = err as WorkItemOperationError;
       expect(opErr.code).toBe('conflict');
       expect(opErr.status).toBe(409);
-      expect(opErr.message).toMatch(/must be submitted before it is completed/i);
+      expect(opErr.message).toBe(SAFE_WORK_ITEMS_ERROR_MESSAGES.conflict);
+      expect(opErr.serverCode).toBe('invalid_state_transition');
       return true;
     });
   });
@@ -565,7 +569,7 @@ describe('Vite Proxy & Real Work Items API Smoke (Authentic Authority)', () => {
         const opErr = err as WorkItemOperationError;
         expect(opErr.code).toBe('conflict');
         expect(opErr.status).toBe(409);
-        expect(opErr.message).toMatch(/must be submitted before it is completed/i);
+        expect(opErr.message).toBe('This task state was modified by another operation. Please refresh.');
         return true;
       });
     });

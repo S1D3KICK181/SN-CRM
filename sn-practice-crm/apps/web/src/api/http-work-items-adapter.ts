@@ -1,31 +1,46 @@
 import type {
   ApiEnvelope,
-  ApiErrorEnvelope,
   CreateWorkItemInput,
   WorkItemDto,
   WorkItemTransition,
 } from '@sn/contracts';
 import type { CompanyRole } from '@sn/domain';
+import type { AuthSessionSource } from './auth/types';
 import { ROLE_TO_DEMO_ACTOR_ID } from './dev-auth';
+import { sanitizeRequestId, sanitizeServerCode } from './metadata-safety';
 import type { PortExecutionOptions } from './types';
 import {
+  GENERIC_SAFE_WORK_ITEM_ERROR,
+  SAFE_WORK_ITEMS_ERROR_MESSAGES,
   WorkItemOperationError,
+  sanitizeWorkItemError,
   type WorkItemErrorCode,
   type WorkItemsPort,
 } from './work-items-types';
 
 export interface HttpWorkItemsAdapterOptions {
-  fetchFn?: typeof fetch;
-  baseUrl?: string;
+  readonly fetchFn?: typeof fetch;
+  readonly baseUrl?: string;
+  readonly getAccessToken?: () => Promise<string | null> | string | null;
+  readonly authSource?: AuthSessionSource;
 }
 
 export class HttpWorkItemsAdapter implements WorkItemsPort {
   private readonly fetchFn: typeof fetch;
   private readonly baseUrl: string;
+  private readonly getAccessToken?: () => Promise<string | null> | string | null;
+  private readonly authSource?: AuthSessionSource;
 
   constructor(options: HttpWorkItemsAdapterOptions = {}) {
     this.fetchFn = options.fetchFn ?? ((input, init) => globalThis.fetch(input, init));
     this.baseUrl = options.baseUrl?.replace(/\/+$/, '') ?? '';
+    this.getAccessToken = options.getAccessToken;
+    this.authSource = options.authSource;
+
+    // Safe method binding for usage as callback references
+    this.list = this.list.bind(this);
+    this.create = this.create.bind(this);
+    this.transition = this.transition.bind(this);
   }
 
   private buildUrl(path: string): string {
@@ -56,16 +71,75 @@ export class HttpWorkItemsAdapter implements WorkItemsPort {
     init: RequestInit,
     options?: PortExecutionOptions,
   ): Promise<{ data: T; requestId?: string }> {
-    const actorId = ROLE_TO_DEMO_ACTOR_ID[role];
-    if (!actorId) {
+    if (options?.signal?.aborted) {
       throw new WorkItemOperationError({
-        code: 'unauthorized',
-        message: `Unknown company role: ${role}`,
+        code: 'aborted',
+        message: 'The work item operation was aborted.',
+        requestId: sanitizeRequestId(options?.requestId),
+      });
+    }
+
+    const hasTokenSource = Boolean(this.getAccessToken || this.authSource);
+    let token: string | null = null;
+
+    if (this.getAccessToken) {
+      try {
+        const resolved = await this.getAccessToken();
+        if (typeof resolved === 'string' && resolved.trim().length > 0) {
+          token = resolved.trim();
+        }
+      } catch {
+        token = null;
+      }
+    } else if (this.authSource) {
+      try {
+        const session = await this.authSource.getSession();
+        if (session && typeof session.accessToken === 'string' && session.accessToken.trim().length > 0) {
+          token = session.accessToken.trim();
+        }
+      } catch {
+        token = null;
+      }
+    }
+
+    // Check abort again after awaiting token resolution so role/session cancellation cannot still dispatch
+    if (options?.signal?.aborted) {
+      throw new WorkItemOperationError({
+        code: 'aborted',
+        message: 'The work item operation was aborted.',
+        requestId: sanitizeRequestId(options?.requestId),
       });
     }
 
     const headers = new Headers(init.headers);
-    headers.set('x-demo-user-id', actorId);
+
+    if (hasTokenSource) {
+      // Production authenticated transport path: must have a valid Bearer token.
+      // If a token source is configured but resolves null, blank, or threw, fail locally closed.
+      // Never fall back to x-demo-user-id and never dispatch fetch without a valid Bearer token.
+      if (!token) {
+        throw sanitizeWorkItemError(
+          new WorkItemOperationError({
+            code: 'unauthorized',
+            message: 'Session expired or unauthenticated. Please sign in again to manage tasks.',
+            requestId: sanitizeRequestId(options?.requestId),
+          }),
+        );
+      }
+      headers.set('authorization', `Bearer ${token}`);
+    } else {
+      // Local deterministic / demo preview path: x-demo-user-id based on explicit role.
+      const actorId = ROLE_TO_DEMO_ACTOR_ID[role];
+      if (!actorId) {
+        throw new WorkItemOperationError({
+          code: 'unauthorized',
+          message: `Unknown company role: ${role}`,
+          requestId: sanitizeRequestId(options?.requestId),
+        });
+      }
+      headers.set('x-demo-user-id', actorId);
+    }
+
     if (options?.requestId) {
       headers.set('x-request-id', options.requestId);
     }
@@ -78,6 +152,9 @@ export class HttpWorkItemsAdapter implements WorkItemsPort {
         signal: options?.signal,
       });
     } catch (err: unknown) {
+      if (err instanceof WorkItemOperationError) {
+        throw err;
+      }
       if (
         (err instanceof Error && err.name === 'AbortError') ||
         (options?.signal && options.signal.aborted)
@@ -85,60 +162,80 @@ export class HttpWorkItemsAdapter implements WorkItemsPort {
         throw new WorkItemOperationError({
           code: 'aborted',
           message: 'The work item operation was aborted.',
+          requestId: sanitizeRequestId(options?.requestId),
           cause: err,
         });
       }
       throw new WorkItemOperationError({
         code: 'network',
-        message: err instanceof Error ? err.message : 'Network error while contacting CRM API.',
+        message: SAFE_WORK_ITEMS_ERROR_MESSAGES.network,
+        requestId: sanitizeRequestId(options?.requestId),
         cause: err,
       });
     }
 
-    const requestId = response.headers.get('x-request-id') ?? undefined;
+    const headerRequestId =
+      sanitizeRequestId(response.headers.get('x-request-id') ?? options?.requestId);
 
     if (!response.ok) {
-      let errorMessage = `HTTP ${response.status}: ${response.statusText}`;
+      const errorCode = this.mapStatusToErrorCode(response.status);
       let serverCode: string | undefined;
-      let bodyRequestId = requestId;
+      let bodyRequestId: string | undefined;
 
       try {
-        const errorJson = (await response.json()) as Partial<ApiErrorEnvelope>;
-        if (errorJson.error) {
-          errorMessage = errorJson.error.message || errorMessage;
-          serverCode = errorJson.error.code;
-        }
-        if (errorJson.requestId) {
-          bodyRequestId = errorJson.requestId;
+        const body = (await response.json()) as Record<string, unknown>;
+        if (body && typeof body === 'object') {
+          if (typeof body['error'] === 'object' && body['error'] !== null) {
+            const errObj = body['error'] as Record<string, unknown>;
+            if (typeof errObj['code'] === 'string') serverCode = errObj['code'];
+          }
+          if (typeof body['requestId'] === 'string' && body['requestId'].trim().length > 0) {
+            bodyRequestId = body['requestId'].trim();
+          }
         }
       } catch {
-        // Failed to parse error JSON (e.g. 500 HTML)
+        // Non-JSON response, ignore body
       }
 
+      const effectiveRequestId = sanitizeRequestId(bodyRequestId) ?? headerRequestId;
+      const safeMessage = SAFE_WORK_ITEMS_ERROR_MESSAGES[errorCode] ?? GENERIC_SAFE_WORK_ITEM_ERROR;
+
       throw new WorkItemOperationError({
-        code: this.mapStatusToErrorCode(response.status),
-        message: errorMessage,
-        requestId: bodyRequestId,
+        code: errorCode,
         status: response.status,
-        serverCode,
+        message: safeMessage,
+        serverCode: sanitizeServerCode(serverCode),
+        requestId: effectiveRequestId,
       });
     }
 
+    let payload: unknown;
     try {
-      const envelope = (await response.json()) as ApiEnvelope<T>;
-      return {
-        data: envelope.data,
-        requestId: envelope.requestId ?? requestId,
-      };
+      payload = await response.json();
     } catch (err) {
       throw new WorkItemOperationError({
         code: 'unexpected',
-        message: 'The server response was not valid JSON.',
-        requestId,
+        message: SAFE_WORK_ITEMS_ERROR_MESSAGES.unexpected,
+        requestId: headerRequestId,
         status: response.status,
         cause: err,
       });
     }
+
+    if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) {
+      throw new WorkItemOperationError({
+        code: 'unexpected',
+        status: response.status,
+        message: SAFE_WORK_ITEMS_ERROR_MESSAGES.unexpected,
+        requestId: headerRequestId,
+      });
+    }
+
+    const envelope = payload as ApiEnvelope<T>;
+    return {
+      data: envelope.data,
+      requestId: sanitizeRequestId(envelope.requestId ?? headerRequestId),
+    };
   }
 
   async list(role: CompanyRole, options?: PortExecutionOptions): Promise<WorkItemDto[]> {

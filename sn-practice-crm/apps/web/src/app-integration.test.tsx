@@ -115,6 +115,13 @@ describe('App & AppRoot Integration', () => {
     reportsToId: '00000000-0000-4000-a000-000000000001',
   };
 
+  const staffActor: SessionActor = {
+    id: '00000000-0000-4000-a000-000000000004',
+    name: 'Rohan Mehta',
+    role: 'staff',
+    reportsToId: '00000000-0000-4000-a000-000000000003',
+  };
+
   it('TC-INT-01: Unauthenticated user is gated at <SignInGate>', async () => {
     const { manager } = createMockSessionManager({ status: 'unauthenticated' });
     render(<AppRoot manager={manager} />);
@@ -242,5 +249,34 @@ describe('App & AppRoot Integration', () => {
     expect(screen.getByText('SN Practice CRM')).toBeTruthy();
     expect(screen.getByText(/verified:/i)).toBeTruthy();
     expect(manager.start).toHaveBeenCalled();
+  });
+
+  it('TC-INT-06: Non-leadership staff user clicking topbar Quick Add navigates to My Tasks and opens the NEW CreateTaskDialog without rendering legacy ComposerDialog', async () => {
+    const { manager } = createMockSessionManager({
+      status: 'authenticated',
+      actor: staffActor,
+      authUserId: staffActor.id,
+    });
+
+    render(<AppRoot manager={manager} />);
+
+    // Initially on Dashboard
+    expect(screen.getByText(/workspace \/ dashboard/i)).toBeTruthy();
+
+    // Click Topbar Quick Add button (aria-label="Create new item")
+    const quickAddBtn = screen.getByRole('button', { name: /create new item/i });
+    fireEvent.click(quickAddBtn);
+
+    // Navigates to My Tasks and opens the NEW CreateTaskDialog
+    await waitFor(() => {
+      expect(screen.getByText(/workspace \/ my tasks/i)).toBeTruthy();
+      expect(screen.getByRole('heading', { name: /new personal task/i })).toBeTruthy();
+    });
+
+    expect(screen.getByText(/plan a private reminder for yourself without creating practice-level work/i)).toBeTruthy();
+
+    // Ensure the legacy ComposerDialog is NOT rendered
+    expect(screen.queryByText(/choose what you want to create/i)).toBeNull();
+    expect(screen.queryByRole('heading', { name: /create assignment/i })).toBeNull();
   });
 });

@@ -56,7 +56,7 @@ function ownsOrReviews(actor: Actor, ownerId: string, reviewerIds: readonly stri
   return actor.id === ownerId || reviewerIds.includes(actor.id);
 }
 
-function mayDelegateTo(actorRole: CompanyRole, targetRole: CompanyRole): boolean {
+export function mayDelegateTo(actorRole: CompanyRole, targetRole: CompanyRole): boolean {
   switch (actorRole) {
     case 'founder':
       return targetRole !== 'founder';

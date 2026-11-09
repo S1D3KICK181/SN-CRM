@@ -6,6 +6,7 @@ import type {
 import type { CompanyRole } from '@sn/domain';
 import {
   WorkItemOperationError,
+  sanitizeWorkItemError,
   type WorkItemsCoordinatorState,
   type WorkItemsPort,
 } from './work-items-types';
@@ -161,14 +162,7 @@ export class WorkItemsCoordinator {
       }
 
       this.loading = false;
-      const opError =
-        err instanceof WorkItemOperationError
-          ? err
-          : new WorkItemOperationError({
-              code: 'unexpected',
-              message: err instanceof Error ? err.message : 'Failed to fetch work items.',
-              cause: err,
-            });
+      const opError = sanitizeWorkItemError(err);
 
       if (opError.code === 'aborted') {
         this.notify();
@@ -251,14 +245,7 @@ export class WorkItemsCoordinator {
         };
       }
 
-      const opError =
-        err instanceof WorkItemOperationError
-          ? err
-          : new WorkItemOperationError({
-              code: 'unexpected',
-              message: err instanceof Error ? err.message : 'Failed to create work item.',
-              cause: err,
-            });
+      const opError = sanitizeWorkItemError(err);
 
       if (opError.code !== 'aborted') {
         this.onError?.(opError);
@@ -351,14 +338,7 @@ export class WorkItemsCoordinator {
         };
       }
 
-      const opError =
-        err instanceof WorkItemOperationError
-          ? err
-          : new WorkItemOperationError({
-              code: 'unexpected',
-              message: err instanceof Error ? err.message : 'Failed to transition work item.',
-              cause: err,
-            });
+      const opError = sanitizeWorkItemError(err);
 
       if (opError.code !== 'aborted') {
         this.onError?.(opError);

@@ -306,7 +306,7 @@ describe('Work Items UI components', () => {
       );
 
       expect(
-        screen.getByText(/Sub-tasks and office operations delegated to team/i),
+        screen.getByText(/Sub-tasks and office operations delegated to employees/i),
       ).toBeDefined();
     });
 

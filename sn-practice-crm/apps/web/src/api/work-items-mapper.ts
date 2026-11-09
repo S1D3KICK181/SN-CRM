@@ -1,20 +1,23 @@
 import type {
   CreateWorkItemInput,
+  ReportingLineDto,
   WorkItemDto,
   WorkItemKind,
   WorkItemStatus,
 } from '@sn/contracts';
-import type { CompanyRole } from '@sn/domain';
-import type {
-  AssignmentRow,
-  DelegatedTaskRecord,
-  DelegatedTaskStatus,
-  PersonalTaskRecord,
+import { mayDelegateTo, type CompanyRole } from '@sn/domain';
+import {
+  type AssignmentRow,
+  type DelegatedTaskRecord,
+  type DelegatedTaskStatus,
+  type PersonalTaskRecord,
+  ROLE_LABELS,
 } from '../data';
 import {
   DEMO_ACTOR_ID_TO_NAME,
   ROLE_TO_DEMO_ACTOR_ID,
 } from './dev-auth';
+import { isValidUuid } from './metadata-safety';
 
 export const KOLKATA_OFFSET_MINUTES = 330; // +05:30
 export const KOLKATA_OFFSET_MS = KOLKATA_OFFSET_MINUTES * 60 * 1000;
@@ -261,9 +264,19 @@ export function mapWorkItemStatusToView(status: WorkItemStatus): WorkItemStatusV
   }
 }
 
-function resolveParentLabel(
+export function getAssignmentDisplayCode(assignment: AssignmentRow): string {
+  if (assignment.code?.trim()) {
+    return assignment.code.trim();
+  }
+  if (assignment.id && !isValidUuid(assignment.id)) {
+    return assignment.id;
+  }
+  return 'Linked Assignment';
+}
+
+export function resolveParentLabel(
   assignmentId: string | null,
-  assignments: AssignmentRow[],
+  assignments: readonly AssignmentRow[],
   fallbackPartyName: string | null,
 ): string {
   if (!assignmentId) {
@@ -271,9 +284,19 @@ function resolveParentLabel(
   }
   const matched = assignments.find((a) => a.id === assignmentId);
   if (matched) {
-    return `${matched.id} · ${matched.title}`;
+    const code = getAssignmentDisplayCode(matched);
+    if (code !== 'Linked Assignment') {
+      return `${code} · ${matched.title}`;
+    }
+    return matched.client ? `${matched.title} (${matched.client})` : matched.title;
   }
-  return fallbackPartyName ? `${assignmentId} · ${fallbackPartyName}` : assignmentId;
+  const isDemoCode = !isValidUuid(assignmentId);
+  const displayPrefix = isDemoCode ? assignmentId : 'Linked Assignment';
+
+  if (fallbackPartyName?.trim() && !isValidUuid(fallbackPartyName.trim())) {
+    return `${displayPrefix} · ${fallbackPartyName.trim()}`;
+  }
+  return displayPrefix;
 }
 
 export function mapDtoToDelegatedTaskRecord(
@@ -281,10 +304,23 @@ export function mapDtoToDelegatedTaskRecord(
   assignments: AssignmentRow[],
   role?: CompanyRole,
   clock?: Date | string,
+  employeeNameMap?: ReadonlyMap<string, string> | Readonly<Record<string, string>>,
 ): DelegatedTaskRecord {
   const statusView = mapWorkItemStatusToView(dto.status);
-  const person = DEMO_ACTOR_ID_TO_NAME[dto.assigneeId] ?? dto.assigneeId;
-  const assignedBy = DEMO_ACTOR_ID_TO_NAME[dto.createdById] ?? dto.createdById;
+
+  const resolveName = (id: string): string => {
+    if (employeeNameMap instanceof Map) {
+      const mapped = employeeNameMap.get(id);
+      if (mapped) return mapped;
+    } else if (employeeNameMap && typeof employeeNameMap === 'object') {
+      const mapped = (employeeNameMap as Record<string, string>)[id];
+      if (mapped) return mapped;
+    }
+    return DEMO_ACTOR_ID_TO_NAME[id] ?? id;
+  };
+
+  const person = resolveName(dto.assigneeId);
+  const assignedBy = resolveName(dto.createdById);
   const isInternal = dto.kind === 'internal';
 
   return {
@@ -312,12 +348,30 @@ export function mapDtoToPersonalTaskRecord(
   dto: WorkItemDto,
   role?: CompanyRole,
   clock?: Date | string,
+  assignments?: readonly AssignmentRow[],
 ): PersonalTaskRecord {
+  let context = 'Personal';
+  if (dto.relatedPartyName?.trim() && !isValidUuid(dto.relatedPartyName.trim())) {
+    context = dto.relatedPartyName.trim();
+  } else if (dto.assignmentId) {
+    const matched = assignments?.find((a) => a.id === dto.assignmentId);
+    if (matched) {
+      const code = getAssignmentDisplayCode(matched);
+      context = code !== 'Linked Assignment' ? code : (matched.client || matched.title || 'Linked Assignment');
+    } else if (dto.relatedPartyName?.trim() && !isValidUuid(dto.relatedPartyName.trim())) {
+      context = dto.relatedPartyName.trim();
+    } else {
+      context = 'Linked Assignment';
+    }
+  } else if (dto.relatedClientId) {
+    context = 'Client Task';
+  }
+
   return {
     id: dto.id,
     code: dto.code,
     title: dto.title,
-    context: dto.relatedPartyName || (dto.assignmentId ? dto.assignmentId : 'Personal'),
+    context,
     time: formatWorkItemTime(dto.dueAt, clock),
     done: dto.status === 'completed',
     ownerRole: role,
@@ -332,13 +386,19 @@ export interface WorkItemViewGroups {
   visibleDelegatedWork: DelegatedTaskRecord[];
 }
 
+export interface DeriveWorkItemViewGroupsOptions {
+  readonly currentActorId?: string;
+  readonly employeeNameMap?: ReadonlyMap<string, string> | Readonly<Record<string, string>>;
+}
+
 export function deriveWorkItemViewGroups(
   rawItems: WorkItemDto[],
   assignments: AssignmentRow[],
   role: CompanyRole,
   clock?: Date | string,
+  options?: DeriveWorkItemViewGroupsOptions,
 ): WorkItemViewGroups {
-  const currentActorId = ROLE_TO_DEMO_ACTOR_ID[role];
+  const currentActorId = options?.currentActorId || ROLE_TO_DEMO_ACTOR_ID[role];
   const isLeadership = role === 'founder' || role === 'manager';
 
   const personalTasks: PersonalTaskRecord[] = [];
@@ -350,13 +410,19 @@ export function deriveWorkItemViewGroups(
   for (const item of rawItems) {
     if (item.kind === 'personal') {
       if (item.assigneeId === currentActorId) {
-        personalTasks.push(mapDtoToPersonalTaskRecord(item, role, clock));
+        personalTasks.push(mapDtoToPersonalTaskRecord(item, role, clock, assignments));
       }
       continue;
     }
 
     if (item.kind === 'delegated' || item.kind === 'internal') {
-      const record = mapDtoToDelegatedTaskRecord(item, assignments, role, clock);
+      const record = mapDtoToDelegatedTaskRecord(
+        item,
+        assignments,
+        role,
+        clock,
+        options?.employeeNameMap,
+      );
 
       if (item.assigneeId === currentActorId) {
         assignedToMe.push(record);
@@ -398,7 +464,14 @@ export interface DelegationTargetOption {
   label: string;
 }
 
-export function getDelegationTargets(role: CompanyRole): DelegationTargetOption[] {
+export function isEligibleDelegationTargetRole(
+  actorRole: CompanyRole,
+  targetRole: CompanyRole,
+): boolean {
+  return mayDelegateTo(actorRole, targetRole);
+}
+
+function getDemoDelegationTargets(role: CompanyRole): DelegationTargetOption[] {
   switch (role) {
     case 'founder':
       return [
@@ -427,21 +500,87 @@ export function getDelegationTargets(role: CompanyRole): DelegationTargetOption[
   }
 }
 
+export function getEligibleDelegationTargets(
+  actor: { id?: string; name?: string; role: CompanyRole },
+  reportingLines?: readonly ReportingLineDto[],
+): DelegationTargetOption[] {
+  if (actor.role === 'trainee') {
+    return [];
+  }
+
+  // If live reporting lines are available, filter and map live active employees
+  if (reportingLines && reportingLines.length > 0) {
+    const employeeMap = new Map<string, { id: string; name: string; role: CompanyRole }>();
+
+    for (const line of reportingLines) {
+      const emp = line.employee;
+      if (!emp || !emp.id) continue;
+      // Exclude self by ID or case-insensitive name
+      if (actor.id && emp.id === actor.id) continue;
+      if (actor.name && emp.name.trim().toLowerCase() === actor.name.trim().toLowerCase()) continue;
+      // Exclude roles outside delegation authority via authoritative domain rule
+      if (!mayDelegateTo(actor.role, emp.role)) continue;
+      if (!employeeMap.has(emp.id)) {
+        employeeMap.set(emp.id, { id: emp.id, name: emp.name, role: emp.role });
+      }
+    }
+
+    const uniqueEmployees = Array.from(employeeMap.values());
+    uniqueEmployees.sort((a, b) => a.name.localeCompare(b.name));
+
+    return uniqueEmployees.map((emp) => {
+      const roleDisplay = ROLE_LABELS[emp.role] ?? emp.role;
+      return {
+        id: emp.id,
+        name: emp.name,
+        role: emp.role,
+        label: `${emp.name} — ${roleDisplay}`,
+      };
+    });
+  }
+
+  // Demo fallback when no reporting lines are provided (for backwards compatibility / offline tests)
+  return getDemoDelegationTargets(actor.role).filter((target) => {
+    if (actor.id && target.id === actor.id) return false;
+    if (actor.name && target.name.trim().toLowerCase() === actor.name.trim().toLowerCase()) return false;
+    return true;
+  });
+}
+
+export function getDelegationTargets(role: CompanyRole): DelegationTargetOption[] {
+  return getEligibleDelegationTargets({ role });
+}
+
 export function getParentAssignmentOptions(
   role: CompanyRole,
-  assignments: AssignmentRow[],
+  assignments: readonly AssignmentRow[],
+  currentActor?: { id?: string; name?: string },
 ): AssignmentRow[] {
   if (role === 'founder' || role === 'manager') {
-    return assignments;
+    return [...assignments];
   }
   if (role === 'trainee') {
     return [];
   }
 
+  const liveActorName = currentActor?.name?.trim();
+  if (liveActorName) {
+    const targetName = liveActorName.toLowerCase();
+    return assignments.filter(
+      (assignment) =>
+        assignment.owner?.trim().toLowerCase() === targetName ||
+        assignment.reviewer?.trim().toLowerCase() === targetName,
+    );
+  }
+
+  // Demo fallback when no live actor is provided (preview/offline tests)
   const actorId = ROLE_TO_DEMO_ACTOR_ID[role];
-  const actorName = DEMO_ACTOR_ID_TO_NAME[actorId];
+  const demoActorName = DEMO_ACTOR_ID_TO_NAME[actorId];
+  if (!demoActorName) return [];
 
   return assignments.filter(
-    (assignment) => assignment.owner === actorName || assignment.reviewer === actorName,
+    (assignment) =>
+      assignment.owner?.trim().toLowerCase() === demoActorName.toLowerCase() ||
+      assignment.reviewer?.trim().toLowerCase() === demoActorName.toLowerCase(),
   );
 }

@@ -6,12 +6,15 @@ import {
   formatIsoToKolkataDisplay,
   formatWorkItemDue,
   formatWorkItemTime,
+  getAssignmentDisplayCode,
   getDelegationTargets,
+  getEligibleDelegationTargets,
   getParentAssignmentOptions,
   mapDtoToDelegatedTaskRecord,
   mapDtoToPersonalTaskRecord,
   mapWorkItemStatusToView,
   parseDisplayDateToKolkataIso,
+  resolveParentLabel,
   validateDelegatedDeadline,
 } from './work-items-mapper';
 
@@ -576,6 +579,311 @@ describe('work-items-mapper', () => {
       expect(traineeGroups.reviewableTasks).toHaveLength(0);
       expect(traineeGroups.visibleDelegatedWork).toHaveLength(0);
       expect(traineeGroups.delegatedByMe).toHaveLength(0);
+    });
+  });
+
+  describe('Live Eligible Delegation Targets & Real Employee Name Mapping', () => {
+    const liveLines = [
+      {
+        employee: { id: 'emp_founder', name: 'S. Narayanan', role: 'founder' as const, reportsToId: null },
+        manager: null,
+      },
+      {
+        employee: { id: 'emp_mgr', name: 'Priya Desai', role: 'manager' as const, reportsToId: 'emp_founder' },
+        manager: { id: 'emp_founder', name: 'S. Narayanan', role: 'founder' as const, reportsToId: null },
+      },
+      {
+        employee: { id: 'emp_snr', name: 'Ananya Rao', role: 'senior_staff' as const, reportsToId: 'emp_mgr' },
+        manager: { id: 'emp_mgr', name: 'Priya Desai', role: 'manager' as const, reportsToId: 'emp_founder' },
+      },
+      {
+        employee: { id: 'emp_stf', name: 'Rohan Mehta', role: 'staff' as const, reportsToId: 'emp_mgr' },
+        manager: { id: 'emp_mgr', name: 'Priya Desai', role: 'manager' as const, reportsToId: 'emp_founder' },
+      },
+      {
+        employee: { id: 'emp_trn', name: 'Neha Kapoor', role: 'trainee' as const, reportsToId: 'emp_stf' },
+        manager: { id: 'emp_stf', name: 'Rohan Mehta', role: 'staff' as const, reportsToId: 'emp_mgr' },
+      },
+    ];
+
+    it('filters live targets by strict role authority, excludes self, and sorts deterministically by name', () => {
+      // Senior Staff can delegate to Staff and Trainee; excludes self (emp_snr)
+      const seniorTargets = getEligibleDelegationTargets(
+        { id: 'emp_snr', role: 'senior_staff' },
+        liveLines,
+      );
+      expect(seniorTargets.map((t) => t.name)).toEqual(['Neha Kapoor', 'Rohan Mehta']);
+      expect(seniorTargets.map((t) => t.id)).toEqual(['emp_trn', 'emp_stf']);
+
+      // Staff can delegate ONLY to Trainee; excludes self (emp_stf)
+      const staffTargets = getEligibleDelegationTargets(
+        { id: 'emp_stf', role: 'staff' },
+        liveLines,
+      );
+      expect(staffTargets.map((t) => t.name)).toEqual(['Neha Kapoor']);
+      expect(staffTargets.map((t) => t.id)).toEqual(['emp_trn']);
+
+      // Trainee cannot delegate to anyone
+      const traineeTargets = getEligibleDelegationTargets(
+        { id: 'emp_trn', role: 'trainee' },
+        liveLines,
+      );
+      expect(traineeTargets).toEqual([]);
+
+      // Manager can delegate to Senior Staff, Staff, Trainee; excludes self (emp_mgr)
+      const managerTargets = getEligibleDelegationTargets(
+        { id: 'emp_mgr', role: 'manager' },
+        liveLines,
+      );
+      expect(managerTargets.map((t) => t.name)).toEqual(['Ananya Rao', 'Neha Kapoor', 'Rohan Mehta']);
+    });
+
+    it('resolves live employee names dynamically via employeeNameMap', () => {
+      const nameMap = new Map<string, string>([
+        ['emp_stf', 'Rohan Mehta (Live)'],
+        ['emp_snr', 'Ananya Rao (Live)'],
+      ]);
+
+      const liveDto: WorkItemDto = {
+        id: 'wrk_live_01',
+        code: 'WI-002001',
+        kind: 'delegated',
+        title: 'Live GST cross-check',
+        notes: null,
+        assignmentId: 'ASN-0001',
+        relatedClientId: 'cli_01',
+        relatedPartyName: 'Aster Foods',
+        assigneeId: 'emp_stf',
+        createdById: 'emp_snr',
+        status: 'todo',
+        dueAt: '2026-11-04T12:30:00.000Z',
+        reminderAt: null,
+        createdAt: '2026-11-01T04:00:00.000Z',
+        updatedAt: '2026-11-01T04:00:00.000Z',
+      };
+
+      const record = mapDtoToDelegatedTaskRecord(
+        liveDto,
+        [SAMPLE_ASSIGNMENT_1],
+        'staff',
+        undefined,
+        nameMap,
+      );
+
+      expect(record.person).toBe('Rohan Mehta (Live)');
+      expect(record.assignedBy).toBe('Ananya Rao (Live)');
+    });
+
+    it('excludes self by both id and case-insensitive name in getEligibleDelegationTargets', () => {
+      // Exclude by name only
+      const targetsByName = getEligibleDelegationTargets(
+        { name: 'rohan mehta', role: 'staff' },
+        liveLines,
+      );
+      expect(targetsByName.some((t) => t.name.toLowerCase() === 'rohan mehta')).toBe(false);
+      expect(targetsByName.map((t) => t.name)).toEqual(['Neha Kapoor']);
+
+      // Exclude by ID only
+      const targetsById = getEligibleDelegationTargets(
+        { id: 'emp_stf', role: 'staff' },
+        liveLines,
+      );
+      expect(targetsById.some((t) => t.id === 'emp_stf')).toBe(false);
+      expect(targetsById.map((t) => t.id)).toEqual(['emp_trn']);
+    });
+
+    it('filters parent assignments by currentActor.name in live mode', () => {
+      const allAssignments: AssignmentRow[] = [
+        SAMPLE_ASSIGNMENT_1, // owner: Priya Desai, reviewer: Ananya Rao
+        SAMPLE_ASSIGNMENT_2, // owner: Rohan Mehta, reviewer: Priya Desai
+        {
+          id: 'ASN-0003',
+          title: 'Special Tax Audit',
+          client: 'Omega Corp',
+          clientId: 'CLI-0003',
+          service: 'Tax Audit',
+          due: '15/11/2026',
+          owner: 'Suresh Kumar',
+          reviewer: 'Vikram Singh',
+          status: 'In progress',
+          progress: 10,
+          tone: 'default',
+        },
+      ];
+
+      // Staff (Rohan Mehta) sees only assignments where he is owner or reviewer
+      const staffOptions = getParentAssignmentOptions('staff', allAssignments, {
+        name: 'rohan mehta',
+      });
+      expect(staffOptions.map((a) => a.id)).toEqual(['ASN-0002']);
+
+      // Senior Staff (Priya Desai) is owner of ASN-0001 and reviewer of ASN-0002
+      const seniorOptions = getParentAssignmentOptions('senior_staff', allAssignments, {
+        name: 'Priya Desai',
+      });
+      expect(seniorOptions.map((a) => a.id)).toEqual(['ASN-0001', 'ASN-0002']);
+
+      // Leadership (Founder / Manager) sees all assignments
+      const founderOptions = getParentAssignmentOptions('founder', allAssignments, {
+        name: 'Aarav Mehta',
+      });
+      expect(founderOptions.length).toBe(3);
+
+      // Trainee sees zero parent assignment options
+      const traineeOptions = getParentAssignmentOptions('trainee', allAssignments, {
+        name: 'Neha Kapoor',
+      });
+      expect(traineeOptions).toEqual([]);
+    });
+  });
+
+  describe('assignment display identity and UUID leak prevention', () => {
+    const REAL_UUID_1 = '30000000-0000-4000-a000-000000000001';
+    const REAL_UUID_UNLISTED = '30000000-0000-4000-a000-000000000099';
+    const CLIENT_UUID = '10000000-0000-4000-a000-000000000001';
+
+    const liveAssignmentWithCode: AssignmentRow = {
+      id: REAL_UUID_1,
+      code: 'ASN-000123',
+      title: 'October GSTR-1 & 3B Filing',
+      client: 'Aster Foods Private Limited',
+      clientId: CLIENT_UUID,
+      service: 'GST Compliance',
+      due: '11/11/2026',
+      owner: 'Rohan Mehta',
+      status: 'In progress',
+      progress: 50,
+      tone: 'default',
+    };
+
+    const liveAssignmentWithoutCode: AssignmentRow = {
+      id: '30000000-0000-4000-a000-000000000002',
+      title: 'Statutory Audit FY 2025-26',
+      client: 'Northstar Exports',
+      clientId: '10000000-0000-4000-a000-000000000002',
+      service: 'Statutory Audit',
+      due: '24/11/2026',
+      owner: 'Priya Desai',
+      status: 'In progress',
+      progress: 20,
+      tone: 'default',
+    };
+
+    it('getAssignmentDisplayCode prefers code, then non-UUID id, and never returns a UUID', () => {
+      expect(getAssignmentDisplayCode(liveAssignmentWithCode)).toBe('ASN-000123');
+      expect(getAssignmentDisplayCode(SAMPLE_ASSIGNMENT_1)).toBe('ASN-0001');
+      expect(getAssignmentDisplayCode(liveAssignmentWithoutCode)).toBe('Linked Assignment');
+      expect(getAssignmentDisplayCode(liveAssignmentWithoutCode)).not.toContain('30000000-0000-4000-a000');
+    });
+
+    it('resolveParentLabel renders human code and title, never exposing raw UUID', () => {
+      const parentWithCode = resolveParentLabel(REAL_UUID_1, [liveAssignmentWithCode], 'Aster Foods');
+      expect(parentWithCode).toBe('ASN-000123 · October GSTR-1 & 3B Filing');
+      expect(parentWithCode).not.toContain(REAL_UUID_1);
+
+      const parentDemo = resolveParentLabel('ASN-0001', [SAMPLE_ASSIGNMENT_1], null);
+      expect(parentDemo).toBe('ASN-0001 · October GST Return');
+
+      const parentWithoutCode = resolveParentLabel(
+        '30000000-0000-4000-a000-000000000002',
+        [liveAssignmentWithoutCode],
+        'Northstar Exports',
+      );
+      expect(parentWithoutCode).toBe('Statutory Audit FY 2025-26 (Northstar Exports)');
+      expect(parentWithoutCode).not.toContain('30000000-0000-4000-a000-000000000002');
+    });
+
+    it('resolveParentLabel protects unlisted assignment IDs with safe copy and never echoes UUID', () => {
+      const parentUnlistedWithParty = resolveParentLabel(REAL_UUID_UNLISTED, [liveAssignmentWithCode], 'Kedia Holdings');
+      expect(parentUnlistedWithParty).toBe('Linked Assignment · Kedia Holdings');
+      expect(parentUnlistedWithParty).not.toContain(REAL_UUID_UNLISTED);
+
+      const parentUnlistedNoParty = resolveParentLabel(REAL_UUID_UNLISTED, [liveAssignmentWithCode], null);
+      expect(parentUnlistedNoParty).toBe('Linked Assignment');
+      expect(parentUnlistedNoParty).not.toContain(REAL_UUID_UNLISTED);
+    });
+
+    it('mapDtoToDelegatedTaskRecord produces parent label without UUID', () => {
+      const dto: WorkItemDto = {
+        id: 'wrk_uuid_test',
+        code: 'WI-000999',
+        kind: 'delegated',
+        title: 'Verify purchase registers',
+        notes: null,
+        assignmentId: REAL_UUID_1,
+        relatedClientId: CLIENT_UUID,
+        relatedPartyName: 'Aster Foods Private Limited',
+        assigneeId: '00000000-0000-4000-a000-000000000004',
+        createdById: '00000000-0000-4000-a000-000000000001',
+        status: 'todo',
+        dueAt: '2026-11-10T12:30:00.000Z',
+        reminderAt: null,
+        createdAt: '2026-11-09T04:00:00.000Z',
+        updatedAt: '2026-11-09T04:00:00.000Z',
+      };
+
+      const record = mapDtoToDelegatedTaskRecord(dto, [liveAssignmentWithCode]);
+      expect(record.parent).toBe('ASN-000123 · October GSTR-1 & 3B Filing');
+      expect(record.parent).not.toContain(REAL_UUID_1);
+      expect(record.parent).not.toContain(CLIENT_UUID);
+    });
+
+    it('mapDtoToPersonalTaskRecord derives human context and never leaks raw assignment or client UUID', () => {
+      // 1. Linked to loaded assignment with human code
+      const dtoWithLoadedAsn: WorkItemDto = {
+        id: 'wrk_p_loaded',
+        code: 'WI-001010',
+        kind: 'personal',
+        title: 'Check portal status',
+        notes: null,
+        assignmentId: REAL_UUID_1,
+        relatedClientId: null,
+        relatedPartyName: null,
+        assigneeId: '00000000-0000-4000-a000-000000000001',
+        createdById: '00000000-0000-4000-a000-000000000001',
+        status: 'todo',
+        dueAt: '2026-11-09T12:30:00.000Z',
+        reminderAt: null,
+        createdAt: '2026-11-09T04:00:00.000Z',
+        updatedAt: '2026-11-09T04:00:00.000Z',
+      };
+      const recordLoaded = mapDtoToPersonalTaskRecord(dtoWithLoadedAsn, 'founder', FIXED_CLOCK, [liveAssignmentWithCode]);
+      expect(recordLoaded.context).toBe('ASN-000123');
+      expect(recordLoaded.context).not.toContain(REAL_UUID_1);
+
+      // 2. Linked to unlisted assignment UUID without party name
+      const dtoWithUnlistedAsn: WorkItemDto = {
+        ...dtoWithLoadedAsn,
+        id: 'wrk_p_unlisted',
+        assignmentId: REAL_UUID_UNLISTED,
+      };
+      const recordUnlisted = mapDtoToPersonalTaskRecord(dtoWithUnlistedAsn, 'founder', FIXED_CLOCK, [liveAssignmentWithCode]);
+      expect(recordUnlisted.context).toBe('Linked Assignment');
+      expect(recordUnlisted.context).not.toContain(REAL_UUID_UNLISTED);
+
+      // 3. Only relatedClientId (UUID) present
+      const dtoClientOnly: WorkItemDto = {
+        ...dtoWithLoadedAsn,
+        id: 'wrk_p_client',
+        assignmentId: null,
+        relatedClientId: CLIENT_UUID,
+        relatedPartyName: null,
+      };
+      const recordClient = mapDtoToPersonalTaskRecord(dtoClientOnly, 'founder', FIXED_CLOCK);
+      expect(recordClient.context).toBe('Client Task');
+      expect(recordClient.context).not.toContain(CLIENT_UUID);
+
+      // 4. Defensive against raw UUID in relatedPartyName
+      const dtoUuidPartyName: WorkItemDto = {
+        ...dtoWithLoadedAsn,
+        id: 'wrk_p_uuid_party',
+        assignmentId: null,
+        relatedClientId: null,
+        relatedPartyName: CLIENT_UUID,
+      };
+      const recordUuidParty = mapDtoToPersonalTaskRecord(dtoUuidPartyName, 'founder', FIXED_CLOCK);
+      expect(recordUuidParty.context).toBe('Personal');
+      expect(recordUuidParty.context).not.toContain(CLIENT_UUID);
     });
   });
 });

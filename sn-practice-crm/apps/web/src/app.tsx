@@ -44,6 +44,23 @@ import { Card, Field, MoreButton, Status } from './ui/workspace-primitives';
 import { ClientsWorkspace } from './workspaces/clients/clients-workspace';
 import { BillingWorkspace } from './workspaces/billing/billing-workspace';
 import { TeamWorkspace } from './workspaces/team/team-workspace';
+import {
+  TasksWorkspace,
+  PersonalTasks,
+  TaskQueue,
+  DelegatedWork,
+  ReviewQueue,
+  type TasksWorkspaceModel,
+  type TasksWorkspaceActions,
+} from './workspaces/tasks/tasks-workspace';
+
+export {
+  PersonalTasks,
+  TaskQueue,
+  DelegatedWork,
+  ReviewQueue,
+  TasksWorkspace,
+};
 import { AssignmentDetailDrawer } from './workspaces/assignments/assignment-detail-drawer';
 import { AssignmentsTable } from './workspaces/assignments/assignments-table';
 import { AssignmentsWorkspace } from './workspaces/assignments/assignments-workspace';
@@ -149,6 +166,9 @@ function AuthenticatedApp({
     markAssignmentBilled,
   } = useAssignments(role, { onToast: setToast });
   const {
+    loading: workItemsLoading,
+    error: workItemsError,
+    hasLiveSnapshot: workItemsHasLiveSnapshot,
     personalTasks,
     assignedToMe,
     delegatedByMe,
@@ -162,6 +182,7 @@ function AuthenticatedApp({
     handleApprove: handleApproveDelegatedTask,
     handleReopen: handleReopenDelegatedTask,
     handleTogglePersonal: handleTogglePersonalTask,
+    refresh: refreshWorkItems,
   } = useWorkItems(role, assignments, { onToast: setToast });
   const [selectedAssignmentForDrawer, setSelectedAssignmentForDrawer] = useState<AssignmentRow | null>(null);
   const [invoices, setInvoices] = useState<InvoiceRecord[]>(INVOICES);
@@ -187,8 +208,20 @@ function AuthenticatedApp({
     }
   }, [assignments, selectedAssignmentForDrawer]);
 
+  function handleCompose(mode: DialogMode) {
+    if (mode === 'personal' || mode === 'delegated' || mode === 'internal') {
+      setActivePage('My Tasks');
+    }
+    setDialog(mode);
+  }
+
   function openPrimaryAction() {
-    setDialog(canCreateAssignment ? 'assignment' : 'personal');
+    if (canCreateAssignment) {
+      setDialog('assignment');
+    } else {
+      setActivePage('My Tasks');
+      setDialog('personal');
+    }
   }
 
   function handleUpdateSchedule(updated: RecurringScheduleRecord) {
@@ -482,7 +515,7 @@ function AuthenticatedApp({
               onOpenInvoice={handleOpenInvoiceForAssignment}
             />
           ) : null}
-          {dialog ? (
+          {dialog && !['personal', 'delegated', 'internal'].includes(dialog) ? (
             <ComposerDialog
               key={dialog}
               mode={dialog}
@@ -522,7 +555,7 @@ function AuthenticatedApp({
           delegatedTasks={visibleDelegatedWork}
           assignedToMe={assignedToMe}
           reviewableTasks={reviewableTasks}
-          onCompose={setDialog}
+          onCompose={handleCompose}
           onToast={setToast}
           onSelectAssignment={setSelectedAssignmentForDrawer}
           onTogglePersonalTask={handleTogglePersonalTask}
@@ -536,27 +569,41 @@ function AuthenticatedApp({
         <ModuleWorkspace
           page={activePage}
           role={role}
+          currentActor={actor}
           clients={clients}
           schedules={schedules}
           assignments={assignments}
           invoices={invoices}
           receipts={receipts}
-          personalTasks={personalTasks}
-          delegatedTasks={visibleDelegatedWork}
-          assignedToMe={assignedToMe}
-          reviewableTasks={reviewableTasks}
-          onCompose={setDialog}
+          workItemsModel={{
+            personalTasks,
+            assignedToMe,
+            delegatedTasks: visibleDelegatedWork,
+            reviewableTasks,
+            loading: workItemsLoading,
+            error: workItemsError,
+            hasLiveSnapshot: workItemsHasLiveSnapshot,
+          }}
+          workItemsActions={{
+            onTogglePersonalTask: handleTogglePersonalTask,
+            onStartTask: handleStartTask,
+            onSubmitTaskForReview: handleSubmitTaskForReview,
+            onApproveDelegatedTask: handleApproveDelegatedTask,
+            onReopenDelegatedTask: handleReopenDelegatedTask,
+            onRefresh: refreshWorkItems,
+            onCreatePersonal: handleCreatePersonal,
+            onCreateDelegated: handleCreateDelegated,
+            onCreateInternal: handleCreateInternal,
+          }}
+          dialog={dialog}
+          onCloseDialog={() => setDialog(null)}
+          onCompose={handleCompose}
           onToast={setToast}
           onUpdateSchedule={handleUpdateSchedule}
           onUpdateAssignment={handleUpdateAssignment}
           onSelectAssignment={setSelectedAssignmentForDrawer}
-          onTogglePersonalTask={handleTogglePersonalTask}
           onRecordPaymentForInvoice={openReceiptModalForInvoice}
           onOpenInvoiceForAssignment={handleOpenInvoiceForAssignment}
-          onStartTask={handleStartTask}
-          onSubmitTaskForReview={handleSubmitTaskForReview}
-          onApproveDelegatedTask={handleApproveDelegatedTask}
-          onReopenDelegatedTask={handleReopenDelegatedTask}
         />
       )}
     </ApplicationChrome>
@@ -1183,136 +1230,7 @@ function OperationalTriage() {
   );
 }
 
-export function DelegatedWork({
-  tasks,
-  onAdd,
-  onAddInternal,
-  role,
-}: {
-  tasks: DelegatedTaskRecord[];
-  onAdd: () => void;
-  onAddInternal?: () => void;
-  role?: CompanyRole | 'senior_staff' | 'staff';
-}) {
-  const canAddOffice = role !== 'trainee' && Boolean(onAddInternal);
 
-  return (
-    <Card
-      title="Delegated work"
-      description="Sub-tasks and office operations delegated to team"
-      action={
-        <div style={{ display: 'flex', gap: 6 }}>
-          <button className="mini-add" type="button" onClick={onAdd}>
-            <Plus aria-hidden="true" /> Sub-task
-          </button>
-          {canAddOffice ? (
-            <button className="mini-add" type="button" onClick={onAddInternal}>
-              <Plus aria-hidden="true" /> Office task
-            </button>
-          ) : null}
-        </div>
-      }
-      className="compact-card"
-    >
-      <div className="list-stack task-list">
-        {tasks.map((task) => (
-          <div className="task-row" key={task.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-            <span><strong>{task.title}</strong><small>{task.parent}</small></span>
-            <span style={{ textAlign: 'right' }}>
-              <Status tone={task.status === 'Completed' ? 'success' : task.status === 'Pending Review' ? 'warning' : 'default'}>
-                {task.status || 'In Progress'}
-              </Status>
-              <small style={{ display: 'block' }}>{task.person} · {task.due}</small>
-            </span>
-          </div>
-        ))}
-      </div>
-    </Card>
-  );
-}
-
-export function PersonalTasks({
-  tasks,
-  onToggle,
-  onAdd,
-}: {
-  tasks: PersonalTaskRecord[];
-  onToggle?: (id: string) => void;
-  onAdd?: () => void;
-}) {
-  return (
-    <Card title="Personal tasks" description="Private planning and reminders" action={onAdd ? <button className="mini-add" type="button" onClick={onAdd}><Plus aria-hidden="true" /> Add task</button> : <ListChecks aria-hidden="true" />} className="compact-card">
-      <div className="personal-list">
-        {tasks.map((task) => (
-          <label className={task.done ? 'personal-row is-done' : 'personal-row'} key={task.id} style={{ cursor: onToggle ? 'pointer' : 'default' }}>
-            <input
-              type="checkbox"
-              checked={task.done}
-              onChange={() => onToggle && onToggle(task.id)}
-            />
-            <span className="custom-check"><Check aria-hidden="true" /></span>
-            <span><strong>{task.title}</strong><small>{task.context} · {task.time}</small></span>
-          </label>
-        ))}
-      </div>
-    </Card>
-  );
-}
-
-export function ReviewQueue({
-  delegatedTasks = [],
-  onApprove,
-  onReopen,
-  onToast,
-}: {
-  delegatedTasks?: DelegatedTaskRecord[];
-  onApprove?: (task: DelegatedTaskRecord) => void;
-  onReopen?: (task: DelegatedTaskRecord) => void;
-  onToast?: (msg: string) => void;
-}) {
-  const pending = delegatedTasks.filter((t) => t.status === 'Pending Review');
-  return (
-    <Card title="Review queue" description="Team work awaiting your decision" action={<ClipboardCheck aria-hidden="true" />} className="compact-card">
-      <div className="review-score"><span><strong>{pending.length}</strong> ready to review</span><small>{pending.length === 0 ? 'Queue clear' : 'Awaiting sign-off'}</small></div>
-      <div className="mini-list">
-        {pending.length === 0 ? (
-          <p style={{ fontSize: 12, color: 'var(--ink-muted)', padding: '8px 0', margin: 0 }}>All delegated sub-tasks verified.</p>
-        ) : (
-          pending.map((t) => (
-            <div key={t.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid var(--border)' }}>
-              <span>
-                <i className="dot-warning" />
-                {t.title} <b>{t.person}</b>
-              </span>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                {onApprove ? (
-                  <button
-                    className="soft-button"
-                    type="button"
-                    style={{ fontSize: 10, padding: '2px 8px' }}
-                    onClick={() => onApprove(t)}
-                  >
-                    Approve
-                  </button>
-                ) : null}
-                {onReopen ? (
-                  <button
-                    className="soft-button"
-                    type="button"
-                    style={{ fontSize: 10, padding: '2px 8px' }}
-                    onClick={() => onReopen(t)}
-                  >
-                    Request changes
-                  </button>
-                ) : null}
-              </div>
-            </div>
-          ))
-        )}
-      </div>
-    </Card>
-  );
-}
 
 function DocumentRequests() {
   return (
@@ -1323,82 +1241,7 @@ function DocumentRequests() {
   );
 }
 
-export function TaskQueue({
-  tasks,
-  onStartTask,
-  onSubmitForReview,
-  onToast,
-  onNavigate,
-}: {
-  tasks: DelegatedTaskRecord[];
-  onStartTask?: (task: DelegatedTaskRecord) => void;
-  onSubmitForReview?: (task: DelegatedTaskRecord) => void;
-  onToast: (message: string) => void;
-  onNavigate?: (page: PageKey) => void;
-}) {
-  return (
-    <Card
-      title="My task queue"
-      description="Delegated work ordered by due time"
-      action={
-        <button
-          className="text-button"
-          type="button"
-          onClick={() => (onNavigate ? onNavigate('My Tasks') : onToast('All trainee tasks displayed'))}
-        >
-          View all <ChevronRight aria-hidden="true" />
-        </button>
-      }
-      className="task-queue"
-    >
-      <div className="queue-list">
-        {tasks.map((task, index) => (
-          <div className="queue-row" key={task.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 14px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-              <span className="queue-priority">{index + 1}</span>
-              <div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <strong>{task.title}</strong>
-                  {task.kind === 'internal' ? <Status tone="default">Office</Status> : null}
-                </div>
-                <small style={{ display: 'block', color: 'var(--ink-muted)' }}>{task.parent} · Assigned by {task.assignedBy}</small>
-                {task.instructions ? <p style={{ fontSize: 11, color: 'var(--ink-muted)', margin: '4px 0 0' }}>{task.instructions}</p> : null}
-              </div>
-            </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-              <div style={{ textAlign: 'right' }}>
-                <Status tone={task.status === 'Completed' ? 'success' : task.status === 'Pending Review' ? 'warning' : 'default'}>
-                  {task.status || `${task.progress}%`}
-                </Status>
-                <small style={{ display: 'block' }}>{task.due}</small>
-              </div>
-              {task.status === 'To Do' && onStartTask ? (
-                <button
-                  className="primary-button"
-                  type="button"
-                  style={{ fontSize: 11, padding: '4px 10px', height: 'auto' }}
-                  onClick={() => onStartTask(task)}
-                >
-                  Start task
-                </button>
-              ) : null}
-              {task.status === 'In Progress' && onSubmitForReview ? (
-                <button
-                  className="primary-button"
-                  type="button"
-                  style={{ fontSize: 11, padding: '4px 10px', height: 'auto' }}
-                  onClick={() => onSubmitForReview(task)}
-                >
-                  Submit for review
-                </button>
-              ) : null}
-            </div>
-          </div>
-        ))}
-      </div>
-    </Card>
-  );
-}
+
 
 function TodayChecklist() {
   return (
@@ -1421,51 +1264,43 @@ function GuidanceCard() {
 function ModuleWorkspace({
   page,
   role,
+  currentActor,
   clients,
   schedules,
   assignments,
   invoices,
   receipts,
-  personalTasks,
-  delegatedTasks,
-  assignedToMe = [],
-  reviewableTasks = [],
+  workItemsModel,
+  workItemsActions,
+  dialog,
+  onCloseDialog,
   onCompose,
   onToast,
   onUpdateSchedule,
   onUpdateAssignment,
   onSelectAssignment,
-  onTogglePersonalTask,
   onRecordPaymentForInvoice,
   onOpenInvoiceForAssignment,
-  onStartTask,
-  onSubmitTaskForReview,
-  onApproveDelegatedTask,
-  onReopenDelegatedTask,
 }: {
   page: PageKey;
   role: CompanyRole;
+  currentActor?: SessionActor;
   clients: ClientRecord[];
   schedules: RecurringScheduleRecord[];
   assignments: AssignmentRow[];
   invoices: InvoiceRecord[];
   receipts: ReceiptRecord[];
-  personalTasks: PersonalTaskRecord[];
-  delegatedTasks: DelegatedTaskRecord[];
-  assignedToMe?: DelegatedTaskRecord[];
-  reviewableTasks?: DelegatedTaskRecord[];
+  workItemsModel?: TasksWorkspaceModel;
+  workItemsActions?: TasksWorkspaceActions;
+  dialog?: DialogMode;
+  onCloseDialog?: () => void;
   onCompose: (mode: DialogMode) => void;
   onToast: (message: string) => void;
   onUpdateSchedule: (updated: RecurringScheduleRecord) => void;
   onUpdateAssignment: (updated: AssignmentRow) => void;
   onSelectAssignment: (assignment: AssignmentRow) => void;
-  onTogglePersonalTask: (id: string) => void;
   onRecordPaymentForInvoice: (inv: InvoiceRecord) => void;
   onOpenInvoiceForAssignment: (asn: AssignmentRow) => void;
-  onStartTask?: (task: DelegatedTaskRecord) => void;
-  onSubmitTaskForReview?: (task: DelegatedTaskRecord) => void;
-  onApproveDelegatedTask?: (task: DelegatedTaskRecord) => void;
-  onReopenDelegatedTask?: (task: DelegatedTaskRecord) => void;
 }) {
   const leadership = role === 'founder' || role === 'manager';
   const primaryLabel =
@@ -1532,35 +1367,17 @@ function ModuleWorkspace({
         />
       ) : null}
       {page === 'My Tasks' ? (
-        <div className="dashboard-grid operations-top">
-          <PersonalTasks
-            tasks={personalTasks}
-            onToggle={onTogglePersonalTask}
-            onAdd={() => onCompose('personal')}
-          />
-          <TaskQueue
-            tasks={assignedToMe}
-            onStartTask={onStartTask}
-            onSubmitForReview={onSubmitTaskForReview}
-            onToast={onToast}
-          />
-          {role !== 'trainee' ? (
-            <DelegatedWork
-              tasks={delegatedTasks}
-              role={role}
-              onAdd={() => onCompose('delegated')}
-              onAddInternal={() => onCompose('internal')}
-            />
-          ) : null}
-          {role === 'founder' || role === 'manager' || role === 'senior_staff' || reviewableTasks.length > 0 ? (
-            <ReviewQueue
-              delegatedTasks={reviewableTasks}
-              onApprove={onApproveDelegatedTask}
-              onReopen={onReopenDelegatedTask}
-              onToast={onToast}
-            />
-          ) : null}
-        </div>
+        <TasksWorkspace
+          role={role}
+          assignments={assignments}
+          onToast={onToast}
+          onCompose={onCompose}
+          activeDialog={dialog === 'personal' || dialog === 'delegated' || dialog === 'internal' ? dialog : null}
+          onCloseDialog={onCloseDialog}
+          currentActor={currentActor}
+          model={workItemsModel}
+          actions={workItemsActions}
+        />
       ) : null}
       {page === 'Office Accounts' ? <AccountsWorkspace /> : null}
       {page === 'Team' ? <TeamWorkspace role={role} onToast={onToast} /> : null}

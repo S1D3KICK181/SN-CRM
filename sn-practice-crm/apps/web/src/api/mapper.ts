@@ -118,6 +118,7 @@ export function mapDtoToAssignmentRow(dto: AssignmentDto): AssignmentRow {
 
   return {
     id: dto.id,
+    code: dto.code,
     title: dto.title,
     client: dto.clientName,
     clientId: dto.clientId,

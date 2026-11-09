@@ -25,6 +25,7 @@ export interface AssignmentMilestone {
 
 export interface AssignmentRow {
   id: string;
+  code?: string;
   title: string;
   client: string;
   clientId?: string;

@@ -38,3 +38,10 @@ export function sanitizeRequestId(id: string | undefined): string | undefined {
   if (id.length <= 80 && SUPPORT_REQ_REF_PATTERN.test(id)) return id;
   return undefined;
 }
+
+/**
+ * Checks whether a candidate string is a valid RFC 4122 UUID.
+ */
+export function isValidUuid(value: unknown): value is string {
+  return typeof value === 'string' && RFC4122_UUID_PATTERN.test(value);
+}
