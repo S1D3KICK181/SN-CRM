@@ -201,6 +201,90 @@ describe('AssignmentDetailDrawer component', () => {
     const overviewTab = screen.getByRole('button', { name: /Scope & Team/i });
     fireEvent.click(overviewTab);
 
-    expect(screen.getByText(/Professional fees are managed in Billing/i)).toBeDefined();
+    expect(screen.getByText(/Professional fees, invoicing, and collections are managed in Billing/i)).toBeDefined();
+  });
+
+  it('renders neutral "Not recorded" when description is missing and never invents ICAI boilerplate', () => {
+    const assignmentWithoutScope: AssignmentRow = {
+      ...sampleAssignment,
+      description: null,
+      scope: undefined,
+    };
+
+    render(
+      <AssignmentDetailDrawer
+        assignment={assignmentWithoutScope}
+        leadership={true}
+        role="founder"
+        initialEditing={false}
+        teamMembers={customTeamMembers}
+        onClose={vi.fn()}
+        onToast={vi.fn()}
+        onUpdateAssignment={vi.fn()}
+      />,
+    );
+
+    const overviewTab = screen.getByRole('button', { name: /Scope & Team/i });
+    fireEvent.click(overviewTab);
+
+    expect(screen.getByText('Not recorded')).toBeDefined();
+    expect(screen.queryByText(/ICAI standards/i)).toBeNull();
+    expect(screen.queryByText(/Full statutory deliverable verification/i)).toBeNull();
+    // Also confirm no Bank Rec Requirement is rendered in overview
+    expect(screen.queryByText(/Bank Rec Requirement/i)).toBeNull();
+  });
+
+  it('renders neutral "Managed in Billing" for undefined billing and never displays "Unbilled"', () => {
+    const assignmentWithUndefinedBilling: AssignmentRow = {
+      ...sampleAssignment,
+      billed: undefined,
+      invoiceId: undefined,
+    };
+
+    render(
+      <AssignmentDetailDrawer
+        assignment={assignmentWithUndefinedBilling}
+        leadership={true}
+        role="founder"
+        initialEditing={false}
+        teamMembers={customTeamMembers}
+        onClose={vi.fn()}
+        onToast={vi.fn()}
+        onUpdateAssignment={vi.fn()}
+      />,
+    );
+
+    const billingTab = screen.getByRole('button', { name: /Billing Link/i });
+    fireEvent.click(billingTab);
+
+    expect(screen.queryByText('Unbilled')).toBeNull();
+    expect(screen.getAllByText(/Managed in Billing/i).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('truthfully renders "Billed" with linked invoice when explicitly billed', () => {
+    const billedAssignment: AssignmentRow = {
+      ...sampleAssignment,
+      billed: true,
+      invoiceId: 'INV-2026-0099',
+    };
+
+    render(
+      <AssignmentDetailDrawer
+        assignment={billedAssignment}
+        leadership={true}
+        role="founder"
+        initialEditing={false}
+        teamMembers={customTeamMembers}
+        onClose={vi.fn()}
+        onToast={vi.fn()}
+        onUpdateAssignment={vi.fn()}
+      />,
+    );
+
+    const billingTab = screen.getByRole('button', { name: /Billing Link/i });
+    fireEvent.click(billingTab);
+
+    expect(screen.getByText('Billed')).toBeDefined();
+    expect(screen.getByText('INV-2026-0099')).toBeDefined();
   });
 });

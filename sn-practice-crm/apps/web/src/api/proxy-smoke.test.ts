@@ -119,7 +119,7 @@ describe('Vite Proxy & Live API Smoke', () => {
       /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
     );
     expect(created.title).toBe('Smoke Test Filing');
-    expect(created.status).toBe('Awaiting documents');
+    expect(created.status).toBe('Assigned');
 
     // 2. Start assignment as senior staff (Ananya Rao owns it)
     const started = await adapter.transition('senior_staff', created.id, 'start', {
@@ -131,7 +131,7 @@ describe('Vite Proxy & Live API Smoke', () => {
     const submitted = await adapter.transition('senior_staff', created.id, 'submit', {
       expectedUpdatedAt: started.expectedUpdatedAt,
     });
-    expect(submitted.status).toBe('Pending review');
+    expect(submitted.status).toBe('Ready for review');
 
     // 4. Complete assignment as founder
     const completed = await adapter.transition('founder', created.id, 'complete', {
@@ -175,7 +175,7 @@ describe('Vite Proxy & Live API Smoke', () => {
     expect(created.client).toBe('Aster Foods');
     expect(created.owner).toBe('Priya Desai');
     expect(created.reviewer).toBe('Ananya Rao');
-    expect(created.status).toBe('Awaiting documents');
+    expect(created.status).toBe('Assigned');
     expect(created.due).toBe('15/11/2026');
   });
 });

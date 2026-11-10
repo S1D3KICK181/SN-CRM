@@ -6,28 +6,14 @@ import type { CreateAssignmentCommand } from './types';
  * and submitted drawer edits.
  *
  * Rules:
- * 1. Server lifecycle and operational fields are strictly authoritative:
- *    - id
- *    - status
- *    - progress
- *    - tone
- *    - owner
- *    - reviewer
- *    - service
- * 2. Simultaneous drawer edits take precedence over unchanged / mapper defaults:
- *    - title: submitted if changed, else serverRow.title or existing.title
- *    - due: submitted if changed, else serverRow.due or existing.due
- *    - client: submitted if changed, else serverRow.client or existing.client
- *    - clientId: serverRow.clientId || submitted.clientId || existing.clientId
- * 3. Local-only / non-wire domain fields are NEVER clobbered by mapper defaults:
- *    - fee: submitted.fee ?? existing.fee
- *    - scope: submitted.scope ?? existing.scope
- *    - deliveryNotes: submitted.deliveryNotes ?? existing.deliveryNotes
- *    - billed: submitted.billed ?? existing.billed ?? false
- *    - invoiceId: submitted.invoiceId ?? existing.invoiceId
- *    - bankStatementRequired: submitted.bankStatementRequired ?? existing.bankStatementRequired ?? true
- *    - bankRecStatus: submitted.bankRecStatus ?? existing.bankRecStatus ?? (serverRow.status === 'Completed' ? 'Completed' : 'Awaited')
- *    - milestones: submitted.milestones ?? existing.milestones ?? serverRow.milestones
+ * 1. Server-authoritative row is the foundation (...serverRow):
+ *    All server-backed fields (id, code, status, progress, tone, owner, ownerId,
+ *    reviewer, reviewerId, reviewerIds, reviewerNames, service, serviceId, due,
+ *    client, clientId, description, deliveryNotes, reviewNotes, recurringScheduleId,
+ *    expectedUpdatedAt) survive unconditionally.
+ * 2. Stale local notes or description never overwrite DB-backed server results.
+ * 3. Legacy UI-only fields (fee, billed, invoiceId, bankStatementRequired, bankRecStatus,
+ *    milestones) are preserved only when explicitly present; absence remains absence (undefined).
  */
 export function mergeTransitionResult(
   existing: AssignmentRow,
@@ -37,118 +23,144 @@ export function mergeTransitionResult(
 ): AssignmentRow {
   const base = currentRow ?? existing;
 
-  const isTitleEdited = submitted.title !== undefined && submitted.title !== existing.title;
-  const isDueEdited = submitted.due !== undefined && submitted.due !== existing.due;
-  const isClientEdited = submitted.client !== undefined && submitted.client !== existing.client;
-  const isServiceEdited = submitted.service !== undefined && submitted.service !== existing.service;
-  const isFeeEdited = submitted.fee !== undefined && submitted.fee !== existing.fee;
-  const isScopeEdited = submitted.scope !== undefined && submitted.scope !== existing.scope;
-  const isDeliveryNotesEdited =
-    submitted.deliveryNotes !== undefined && submitted.deliveryNotes !== existing.deliveryNotes;
-  const isMilestonesEdited =
-    submitted.milestones !== undefined && submitted.milestones !== existing.milestones;
+  // 1. Start directly from the complete server-authoritative row
+  const result: AssignmentRow = {
+    ...serverRow,
+  };
 
-  // Newer local mutations check (preserve concurrent mutations from markAssignmentBilled / cascadeClientFields):
-  const billed =
+  // Sync description & scope mapping from serverRow; fall back to base if serverRow omitted them
+  if (serverRow.description !== undefined) {
+    result.description = serverRow.description;
+    result.scope = serverRow.description ?? serverRow.scope ?? base.scope ?? existing.scope;
+  } else if (serverRow.scope !== undefined) {
+    result.scope = serverRow.scope;
+    result.description = serverRow.description ?? base.description ?? existing.description;
+  } else {
+    result.description = base.description ?? existing.description;
+    result.scope = base.scope ?? existing.scope;
+  }
+
+  if (serverRow.deliveryNotes !== undefined) {
+    result.deliveryNotes = serverRow.deliveryNotes;
+  } else {
+    result.deliveryNotes = base.deliveryNotes ?? existing.deliveryNotes;
+  }
+
+  if (serverRow.reviewNotes !== undefined) {
+    result.reviewNotes = serverRow.reviewNotes;
+  } else {
+    result.reviewNotes = base.reviewNotes ?? existing.reviewNotes;
+  }
+
+  // 2. Preserve only explicitly present legacy UI-only fields; absence remains absence.
+  // Check for concurrent local mutations (e.g. markAssignmentBilled or cascadeClientFields during in-flight transition):
+  if (submitted.fee !== undefined && submitted.fee !== existing.fee) {
+    result.fee = submitted.fee;
+  } else if (base.fee !== undefined) {
+    result.fee = base.fee;
+  }
+
+  const resolvedBilled =
     base.billed !== existing.billed
-      ? (base.billed ?? false)
+      ? base.billed
       : submitted.billed !== undefined && submitted.billed !== existing.billed
         ? submitted.billed
-        : (base.billed ?? existing.billed ?? false);
+        : (base.billed ?? existing.billed);
+  if (resolvedBilled !== undefined) {
+    result.billed = resolvedBilled;
+  }
 
-  const invoiceId =
+  const resolvedInvoiceId =
     base.invoiceId !== existing.invoiceId
       ? base.invoiceId
       : submitted.invoiceId !== undefined && submitted.invoiceId !== existing.invoiceId
         ? submitted.invoiceId
         : (base.invoiceId ?? existing.invoiceId);
+  if (resolvedInvoiceId !== undefined) {
+    result.invoiceId = resolvedInvoiceId;
+  }
 
-  const bankStatementRequired =
+  const resolvedBankStatement =
     base.bankStatementRequired !== existing.bankStatementRequired
       ? base.bankStatementRequired
       : submitted.bankStatementRequired !== undefined &&
           submitted.bankStatementRequired !== existing.bankStatementRequired
         ? submitted.bankStatementRequired
-        : (base.bankStatementRequired ?? existing.bankStatementRequired ?? true);
+        : (base.bankStatementRequired ?? existing.bankStatementRequired);
+  if (resolvedBankStatement !== undefined) {
+    result.bankStatementRequired = resolvedBankStatement;
+  }
 
-  const bankRecStatus =
+  const resolvedBankRec =
     base.bankRecStatus !== existing.bankRecStatus
       ? base.bankRecStatus
       : submitted.bankRecStatus !== undefined && submitted.bankRecStatus !== existing.bankRecStatus
         ? submitted.bankRecStatus
-        : (base.bankRecStatus ??
-          existing.bankRecStatus ??
-          (serverRow.status === 'Completed' ? 'Completed' : 'Awaited'));
+        : (base.bankRecStatus ?? existing.bankRecStatus);
+  if (resolvedBankRec !== undefined) {
+    result.bankRecStatus = resolvedBankRec;
+  }
 
-  return {
-    // 1. Identity & lifecycle (server authoritative)
-    id: serverRow.id,
-    status: serverRow.status,
-    progress: serverRow.progress,
-    tone: serverRow.tone,
-    owner: serverRow.owner,
-    reviewer: serverRow.reviewer,
+  const resolvedMilestones =
+    submitted.milestones !== undefined
+      ? submitted.milestones
+      : base.milestones !== undefined
+        ? base.milestones
+        : serverRow.milestones;
+  if (resolvedMilestones !== undefined) {
+    result.milestones = resolvedMilestones;
+  }
 
-    // 2. Core editable fields (drawer edit wins over server default if edited in same save)
-    title: isTitleEdited ? submitted.title : (base.title || serverRow.title || existing.title),
-    due: isDueEdited ? submitted.due : (base.due || serverRow.due || existing.due),
-    service: isServiceEdited ? submitted.service : (base.service || serverRow.service || existing.service),
-    client: isClientEdited ? submitted.client : (base.client || serverRow.client || existing.client),
-    clientId: serverRow.clientId || base.clientId || submitted.clientId || existing.clientId,
-
-    // 3. Local-only non-wire domain fields (preserve submitted or existing; never clobber with mapper defaults)
-    fee: isFeeEdited ? submitted.fee : (base.fee ?? existing.fee),
-    scope: isScopeEdited ? submitted.scope : (base.scope ?? existing.scope),
-    deliveryNotes: isDeliveryNotesEdited ? submitted.deliveryNotes : (base.deliveryNotes ?? existing.deliveryNotes),
-    billed,
-    invoiceId,
-    bankStatementRequired,
-    bankRecStatus,
-    milestones: isMilestonesEdited ? submitted.milestones : (base.milestones ?? existing.milestones ?? serverRow.milestones),
-  };
+  return result;
 }
 
 /**
- * Merges a server-created assignment response with submitted local-only / non-wire domain fields.
+ * Merges a server-created assignment response with submitted legacy UI-only domain fields.
  *
  * Rules:
- * - Server identity, code, and status are strictly authoritative.
- * - Non-wire fields submitted in the creation command (fee, scope, deliveryNotes, bankStatementRequired, etc.)
- *   are preserved in the returned AssignmentRow.
+ * - Server row is completely authoritative: all DB-backed fields (id, code, title,
+ *   client, clientId, service, serviceId, due, owner, ownerId, reviewer, reviewerId,
+ *   reviewerIds, reviewerNames, status, progress, tone, expectedUpdatedAt, description,
+ *   deliveryNotes, reviewNotes, recurringScheduleId) survive intact.
+ * - Stale local values never overwrite server results.
+ * - Legacy UI-only fields (fee, billed, invoiceId, bankStatementRequired, bankRecStatus,
+ *   milestones) are preserved only when explicitly defined; absence remains undefined.
  */
 export function mergeCreateResult(
   submitted: CreateAssignmentCommand | AssignmentRow,
   serverRow: AssignmentRow,
 ): AssignmentRow {
   const asRow = submitted as Partial<AssignmentRow>;
-  return {
-    // Server-authoritative fields
-    id: serverRow.id,
-    title: serverRow.title,
-    client: serverRow.client,
-    clientId: serverRow.clientId,
-    service: serverRow.service,
-    due: serverRow.due,
-    owner: serverRow.owner,
-    reviewer: serverRow.reviewer,
-    status: serverRow.status,
-    progress: serverRow.progress,
-    tone: serverRow.tone,
-
-    // Merged local-only fields
-    fee: asRow.fee !== undefined ? asRow.fee : serverRow.fee,
-    scope: asRow.scope !== undefined ? asRow.scope : serverRow.scope,
-    deliveryNotes: asRow.deliveryNotes !== undefined ? asRow.deliveryNotes : serverRow.deliveryNotes,
-    billed: asRow.billed !== undefined ? asRow.billed : (serverRow.billed ?? false),
-    invoiceId: asRow.invoiceId !== undefined ? asRow.invoiceId : serverRow.invoiceId,
-    bankStatementRequired:
-      asRow.bankStatementRequired !== undefined
-        ? asRow.bankStatementRequired
-        : (serverRow.bankStatementRequired ?? true),
-    bankRecStatus:
-      asRow.bankRecStatus !== undefined
-        ? asRow.bankRecStatus
-        : serverRow.bankRecStatus,
-    milestones: asRow.milestones ?? serverRow.milestones,
+  const result: AssignmentRow = {
+    ...serverRow,
   };
+
+  if (serverRow.description !== undefined) {
+    result.description = serverRow.description;
+    result.scope = serverRow.description ?? serverRow.scope;
+  } else if (serverRow.scope !== undefined) {
+    result.scope = serverRow.scope;
+  }
+
+  // Preserve only explicitly present legacy UI-only fields
+  if (asRow.fee !== undefined) {
+    result.fee = asRow.fee;
+  }
+  if (asRow.billed !== undefined) {
+    result.billed = asRow.billed;
+  }
+  if (asRow.invoiceId !== undefined) {
+    result.invoiceId = asRow.invoiceId;
+  }
+  if (asRow.bankStatementRequired !== undefined) {
+    result.bankStatementRequired = asRow.bankStatementRequired;
+  }
+  if (asRow.bankRecStatus !== undefined) {
+    result.bankRecStatus = asRow.bankRecStatus;
+  }
+  if (asRow.milestones !== undefined) {
+    result.milestones = asRow.milestones;
+  }
+
+  return result;
 }

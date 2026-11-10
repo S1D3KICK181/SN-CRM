@@ -501,6 +501,7 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
       serviceId: record.serviceId,
       service: record.service,
       title: record.title,
+      description: record.description ?? null,
       ownerId: record.ownerId,
       ownerName,
       reviewerIds: [...record.reviewerIds],
@@ -587,6 +588,7 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
     const updated: AssignmentDto = {
       ...existing,
       title: command.title !== undefined ? command.title : existing.title,
+      description: command.description !== undefined ? command.description : existing.description,
       serviceId: command.serviceId !== undefined ? command.serviceId : existing.serviceId,
       service: command.service !== undefined ? command.service : existing.service,
       ownerId: nextOwnerId,
@@ -685,13 +687,24 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
     const ownerName = this.employees.get(input.ownerId)?.name ?? 'Unassigned';
     const reviewerIds = input.reviewerIds ? [...input.reviewerIds] : [];
     const reviewerNames = reviewerIds.map((rid) => this.employees.get(rid)?.name ?? 'Unknown');
+
+    let resolvedService: ServiceReference | undefined;
+    if (input.serviceId) {
+      resolvedService = this.services.get(input.serviceId);
+    } else if (input.service) {
+      resolvedService = [...this.services.values()].find((s) => s.name === input.service);
+    }
+    if (!resolvedService) {
+      throw new ApiError(422, 'referenced_entity_not_found', 'Referenced service does not exist in catalog.');
+    }
+
     const schedule: RecurringScheduleDto = {
       id: input.id,
       code,
       clientId: input.clientId,
       clientName: input.clientName,
-      serviceId: input.serviceId ?? '50000000-0000-4000-a000-000000000001',
-      service: input.service,
+      serviceId: resolvedService.id,
+      service: resolvedService.name,
       title: input.title,
       cadence: input.cadence,
       ownerId: input.ownerId,
@@ -755,6 +768,7 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
             serviceId: schedule.serviceId,
             service: schedule.service,
             title: schedule.title,
+            description: null,
             ownerId: schedule.ownerId,
             ownerName: schedule.ownerName ?? 'Unassigned',
             reviewerIds: [...schedule.reviewerIds],

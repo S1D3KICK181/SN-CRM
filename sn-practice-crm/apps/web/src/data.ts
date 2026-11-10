@@ -43,9 +43,11 @@ export interface AssignmentRow {
   progress: number;
   tone: AssignmentTone;
   scope?: string;
+  description?: string | null;
+  recurringScheduleId?: string | null;
   milestones?: AssignmentMilestone[];
-  deliveryNotes?: string;
-  reviewNotes?: string;
+  deliveryNotes?: string | null;
+  reviewNotes?: string | null;
   fee?: number;
   billed?: boolean;
   invoiceId?: string;
@@ -505,22 +507,23 @@ export interface RecurringScheduleRecord {
   id: string;
   code?: string;
   title: string;
-  category: ScheduleCategory;
+  service?: string;
+  category: ScheduleCategory | string;
   clientId: string;
   clientCode?: string;
   clientName: string;
   cadence: ScheduleCadence;
-  generationDay: number;
-  statutoryDueDay: string;
+  generationDay?: number;
+  statutoryDueDay?: string;
   defaultOwner: string;
   nextRunDate: string;
   nextDueDate: string;
   status: 'Active' | 'Needs attention' | 'Paused';
   exceptionReason?: string;
   bankRecStatus?: 'Completed' | 'In progress' | 'Awaited' | 'Not applicable';
-  currentStatus?: 'Pending' | 'Bank Statement Received' | 'Docs Awaited' | 'Ready to File' | 'Filed';
-  checklistTemplate: string[];
-  history: Array<{
+  currentStatus?: 'Pending' | 'Bank Statement Received' | 'Docs Awaited' | 'Ready to File' | 'Filed' | 'Active' | 'Paused';
+  checklistTemplate?: string[];
+  history?: Array<{
     period: string;
     assignmentId: string;
     status: string;

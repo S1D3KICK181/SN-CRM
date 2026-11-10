@@ -9,13 +9,13 @@ import {
   type CoordinatorState,
 } from './coordinator';
 import { HttpAssignmentsAdapter } from './http-adapter';
-import type {
+import {
   AssignmentOperationError,
-  AssignmentsPort,
-  CreateAssignmentCommand,
-  CreateRecurringScheduleCommand,
-  GenerateDueAssignmentsResult,
-  UpdateRecurringSchedulePatch,
+  type AssignmentsPort,
+  type CreateAssignmentCommand,
+  type CreateRecurringScheduleCommand,
+  type GenerateDueAssignmentsResult,
+  type UpdateRecurringSchedulePatch,
 } from './types';
 
 export interface UseAssignmentsOptions {
@@ -105,7 +105,7 @@ export function useAssignments(role: CompanyRole, options: UseAssignmentsOptions
   useEffect(() => {
     let active = true;
     if (typeof port.listServices === 'function') {
-      port.listServices()
+      port.listServices(role)
         .then((items) => {
           if (active) setServices(items);
         })
@@ -116,7 +116,7 @@ export function useAssignments(role: CompanyRole, options: UseAssignmentsOptions
     return () => {
       active = false;
     };
-  }, [port]);
+  }, [port, role]);
 
   useEffect(() => {
     isMountedRef.current = true;
@@ -147,24 +147,34 @@ export function useAssignments(role: CompanyRole, options: UseAssignmentsOptions
     async (
       commandOrRow: AssignmentRow | CreateAssignmentCommand,
     ): Promise<AssignmentRow | undefined> => {
-      try {
-        const res = await coordinator.handleCreateAssignment(commandOrRow);
-        return res.row;
-      } catch {
-        return undefined;
+      const res = await coordinator.handleCreateAssignment(commandOrRow);
+      if (!res.success) {
+        throw (
+          res.error ??
+          new AssignmentOperationError({
+            code: 'unexpected',
+            message: 'Failed to create assignment.',
+          })
+        );
       }
+      return res.row;
     },
     [coordinator],
   );
 
   const handleUpdateAssignment = useCallback(
     async (updated: AssignmentRow): Promise<AssignmentRow | undefined> => {
-      try {
-        const res = await coordinator.handleUpdateAssignment(updated);
-        return res.row;
-      } catch {
-        return undefined;
+      const res = await coordinator.handleUpdateAssignment(updated);
+      if (!res.success) {
+        throw (
+          res.error ??
+          new AssignmentOperationError({
+            code: 'unexpected',
+            message: 'Failed to update assignment.',
+          })
+        );
       }
+      return res.row;
     },
     [coordinator],
   );
@@ -174,12 +184,17 @@ export function useAssignments(role: CompanyRole, options: UseAssignmentsOptions
       id: string,
       patch: import('./types').UpdateAssignmentPatch,
     ): Promise<AssignmentRow | undefined> => {
-      try {
-        const res = await coordinator.handlePatchAssignment(id, patch);
-        return res.row;
-      } catch {
-        return undefined;
+      const res = await coordinator.handlePatchAssignment(id, patch);
+      if (!res.success) {
+        throw (
+          res.error ??
+          new AssignmentOperationError({
+            code: 'unexpected',
+            message: 'Failed to patch assignment.',
+          })
+        );
       }
+      return res.row;
     },
     [coordinator],
   );
@@ -188,12 +203,17 @@ export function useAssignments(role: CompanyRole, options: UseAssignmentsOptions
     async (
       command: CreateRecurringScheduleCommand,
     ): Promise<RecurringScheduleRecord | undefined> => {
-      try {
-        const res = await coordinator.handleCreateSchedule(command);
-        return res.schedule;
-      } catch {
-        return undefined;
+      const res = await coordinator.handleCreateSchedule(command);
+      if (!res.success) {
+        throw (
+          res.error ??
+          new AssignmentOperationError({
+            code: 'unexpected',
+            message: 'Failed to create schedule.',
+          })
+        );
       }
+      return res.schedule;
     },
     [coordinator],
   );
@@ -203,12 +223,17 @@ export function useAssignments(role: CompanyRole, options: UseAssignmentsOptions
       id: string,
       patch: UpdateRecurringSchedulePatch,
     ): Promise<RecurringScheduleRecord | undefined> => {
-      try {
-        const res = await coordinator.handleUpdateSchedule(id, patch);
-        return res.schedule;
-      } catch {
-        return undefined;
+      const res = await coordinator.handleUpdateSchedule(id, patch);
+      if (!res.success) {
+        throw (
+          res.error ??
+          new AssignmentOperationError({
+            code: 'unexpected',
+            message: 'Failed to update schedule.',
+          })
+        );
       }
+      return res.schedule;
     },
     [coordinator],
   );

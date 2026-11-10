@@ -42,6 +42,7 @@ const sampleAssignmentWithUuid: AssignmentRow = {
   tone: 'default',
   bankStatementRequired: true,
   bankRecStatus: 'Awaited',
+  expectedUpdatedAt: '2026-11-10T12:00:00.000Z',
 };
 
 const sampleScheduleWithUuid: RecurringScheduleRecord = {
@@ -291,12 +292,12 @@ describe('AS-01 Release Blockers Remediation', () => {
       expect(screen.queryByText(REAL_UUID_ASSIGNMENT)).toBeNull();
     });
 
-    it('ScheduleDetailDrawer Overview and History tabs purge raw UUIDs', () => {
+    it('ScheduleDetailDrawer Overview and Linked Assignments tabs purge raw UUIDs', () => {
       render(
         <AssignmentsWorkspace
           role="founder"
           schedules={[sampleScheduleWithUuid]}
-          assignments={[]}
+          assignments={[{ ...sampleAssignmentWithUuid, recurringScheduleId: REAL_UUID_SCHEDULE }]}
           onToast={vi.fn()}
           onCompose={vi.fn()}
           onUpdateSchedule={vi.fn()}
@@ -316,13 +317,12 @@ describe('AS-01 Release Blockers Remediation', () => {
       expect(screen.getAllByText('Aster Foods Private Limited').length).toBeGreaterThanOrEqual(1);
       expect(screen.queryByText(new RegExp(REAL_UUID_CLIENT))).toBeNull();
 
-      // Check History tab
-      const historyTab = screen.getByRole('button', { name: /^Generated History/i });
-      fireEvent.click(historyTab);
+      // Check Linked Assignments tab
+      const linkedTab = screen.getByRole('button', { name: /Linked Assignments/i });
+      fireEvent.click(linkedTab);
 
-      // Historical assignment reference does not reflect raw assignment UUID
-      expect(screen.getByText('October 2026')).toBeDefined();
-      expect(screen.getByText(/Completed on 08\/11\/2026/)).toBeDefined();
+      // Linked assignment title is displayed without raw UUID leakage
+      expect(screen.getByText('Monthly Return Scrutiny & Filing')).toBeDefined();
       expect(screen.queryByText(new RegExp(REAL_UUID_ASSIGNMENT))).toBeNull();
     });
 
@@ -385,7 +385,7 @@ describe('AS-01 Release Blockers Remediation', () => {
   });
 
   describe('Blocker 4 & 5: Recurring Schedule Drawer Status Buttons & Density', () => {
-    it('renders status buttons in .schedule-status-group and checklist in .schedule-checklist-list', () => {
+    it('renders schedule management controls and purges synthetic checklist UI', () => {
       render(
         <AssignmentsWorkspace
           role="founder"
@@ -408,10 +408,13 @@ describe('AS-01 Release Blockers Remediation', () => {
       expect(screen.queryByRole('button', { name: /^Ready to File$/i })).toBeNull();
       expect(screen.queryByRole('button', { name: /^Filed$/i })).toBeNull();
 
-      // Verify checklist items
+      // Verify synthetic checklist is completely purged
       expect(
-        screen.getByText('Obtain monthly outward sales invoices and bank statements'),
-      ).toBeDefined();
+        screen.queryByText('Obtain monthly outward sales invoices and bank statements'),
+      ).toBeNull();
+
+      // Verify schedule management controls are present
+      expect(screen.getByRole('button', { name: /Pause Schedule/i })).toBeDefined();
 
       // Verify explicit close buttons in header and footer
       expect(screen.getByRole('button', { name: /Close drawer/i })).toBeDefined();
@@ -507,9 +510,9 @@ describe('AS-01 Release Blockers Remediation', () => {
       expect(scheduleTitleEl.getAttribute('title')).toBe('Monthly GSTR-1 Return Schedule');
 
       // Verify action button has compact height (26px)
-      const checklistBtn = screen.getByRole('button', { name: /View Checklist/i });
-      expect(checklistBtn.style.height).toBe('26px');
-      expect(checklistBtn.style.minHeight).toBe('26px');
+      const actionBtn = screen.getByRole('button', { name: /View Schedule/i });
+      expect(actionBtn.style.height).toBe('26px');
+      expect(actionBtn.style.minHeight).toBe('26px');
 
       // Verify user avatar is compact 22x22
       const avatarEl = container.querySelector('.user-avatar');

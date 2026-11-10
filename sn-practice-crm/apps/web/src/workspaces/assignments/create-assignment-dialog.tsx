@@ -37,21 +37,16 @@ export interface CreateAssignmentDialogProps {
   readonly onToast?: (message: string) => void;
 }
 
-const SERVICES = [
-  'GST Compliance',
-  'Internal Audit',
-  'Tax Compliance (TDS)',
-  'Bookkeeping & Accounts',
-  'Statutory Audit',
-  'Direct Tax Advisory',
-];
+const EMPTY_CLIENTS: readonly DialogClientOption[] = [];
+const EMPTY_TEAM: readonly DialogStaffOption[] = [];
+const EMPTY_SERVICES: readonly ServiceCatalogItemDto[] = [];
 
 export function CreateAssignmentDialog({
   isOpen,
   role,
-  clients = [],
-  teamMembers = [],
-  services = [],
+  clients = EMPTY_CLIENTS,
+  teamMembers = EMPTY_TEAM,
+  services = EMPTY_SERVICES,
   onClose,
   onCreateAssignment,
   onCreateSchedule,
@@ -62,30 +57,27 @@ export function CreateAssignmentDialog({
   const [submitting, setSubmitting] = useState(false);
   const [dialogError, setDialogError] = useState<string | null>(null);
 
-  const availableServices = useMemo(() => {
-    if (services && services.length > 0) {
-      return services;
-    }
-    return SERVICES.map((name, idx) => ({ id: `50000000-0000-4000-a000-00000000000${idx + 1}`, name }));
-  }, [services]);
+  const availableServices = services;
 
   // Form Fields
   const [clientId, setClientId] = useState('');
   const [title, setTitle] = useState('');
+  const [description, setDescription] = useState('');
   const [selectedServiceId, setSelectedServiceId] = useState('');
-  const [service, setService] = useState('GST Compliance');
+  const [service, setService] = useState('');
   const [ownerId, setOwnerId] = useState('');
   const [reviewerId, setReviewerId] = useState('');
   const [dueDate, setDueDate] = useState('');
 
   // Recurring Schedule Specific Fields
   const [cadence, setCadence] = useState<'monthly' | 'quarterly' | 'annual'>('monthly');
-  const [dueDay, setDueDay] = useState('11');
+  const [dueDay, setDueDay] = useState('');
   const [nextOccurrenceOn, setNextOccurrenceOn] = useState('');
 
   const dialogRef = useRef<HTMLElement>(null);
   const initialFocusRef = useRef<HTMLSelectElement | null>(null);
   const restoreFocusRef = useRef<HTMLElement | null>(null);
+  const prevOpenRef = useRef(false);
 
   // Filter out trainees: Trainees MUST NOT own assignments or schedules
   const eligibleOwners = useMemo(() => {
@@ -99,28 +91,22 @@ export function CreateAssignmentDialog({
 
   // Capture trigger element for focus restoration, set defaults, and handle initial focus
   useEffect(() => {
-    if (isOpen) {
+    if (isOpen && !prevOpenRef.current) {
+      prevOpenRef.current = true;
       restoreFocusRef.current = (document.activeElement as HTMLElement) || null;
       setDialogError(null);
       setSubmitting(false);
       setTab('assignment');
       setClientId(clients[0]?.id ?? '');
       setTitle('');
+      setDescription('');
       setSelectedServiceId(availableServices[0]?.id ?? '');
-      setService(availableServices[0]?.name ?? 'GST Compliance');
+      setService(availableServices[0]?.name ?? '');
       setOwnerId(eligibleOwners[1]?.id ?? eligibleOwners[0]?.id ?? '');
       setReviewerId(eligibleReviewers[0]?.id ?? '');
-
-      const today = new Date();
-      const nextWeek = new Date(today.getTime() + 7 * 86400000);
-      const yyyy = nextWeek.getFullYear();
-      const mm = String(nextWeek.getMonth() + 1).padStart(2, '0');
-      const dd = String(nextWeek.getDate()).padStart(2, '0');
-      setDueDate(`${yyyy}-${mm}-${dd}`);
-
-      const nextMonth = new Date(today.getFullYear(), today.getMonth() + 1, 1);
-      const nextMonthStr = `${nextMonth.getFullYear()}-${String(nextMonth.getMonth() + 1).padStart(2, '0')}-01`;
-      setNextOccurrenceOn(nextMonthStr);
+      setDueDate('');
+      setDueDay('');
+      setNextOccurrenceOn('');
 
       const timer = window.setTimeout(() => {
         initialFocusRef.current?.focus();
@@ -132,9 +118,11 @@ export function CreateAssignmentDialog({
           restoreFocusRef.current.focus();
         }
       };
+    } else if (!isOpen) {
+      prevOpenRef.current = false;
     }
     return undefined;
-  }, [isOpen, clients, eligibleOwners, eligibleReviewers]);
+  }, [isOpen, clients, eligibleOwners, eligibleReviewers, availableServices]);
 
   // Global Escape and Tab focus-trap listener
   useEffect(() => {
@@ -211,19 +199,29 @@ export function CreateAssignmentDialog({
       const serviceMatch = availableServices.find(
         (s) => s.id === selectedServiceId || s.name === service
       );
-      const serviceId = serviceMatch?.id;
-      const serviceName = serviceMatch?.name ?? service;
+      if (availableServices.length === 0 || !serviceMatch) {
+        setDialogError('Service catalog is unavailable. Assignment and schedule creation is blocked.');
+        return;
+      }
+      const serviceId = serviceMatch.id;
+      const serviceName = serviceMatch.name;
 
       if (tab === 'assignment') {
+        if (!dueDate || !dueDate.trim()) {
+          setDialogError('Target due date is required.');
+          return;
+        }
+
         const success = await onCreateAssignment({
           clientId,
           clientName: selectedClient?.name,
           title: title.trim(),
+          description: description.trim() || undefined,
           serviceId,
           service: serviceName,
           ownerNameOrId: ownerId,
           reviewerNameOrId: reviewerId || undefined,
-          dueDate: dueDate || undefined,
+          dueDate: dueDate.trim(),
         });
 
         if (success) {
@@ -237,6 +235,22 @@ export function CreateAssignmentDialog({
           return;
         }
 
+        if (!nextOccurrenceOn || !nextOccurrenceOn.trim()) {
+          setDialogError('First occurrence start date is required.');
+          return;
+        }
+
+        if (!dueDay || !dueDay.trim()) {
+          setDialogError('Due offset is required.');
+          return;
+        }
+
+        const dueOffsetNum = Number(dueDay);
+        if (!Number.isInteger(dueOffsetNum) || dueOffsetNum < 1 || dueOffsetNum > 31) {
+          setDialogError('Due offset must be an integer between 1 and 31 days after period end.');
+          return;
+        }
+
         const success = await onCreateSchedule({
           clientId,
           clientName: selectedClient?.name,
@@ -245,8 +259,8 @@ export function CreateAssignmentDialog({
           service: serviceName,
           cadence,
           ownerId,
-          dueDay: Number(dueDay) || 11,
-          nextOccurrenceOn: nextOccurrenceOn || `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}-01`,
+          dueDay: dueOffsetNum,
+          nextOccurrenceOn: nextOccurrenceOn.trim(),
         });
 
         if (success) {
@@ -416,7 +430,7 @@ export function CreateAssignmentDialog({
             {/* Service Practice Area */}
             <div className="field">
               <label htmlFor="assign-service">
-                <span>Service Practice Area</span>
+                <span>Service Practice Area *</span>
               </label>
               <select
                 id="assign-service"
@@ -427,13 +441,18 @@ export function CreateAssignmentDialog({
                   const match = availableServices.find((s) => s.id === sId);
                   if (match) setService(match.name);
                 }}
-                disabled={submitting}
+                disabled={submitting || availableServices.length === 0}
+                required
               >
-                {availableServices.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.name}
-                  </option>
-                ))}
+                {availableServices.length === 0 ? (
+                  <option value="" disabled>Service catalog unavailable</option>
+                ) : (
+                  availableServices.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.name}
+                    </option>
+                  ))
+                )}
               </select>
             </div>
 
@@ -491,13 +510,29 @@ export function CreateAssignmentDialog({
                 {/* Target Due Date */}
                 <div className="field">
                   <label htmlFor="assign-due">
-                    <span>Target Due Date</span>
+                    <span>Target Due Date *</span>
                   </label>
                   <input
                     id="assign-due"
                     type="date"
                     value={dueDate}
                     onChange={(e) => setDueDate(e.target.value)}
+                    required
+                    disabled={submitting}
+                  />
+                </div>
+
+                {/* Scope / description */}
+                <div className="field is-full">
+                  <label htmlFor="assign-description">
+                    <span>Scope / description</span>
+                  </label>
+                  <textarea
+                    id="assign-description"
+                    rows={2}
+                    value={description}
+                    onChange={(e) => setDescription(e.target.value)}
+                    placeholder="Optional scope details, deliverable specifications, or client instructions"
                     disabled={submitting}
                   />
                 </div>
@@ -524,7 +559,7 @@ export function CreateAssignmentDialog({
                 {/* Statutory Due Offset Days */}
                 <div className="field">
                   <label htmlFor="sched-dueday">
-                    <span>Due Day (days after period end)</span>
+                    <span>Due offset (days after period end) *</span>
                   </label>
                   <input
                     id="sched-dueday"
@@ -533,6 +568,8 @@ export function CreateAssignmentDialog({
                     max="31"
                     value={dueDay}
                     onChange={(e) => setDueDay(e.target.value)}
+                    placeholder="e.g. 20"
+                    required
                     disabled={submitting}
                   />
                 </div>
@@ -540,13 +577,14 @@ export function CreateAssignmentDialog({
                 {/* First Occurrence Date */}
                 <div className="field is-full">
                   <label htmlFor="sched-nextrun">
-                    <span>First Occurrence Start Date</span>
+                    <span>First Occurrence Start Date *</span>
                   </label>
                   <input
                     id="sched-nextrun"
                     type="date"
                     value={nextOccurrenceOn}
                     onChange={(e) => setNextOccurrenceOn(e.target.value)}
+                    required
                     disabled={submitting}
                   />
                 </div>
@@ -566,7 +604,7 @@ export function CreateAssignmentDialog({
             <button
               type="submit"
               className="primary-button"
-              disabled={submitting}
+              disabled={submitting || availableServices.length === 0}
             >
               <Plus size={16} aria-hidden="true" />
               <span>

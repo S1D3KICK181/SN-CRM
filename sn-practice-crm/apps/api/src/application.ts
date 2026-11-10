@@ -228,6 +228,7 @@ export class CrmApplication {
       serviceId: serviceRef.id,
       service: serviceRef.name,
       title: input.title,
+      description: input.description ?? null,
       ownerId: owner.id,
       reviewerIds,
       status: 'assigned',
@@ -250,8 +251,8 @@ export class CrmApplication {
     transition: AssignmentTransition,
     options?: {
       expectedUpdatedAt?: string;
-      deliveryNotes?: string;
-      reviewNotes?: string;
+      deliveryNotes?: string | null;
+      reviewNotes?: string | null;
       progressPercent?: number;
     },
   ): Promise<AssignmentDto> {
@@ -347,6 +348,7 @@ export class CrmApplication {
 
     const isModifyingLeadershipFields =
       input.title !== undefined ||
+      input.description !== undefined ||
       input.serviceId !== undefined ||
       input.ownerId !== undefined ||
       input.reviewerIds !== undefined ||
@@ -362,6 +364,7 @@ export class CrmApplication {
     if (assignment.status === 'approved' || assignment.status === 'closed') {
       const hasCoreMutation =
         input.title !== undefined ||
+        input.description !== undefined ||
         input.serviceId !== undefined ||
         input.ownerId !== undefined ||
         input.reviewerIds !== undefined ||
@@ -428,6 +431,7 @@ export class CrmApplication {
     const command: UpdateAssignmentCommand = {
       id: assignment.id,
       title: input.title,
+      description: input.description,
       serviceId: input.serviceId,
       service: serviceName,
       ownerId: targetOwnerId,

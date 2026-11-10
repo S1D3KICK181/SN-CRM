@@ -56,13 +56,8 @@ describe('Trainee assignments visibility', () => {
         statutoryDueDay: '20th',
         nextDueDate: '20/11/2026',
         nextRunDate: '01/11/2026',
-        generationDay: 1,
         defaultOwner: 'S. Narayanan',
         status: 'Active' as const,
-        bankRecStatus: 'Awaited' as const,
-        currentStatus: 'Docs Awaited' as const,
-        checklistTemplate: ['Step 1'],
-        history: [],
       },
       {
         id: 'RS-002',
@@ -74,13 +69,27 @@ describe('Trainee assignments visibility', () => {
         statutoryDueDay: '31st',
         nextDueDate: '31/01/2027',
         nextRunDate: '01/01/2027',
-        generationDay: 1,
         defaultOwner: 'S. Narayanan',
-        status: 'Active' as const,
-        bankRecStatus: 'Completed' as const,
-        currentStatus: 'Ready to File' as const,
-        checklistTemplate: ['Step 1'],
-        history: [],
+        status: 'Paused' as const,
+      },
+    ];
+
+    const assignments: AssignmentRow[] = [
+      {
+        id: 'ASN-001',
+        code: 'ASN-001',
+        title: 'GST Oct Filing',
+        clientId: 'CLI-001',
+        client: 'Aster Foods',
+        service: 'GST',
+        scope: 'Oct 2026',
+        due: '20/11/2026',
+        owner: 'Priya Desai',
+        reviewer: 'Ananya Rao',
+        status: 'In progress',
+        progress: 50,
+        tone: 'warning',
+        recurringScheduleId: 'RS-001',
       },
     ];
 
@@ -88,7 +97,7 @@ describe('Trainee assignments visibility', () => {
       <AssignmentsWorkspace
         role="founder"
         schedules={schedules}
-        assignments={[]}
+        assignments={assignments}
         onToast={vi.fn()}
         onCompose={vi.fn()}
         onUpdateSchedule={vi.fn()}
@@ -97,16 +106,27 @@ describe('Trainee assignments visibility', () => {
       />,
     );
 
-    // Tally strip items should show counts
-    expect(screen.getByRole('button', { name: /Docs Awaited/i })).toBeDefined();
-    expect(screen.getByRole('button', { name: /Ready to File/i })).toBeDefined();
+    // Tally strip items show server-backed schedule states and open work
+    expect(screen.getByRole('button', { name: /Active 1/i })).toBeDefined();
+    expect(screen.getByRole('button', { name: /Paused 1/i })).toBeDefined();
+    expect(screen.getByRole('button', { name: /Open Work 1/i })).toBeDefined();
 
     // Both schedules visible initially under 'All'
     expect(screen.getByText('GST Monthly Return')).toBeDefined();
     expect(screen.getByText('TDS Quarterly Return')).toBeDefined();
 
-    // Click 'Docs Awaited' filter pill
-    fireEvent.click(screen.getByRole('button', { name: /Docs Awaited/i }));
+    // Click 'Paused' filter pill
+    fireEvent.click(screen.getByRole('button', { name: /Paused 1/i }));
+    expect(screen.queryByText('GST Monthly Return')).toBeNull();
+    expect(screen.getByText('TDS Quarterly Return')).toBeDefined();
+
+    // Click 'Active' filter pill
+    fireEvent.click(screen.getByRole('button', { name: /Active 1/i }));
+    expect(screen.getByText('GST Monthly Return')).toBeDefined();
+    expect(screen.queryByText('TDS Quarterly Return')).toBeNull();
+
+    // Click 'Open Work' filter pill
+    fireEvent.click(screen.getByRole('button', { name: /Open Work 1/i }));
     expect(screen.getByText('GST Monthly Return')).toBeDefined();
     expect(screen.queryByText('TDS Quarterly Return')).toBeNull();
   });

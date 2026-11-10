@@ -1,6 +1,7 @@
 import type { CompanyRole } from '@sn/domain';
 import type { ServiceCatalogItemDto } from '@sn/contracts';
 import type { AssignmentRow, RecurringScheduleRecord } from '../data';
+import { computeRecurringNextDueDate, formatIsoToDisplayDate } from './mapper';
 import type {
   AssignmentContractTransition,
   AssignmentsPort,
@@ -37,6 +38,8 @@ export class DeterministicTestAssignmentsAdapter implements AssignmentsPort {
   private updateResponses = new Map<string, AssignmentRow>();
   private generateDueCount = 0;
 
+  private lastListServicesRole?: CompanyRole;
+
   setListResponse(role: CompanyRole, rows: AssignmentRow[]): void {
     this.listResponses.set(role, rows);
   }
@@ -45,7 +48,12 @@ export class DeterministicTestAssignmentsAdapter implements AssignmentsPort {
     this.servicesResponse = services;
   }
 
-  async listServices(_options?: PortExecutionOptions): Promise<readonly ServiceCatalogItemDto[]> {
+  getLastListServicesRole(): CompanyRole | undefined {
+    return this.lastListServicesRole;
+  }
+
+  async listServices(role: CompanyRole, _options?: PortExecutionOptions): Promise<readonly ServiceCatalogItemDto[]> {
+    this.lastListServicesRole = role;
     return this.servicesResponse;
   }
 
@@ -125,8 +133,8 @@ export class DeterministicTestAssignmentsAdapter implements AssignmentsPort {
       service: command.service ?? 'GST Compliance',
       due: command.dueDate ?? command.due ?? '11/11/2026',
       owner: command.ownerNameOrId ?? command.owner ?? 'Priya Desai',
-      status: 'Awaiting documents',
-      progress: 15,
+      status: 'Assigned',
+      progress: command.progressPercent ?? 0,
       tone: 'default',
     };
   }
@@ -173,9 +181,9 @@ export class DeterministicTestAssignmentsAdapter implements AssignmentsPort {
       owner: 'Priya Desai',
       status:
         action === 'complete'
-          ? 'Completed'
+          ? 'Closed'
           : action === 'submit'
-            ? 'Pending review'
+            ? 'Ready for review'
             : action === 'request_changes'
               ? 'Changes requested'
               : 'In progress',
@@ -220,6 +228,7 @@ export class DeterministicTestAssignmentsAdapter implements AssignmentsPort {
       status: 'In progress',
       progress: patch.progressPercent ?? 50,
       tone: 'default',
+      expectedUpdatedAt: patch.expectedUpdatedAt ?? '2026-11-10T12:00:00.000Z',
     };
   }
 
@@ -241,30 +250,31 @@ export class DeterministicTestAssignmentsAdapter implements AssignmentsPort {
     if (options?.signal?.aborted) {
       throw new Error('Aborted');
     }
+    const nextDueDate = computeRecurringNextDueDate(command.nextOccurrenceOn, command.dueDay ?? 10);
+    const nextRunDate = command.nextOccurrenceOn
+      ? formatIsoToDisplayDate(command.nextOccurrenceOn)
+      : '01/12/2026';
+
     return {
       id: 'sch_mock_test_id',
       title: command.title,
-      category: 'GST',
+      service: command.service,
+      category: (command.service || 'General Compliance') as any,
       clientId: command.clientId,
       clientName: command.clientName ?? 'Mock Client',
       cadence: command.cadence === 'monthly' ? 'Monthly' : 'Quarterly',
-      generationDay: 1,
-      statutoryDueDay: `${command.dueDay}th of month`,
+      statutoryDueDay: `${command.dueDay ?? 10} days after period end`,
       defaultOwner: command.ownerNameOrId ?? 'Priya Desai',
-      nextRunDate: '01/12/2026',
-      nextDueDate: '11/12/2026',
+      nextRunDate,
+      nextDueDate,
       status: 'Active',
-      bankRecStatus: 'Awaited',
-      currentStatus: 'Pending',
-      checklistTemplate: ['Mock step 1'],
-      history: [],
     };
   }
 
   async updateSchedule(
     _role: CompanyRole,
     id: string,
-    _patch: UpdateRecurringSchedulePatch,
+    patch: UpdateRecurringSchedulePatch,
     options?: PortExecutionOptions,
   ): Promise<RecurringScheduleRecord> {
     if (options?.signal?.aborted) {
@@ -277,16 +287,11 @@ export class DeterministicTestAssignmentsAdapter implements AssignmentsPort {
       clientId: 'cli_mock',
       clientName: 'Mock Client',
       cadence: 'Monthly',
-      generationDay: 1,
-      statutoryDueDay: '11th of month',
+      statutoryDueDay: '11 days after period end',
       defaultOwner: 'Priya Desai',
       nextRunDate: '01/12/2026',
       nextDueDate: '11/12/2026',
-      status: 'Active',
-      bankRecStatus: 'Awaited',
-      currentStatus: 'Pending',
-      checklistTemplate: ['Mock step 1'],
-      history: [],
+      status: patch.active === false ? 'Paused' : 'Active',
     };
   }
 

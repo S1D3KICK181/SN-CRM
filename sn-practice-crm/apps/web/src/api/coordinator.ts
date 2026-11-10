@@ -438,6 +438,7 @@ export class AssignmentsCoordinator {
 
     // Build patch for non-status fields
     let title: string | undefined;
+    let description: string | null | undefined;
     let serviceId: string | undefined;
     let ownerId: string | undefined;
     let reviewerIds: string[] | undefined;
@@ -445,73 +446,95 @@ export class AssignmentsCoordinator {
     let deliveryNotes: string | null | undefined;
     let reviewNotes: string | null | undefined;
     let progressPercent: number | undefined;
-    let hasNonStatusChanges = false;
+    let hasStructuralChanges = false;
+    let hasTransitionFieldChanges = false;
 
     if (updated.title && updated.title !== existing.title) {
       title = updated.title.trim();
-      hasNonStatusChanges = true;
+      hasStructuralChanges = true;
+    }
+    if (updated.description !== undefined && updated.description !== existing.description) {
+      description = updated.description !== null && updated.description.trim().length > 0
+        ? updated.description.trim()
+        : null;
+      hasStructuralChanges = true;
     }
     if (updated.serviceId && updated.serviceId !== existing.serviceId) {
       serviceId = updated.serviceId;
-      hasNonStatusChanges = true;
+      hasStructuralChanges = true;
     }
     if (updated.ownerId && updated.ownerId !== existing.ownerId) {
       ownerId = updated.ownerId;
-      hasNonStatusChanges = true;
+      hasStructuralChanges = true;
     } else if (updated.owner && updated.owner !== existing.owner && NAME_TO_DEMO_ACTOR_ID[updated.owner]) {
       ownerId = NAME_TO_DEMO_ACTOR_ID[updated.owner];
-      hasNonStatusChanges = true;
+      hasStructuralChanges = true;
     }
     if (updated.reviewerIds !== undefined && updated.reviewerIds !== existing.reviewerIds) {
       reviewerIds = [...updated.reviewerIds];
-      hasNonStatusChanges = true;
+      hasStructuralChanges = true;
     } else if (updated.reviewerId && updated.reviewerId !== existing.reviewerId) {
       reviewerIds = [updated.reviewerId];
-      hasNonStatusChanges = true;
+      hasStructuralChanges = true;
     } else if (updated.reviewer !== undefined && updated.reviewer !== existing.reviewer) {
       if (updated.reviewer && updated.reviewer !== 'Not designated' && NAME_TO_DEMO_ACTOR_ID[updated.reviewer]) {
         reviewerIds = [NAME_TO_DEMO_ACTOR_ID[updated.reviewer]!];
       } else {
         reviewerIds = [];
       }
-      hasNonStatusChanges = true;
+      hasStructuralChanges = true;
     }
     if (updated.due && updated.due !== existing.due) {
       dueAt = parseDisplayDateToIso(updated.due);
-      hasNonStatusChanges = true;
+      hasStructuralChanges = true;
     }
     if (updated.deliveryNotes !== undefined && updated.deliveryNotes !== existing.deliveryNotes) {
-      deliveryNotes = updated.deliveryNotes;
-      hasNonStatusChanges = true;
+      deliveryNotes = updated.deliveryNotes !== null && updated.deliveryNotes.trim().length > 0
+        ? updated.deliveryNotes.trim()
+        : null;
+      hasTransitionFieldChanges = true;
     }
     if (updated.reviewNotes !== undefined && updated.reviewNotes !== existing.reviewNotes) {
-      reviewNotes = updated.reviewNotes;
-      hasNonStatusChanges = true;
+      reviewNotes = updated.reviewNotes !== null && updated.reviewNotes.trim().length > 0
+        ? updated.reviewNotes.trim()
+        : null;
+      hasTransitionFieldChanges = true;
     }
     if (updated.progress !== undefined && updated.progress !== existing.progress) {
       progressPercent = updated.progress;
-      hasNonStatusChanges = true;
+      hasTransitionFieldChanges = true;
     }
 
-    const expectedUpdatedAt = existing.expectedUpdatedAt ?? new Date().toISOString();
-
-    const patch: import('./types').UpdateAssignmentPatch = {
-      ...(title !== undefined ? { title } : {}),
-      ...(serviceId !== undefined ? { serviceId } : {}),
-      ...(ownerId !== undefined ? { ownerId } : {}),
-      ...(reviewerIds !== undefined ? { reviewerIds } : {}),
-      ...(dueAt !== undefined ? { dueAt } : {}),
-      ...(deliveryNotes !== undefined ? { deliveryNotes } : {}),
-      ...(reviewNotes !== undefined ? { reviewNotes } : {}),
-      ...(progressPercent !== undefined ? { progressPercent } : {}),
-      expectedUpdatedAt,
-    };
+    const hasNonStatusChanges = hasStructuralChanges || hasTransitionFieldChanges;
 
     // Pure local edit (e.g. checkbox state without server-persisted changes)
     if (!isStatusChanged && !hasNonStatusChanges) {
       this.assignments = this.assignments.map((a) => (a.id === updated.id ? updated : a));
       this.notify();
       return { success: true, row: updated, localOnly: true };
+    }
+
+    // Concurrency verification: never synthesize expectedUpdatedAt with Date.now/new Date
+    if (!existing.expectedUpdatedAt) {
+      const err = new AssignmentOperationError({
+        code: 'conflict',
+        message: 'Missing optimistic concurrency token for live assignment update.',
+      });
+      this.onError?.(err);
+      return { success: false, error: err };
+    }
+    const expectedUpdatedAt = existing.expectedUpdatedAt;
+
+    // Eliminate PATCH-then-transition partial commits:
+    // Combined structural edits and status transitions must be rejected before any port calls!
+    if (isStatusChanged && hasStructuralChanges) {
+      const err = new AssignmentOperationError({
+        code: 'conflict',
+        message: 'Cannot combine configuration updates and status transitions in a single operation. Please save field changes and lifecycle transitions separately.',
+      });
+      this.onError?.(err);
+      this.onToast?.(`Invalid operation: ${err.message}`);
+      return { success: false, error: err };
     }
 
     const writeGen = this.currentGeneration;
@@ -522,25 +545,8 @@ export class AssignmentsCoordinator {
     try {
       let latestServerRow: AssignmentRow | undefined = undefined;
 
-      // Sequence 1: Non-status field patch
-      if (hasNonStatusChanges) {
-        latestServerRow = await this.port.update(writeRole, updated.id, patch, {
-          signal: controller.signal,
-        });
-
-        if (this.disposed || writeGen !== this.currentGeneration || writeRole !== this.currentRole) {
-          return {
-            success: false,
-            error: new AssignmentOperationError({
-              code: 'aborted',
-              message: 'Update discarded due to role switch or disposal.',
-            }),
-          };
-        }
-      }
-
-      // Sequence 2: Status transition (using refreshed expectedUpdatedAt if patch was executed)
       if (isStatusChanged) {
+        // Status transition only (can include deliveryNotes, reviewNotes, progressPercent in the single transition call)
         const transitionAction = mapStatusTransitionToAction(existing.status, updated.status);
         if (!transitionAction) {
           const err = new AssignmentOperationError({
@@ -552,13 +558,17 @@ export class AssignmentsCoordinator {
           return { success: false, error: err };
         }
 
-        const transitionExpectedUpdatedAt = latestServerRow?.expectedUpdatedAt ?? existing.expectedUpdatedAt;
-
         latestServerRow = await this.port.transition(
           writeRole,
           updated.id,
           transitionAction,
-          { signal: controller.signal, expectedUpdatedAt: transitionExpectedUpdatedAt },
+          {
+            signal: controller.signal,
+            expectedUpdatedAt,
+            deliveryNotes,
+            reviewNotes,
+            progressPercent,
+          },
         );
 
         if (this.disposed || writeGen !== this.currentGeneration || writeRole !== this.currentRole) {
@@ -567,6 +577,34 @@ export class AssignmentsCoordinator {
             error: new AssignmentOperationError({
               code: 'aborted',
               message: 'Transition discarded due to role switch or disposal.',
+            }),
+          };
+        }
+      } else {
+        // Non-status-only edit using exactly one PATCH
+        const patch: import('./types').UpdateAssignmentPatch = {
+          ...(title !== undefined ? { title } : {}),
+          ...(description !== undefined ? { description } : {}),
+          ...(serviceId !== undefined ? { serviceId } : {}),
+          ...(ownerId !== undefined ? { ownerId } : {}),
+          ...(reviewerIds !== undefined ? { reviewerIds } : {}),
+          ...(dueAt !== undefined ? { dueAt } : {}),
+          ...(deliveryNotes !== undefined ? { deliveryNotes } : {}),
+          ...(reviewNotes !== undefined ? { reviewNotes } : {}),
+          ...(progressPercent !== undefined ? { progressPercent } : {}),
+          expectedUpdatedAt,
+        };
+
+        latestServerRow = await this.port.update(writeRole, updated.id, patch, {
+          signal: controller.signal,
+        });
+
+        if (this.disposed || writeGen !== this.currentGeneration || writeRole !== this.currentRole) {
+          return {
+            success: false,
+            error: new AssignmentOperationError({
+              code: 'aborted',
+              message: 'Update discarded due to role switch or disposal.',
             }),
           };
         }
@@ -642,6 +680,15 @@ export class AssignmentsCoordinator {
       const err = new AssignmentOperationError({
         code: 'not_found',
         message: `Assignment with id "${id}" not found.`,
+      });
+      this.onError?.(err);
+      return { success: false, error: err };
+    }
+
+    if (!patch.expectedUpdatedAt) {
+      const err = new AssignmentOperationError({
+        code: 'conflict',
+        message: 'Missing optimistic concurrency token for live assignment update.',
       });
       this.onError?.(err);
       return { success: false, error: err };

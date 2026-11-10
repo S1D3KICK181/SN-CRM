@@ -494,7 +494,7 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
         a.id, a.code, a.client_id AS "clientId",
         c.display_name AS "clientName",
         a.service_id AS "serviceId", s.name AS "serviceName",
-        a.title, a.owner_id AS "ownerId",
+        a.title, a.description AS "description", a.owner_id AS "ownerId",
         coalesce(p.full_name, 'Unassigned') AS "ownerName",
         a.status, a.priority, a.period_start AS "periodStart", a.period_end AS "periodEnd",
         a.due_at AS "dueAt", a.recurring_schedule_id AS "recurringScheduleId",
@@ -530,6 +530,7 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
       serviceId: String(row['serviceId']),
       service: String(row['serviceName']),
       title: String(row['title']),
+      description: row['description'] ? String(row['description']) : null,
       ownerId: String(row['ownerId']),
       ownerName: String(row['ownerName']),
       reviewerIds: reviewerRows.map((r) => String(r['reviewerId'])),
@@ -573,7 +574,7 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
             a.id, a.code, a.client_id AS "clientId",
             c.display_name AS "clientName",
             a.service_id AS "serviceId", s.name AS "serviceName",
-            a.title, a.owner_id AS "ownerId",
+            a.title, a.description AS "description", a.owner_id AS "ownerId",
             coalesce(p.full_name, 'Unassigned') AS "ownerName",
             a.status, a.priority, a.period_start AS "periodStart", a.period_end AS "periodEnd",
             a.due_at AS "dueAt", a.recurring_schedule_id AS "recurringScheduleId",
@@ -626,6 +627,7 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
           serviceId: String(row['serviceId']),
           service: String(row['serviceName']),
           title: String(row['title']),
+          description: row['description'] ? String(row['description']) : null,
           ownerId: String(row['ownerId']),
           ownerName: String(row['ownerName']),
           reviewerIds: reviewersByAssignment.get(String(row['id'])) ?? [],
@@ -765,6 +767,7 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
         }
 
         const hasTitle = command.title !== undefined;
+        const hasDescription = command.description !== undefined;
         const hasServiceId = command.serviceId !== undefined;
         const hasOwnerId = command.ownerId !== undefined;
         const hasDueAt = command.dueAt !== undefined;
@@ -773,6 +776,7 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
         const hasProgressPercent = command.progressPercent !== undefined;
 
         const titleVal = command.title ?? null;
+        const descriptionVal = command.description ?? null;
         const serviceIdVal = command.serviceId ?? null;
         const ownerIdVal = command.ownerId ?? null;
         const dueAtVal = command.dueAt ?? null;
@@ -783,6 +787,7 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
         const updateRows = await tx`
           UPDATE public.assignments
           SET title = CASE WHEN ${hasTitle} THEN ${titleVal} ELSE title END,
+              description = CASE WHEN ${hasDescription} THEN ${descriptionVal} ELSE description END,
               service_id = CASE WHEN ${hasServiceId} THEN ${serviceIdVal}::uuid ELSE service_id END,
               owner_id = CASE WHEN ${hasOwnerId} THEN ${ownerIdVal}::uuid ELSE owner_id END,
               due_at = CASE WHEN ${hasDueAt} THEN ${dueAtVal}::timestamptz ELSE due_at END,

@@ -60,6 +60,7 @@ export interface AssignmentDto {
   readonly serviceId: string; // RFC 4122 UUID references public.service_catalog(id)
   readonly service: string; // Denormalized display name
   readonly title: string;
+  readonly description: string | null;
   readonly ownerId: string; // RFC 4122 UUID references public.profiles(user_id)
   readonly ownerName: string; // Denormalized display name
   readonly reviewerIds: readonly string[]; // RFC 4122 UUIDs references assignment_reviewers
@@ -91,6 +92,7 @@ export type ServiceReferenceInput =
 export type CreateAssignmentInput = {
   readonly clientId: string; // RFC 4122 UUID only (clientName completely purged)
   readonly title: string;
+  readonly description?: string | null;
   readonly ownerId: string; // RFC 4122 UUID
   readonly reviewerIds?: readonly string[]; // RFC 4122 UUIDs
   readonly dueAt: string; // ISO-8601 UTC
@@ -102,6 +104,7 @@ export type CreateAssignmentInput = {
 
 export interface UpdateAssignmentInput {
   readonly title?: string;
+  readonly description?: string | null;
   readonly serviceId?: string;
   readonly ownerId?: string;
   readonly reviewerIds?: readonly string[];
@@ -115,8 +118,8 @@ export interface UpdateAssignmentInput {
 export interface AssignmentTransitionInput {
   readonly action: AssignmentTransition;
   readonly expectedUpdatedAt: string; // Required optimistic concurrency token
-  readonly deliveryNotes?: string;
-  readonly reviewNotes?: string;
+  readonly deliveryNotes?: string | null;
+  readonly reviewNotes?: string | null;
   readonly progressPercent?: number;
 }
 

@@ -98,6 +98,7 @@ export interface UpdateAssignmentReviewersCommand {
 export interface UpdateAssignmentCommand {
   readonly id: string; // RFC 4122 UUID
   readonly title?: string;
+  readonly description?: string | null;
   readonly serviceId?: string; // RFC 4122 UUID
   readonly service?: string;
   readonly ownerId?: string; // RFC 4122 UUID

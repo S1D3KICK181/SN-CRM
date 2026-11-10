@@ -10,147 +10,155 @@ afterEach(() => {
 });
 
 describe('CadenceTracker & deriveCadenceMilestones', () => {
-  it('correctly identifies bank exemption when bankStatementRequired is false', () => {
-    const row: Partial<AssignmentRow> = {
-      bankStatementRequired: false,
-      bankRecStatus: 'Not applicable',
-      status: 'In progress',
-      progress: 50,
-    };
+  describe('AssignmentRow canonical lifecycle tracking', () => {
+    it('tracks initial "open" / "assigned" stage truthfully', () => {
+      const row: Partial<AssignmentRow> = {
+        status: 'Awaiting documents',
+        progress: 15,
+      };
 
-    const milestones = deriveCadenceMilestones({ item: row as AssignmentRow });
-    expect(milestones[0]!.id).toBe('bank_rec');
-    expect(milestones[0]!.isExempt).toBe(true);
-    expect(milestones[0]!.statusLabel).toBe('Exempt');
+      const milestones = deriveCadenceMilestones({ item: row as AssignmentRow });
+      expect(milestones).toHaveLength(4);
+      expect(milestones[0]!.label).toBe('Assigned');
+      expect(milestones[0]!.isDone).toBe(true);
 
-    render(<CadenceTracker item={row as AssignmentRow} />);
-    const group = screen.getByRole('group');
-    expect(group.getAttribute('aria-label')).toContain('Bank Rec: Exempt');
-    expect(screen.getByLabelText('Bank Rec: Exempt')).toBeTruthy();
-  });
+      expect(milestones[1]!.label).toBe('In progress');
+      expect(milestones[1]!.isDone).toBe(false);
 
-  it('truthfully marks completed milestones for a filed / approved statutory return', () => {
-    const schedule: Partial<RecurringScheduleRecord> = {
-      currentStatus: 'Filed',
-      status: 'Active',
-      bankRecStatus: 'Completed',
-    };
+      expect(milestones[2]!.label).toBe('Ready for review');
+      expect(milestones[2]!.isDone).toBe(false);
 
-    const milestones = deriveCadenceMilestones({ item: schedule as RecurringScheduleRecord });
-    expect(milestones.every((m) => m.isDone)).toBe(true);
-    expect(milestones[3]!.statusLabel).toBe('Filed');
-
-    render(<CadenceTracker item={schedule as RecurringScheduleRecord} />);
-    const group = screen.getByRole('group');
-    expect(group.getAttribute('aria-label')).toContain('Portal Filing: Filed');
-    expect(group.getAttribute('aria-label')).toContain('Bank Rec: Reconciled');
-  });
-
-  it('renders screen reader fallback text with identical accessibility label', () => {
-    const row: Partial<AssignmentRow> = {
-      bankStatementRequired: true,
-      bankRecStatus: 'Awaited',
-      status: 'Awaiting documents',
-      progress: 15,
-    };
-
-    const { container } = render(<CadenceTracker item={row as AssignmentRow} />);
-    const srOnly = container.querySelector('.sr-only');
-    expect(srOnly).not.toBeNull();
-    expect(srOnly?.textContent).toBe(
-      'Compliance stage: Bank Rec: Awaited, Client Docs: Awaited, Computation & Review: Pending, Portal Filing: Pending',
-    );
-  });
-
-  it('does not fabricate bank rec or computation completion from high progress percentage alone', () => {
-    const row: Partial<AssignmentRow> = {
-      bankStatementRequired: true,
-      bankRecStatus: 'Awaited',
-      status: 'Awaiting documents',
-      progress: 95, // High percentage must not fabricate domain stages!
-    };
-
-    const milestones = deriveCadenceMilestones({ item: row as AssignmentRow });
-    expect(milestones[0]!.isDone).toBe(false);
-    expect(milestones[0]!.statusLabel).toBe('Awaited');
-    expect(milestones[1]!.isDone).toBe(false);
-    expect(milestones[1]!.statusLabel).toBe('Awaited');
-    expect(milestones[2]!.isDone).toBe(false);
-    expect(milestones[3]!.isDone).toBe(false);
-  });
-
-  it('honors acknowledgment ARN as proof of portal filing', () => {
-    const schedule: Partial<RecurringScheduleRecord> = {
-      status: 'Active',
-      currentStatus: 'Ready to File',
-      bankRecStatus: 'Completed',
-    };
-
-    const milestones = deriveCadenceMilestones({
-      item: schedule as RecurringScheduleRecord,
-      arn: 'AA271026001923M',
+      expect(milestones[3]!.label).toBe('Approved / Closed');
+      expect(milestones[3]!.isDone).toBe(false);
     });
-    expect(milestones[3]!.isDone).toBe(true);
-    expect(milestones[3]!.statusLabel).toBe('Filed');
-  });
 
-  it('keeps generic active work (in progress, assigned, open) as documents Pending', () => {
-    const statuses = ['In progress', 'assigned', 'Scheduled', 'Open'];
-    for (const status of statuses) {
-      const milestones = deriveCadenceMilestones({
-        status,
+    it('tracks "in progress" stage truthfully', () => {
+      const row: Partial<AssignmentRow> = {
+        status: 'In progress',
+        progress: 50,
+      };
+
+      const milestones = deriveCadenceMilestones({ item: row as AssignmentRow });
+      expect(milestones[0]!.isDone).toBe(true);
+      expect(milestones[1]!.isDone).toBe(true);
+      expect(milestones[1]!.statusLabel).toBe('In progress');
+      expect(milestones[2]!.isDone).toBe(false);
+      expect(milestones[3]!.isDone).toBe(false);
+    });
+
+    it('tracks "ready for review" / "pending review" stage truthfully', () => {
+      const row: Partial<AssignmentRow> = {
+        status: 'Pending review',
+        progress: 80,
+      };
+
+      const milestones = deriveCadenceMilestones({ item: row as AssignmentRow });
+      expect(milestones[0]!.isDone).toBe(true);
+      expect(milestones[1]!.isDone).toBe(true);
+      expect(milestones[2]!.isDone).toBe(true);
+      expect(milestones[2]!.statusLabel).toBe('Ready for review');
+      expect(milestones[3]!.isDone).toBe(false);
+    });
+
+    it('tracks "changes requested" with accessible warning state on review node', () => {
+      const row: Partial<AssignmentRow> = {
+        status: 'Changes requested',
         progress: 60,
+      };
+
+      const milestones = deriveCadenceMilestones({ item: row as AssignmentRow });
+      expect(milestones[0]!.isDone).toBe(true);
+      expect(milestones[1]!.isDone).toBe(true);
+      expect(milestones[2]!.isDone).toBe(false);
+      expect(milestones[2]!.isWarning).toBe(true);
+      expect(milestones[2]!.statusLabel).toBe('Changes requested');
+      expect(milestones[3]!.isDone).toBe(false);
+    });
+
+    it('tracks "approved" or "closed" terminal lifecycle as all done', () => {
+      const row: Partial<AssignmentRow> = {
+        status: 'Approved',
+        progress: 100,
+      };
+
+      const milestones = deriveCadenceMilestones({ item: row as AssignmentRow });
+      expect(milestones.every((m) => m.isDone)).toBe(true);
+      expect(milestones[3]!.statusLabel).toBe('Approved');
+
+      render(<CadenceTracker item={row as AssignmentRow} />);
+      const group = screen.getByRole('group');
+      expect(group.getAttribute('aria-label')).toContain('Lifecycle stage: Assigned: Assigned, In progress: Completed, Ready for review: Reviewed, Approved / Closed: Approved');
+    });
+
+    it('renders accessible screen-reader text matching aria-label', () => {
+      const row: Partial<AssignmentRow> = {
+        status: 'In progress',
+      };
+
+      const { container } = render(<CadenceTracker item={row as AssignmentRow} />);
+      const srOnly = container.querySelector('.sr-only');
+      expect(srOnly?.textContent).toBe('Lifecycle stage: Assigned: Assigned, In progress: In progress, Ready for review: Pending, Approved / Closed: Pending');
+    });
+  });
+
+  describe('RecurringScheduleRecord mode (without linked assignment)', () => {
+    it('renders neutral Active schedule status and next run date', () => {
+      const schedule: Partial<RecurringScheduleRecord> = {
+        status: 'Active',
+        nextRunDate: '01/12/2026',
+      };
+
+      const milestones = deriveCadenceMilestones({ item: schedule as RecurringScheduleRecord });
+      expect(milestones).toHaveLength(2);
+      expect(milestones[0]!.label).toBe('Schedule');
+      expect(milestones[0]!.statusLabel).toBe('Active');
+      expect(milestones[0]!.isDone).toBe(true);
+      expect(milestones[0]!.isExempt).toBe(false);
+
+      expect(milestones[1]!.label).toBe('Next Run');
+      expect(milestones[1]!.statusLabel).toBe('01/12/2026');
+      expect(milestones[1]!.isDone).toBe(false);
+
+      render(<CadenceTracker item={schedule as RecurringScheduleRecord} />);
+      const group = screen.getByRole('group');
+      expect(group.getAttribute('aria-label')).toBe('Schedule status: Schedule: Active, Next Run: 01/12/2026');
+    });
+
+    it('renders neutral Paused schedule status with exempt node', () => {
+      const schedule: Partial<RecurringScheduleRecord> = {
+        status: 'Paused',
+        nextRunDate: '—',
+      };
+
+      const milestones = deriveCadenceMilestones({ item: schedule as RecurringScheduleRecord });
+      expect(milestones[0]!.label).toBe('Schedule');
+      expect(milestones[0]!.statusLabel).toBe('Paused');
+      expect(milestones[0]!.isExempt).toBe(true);
+      expect(milestones[0]!.isDone).toBe(false);
+
+      expect(milestones[1]!.statusLabel).toBe('Pending');
+    });
+
+    it('tracks linked assignment lifecycle when provided alongside schedule', () => {
+      const schedule: Partial<RecurringScheduleRecord> = {
+        status: 'Active',
+        nextRunDate: '01/12/2026',
+      };
+      const linkedAssignment: Partial<AssignmentRow> = {
+        status: 'Pending review',
+        progress: 80,
+      };
+
+      const milestones = deriveCadenceMilestones({
+        item: schedule as RecurringScheduleRecord,
+        linkedAssignment: linkedAssignment as AssignmentRow,
       });
-      const docMilestone = milestones.find((m) => m.id === 'client_docs');
-      expect(docMilestone?.isDone).toBe(false);
-      expect(docMilestone?.isWarning).toBe(false);
-      expect(docMilestone?.statusLabel).toBe('Pending');
-    }
-  });
 
-  it('truthfully marks documents Received from explicit downstream evidence', () => {
-    // 1. Ready for review
-    const m1 = deriveCadenceMilestones({ status: 'Ready for review' });
-    expect(m1.find((m) => m.id === 'client_docs')?.statusLabel).toBe('Received');
-    expect(m1.find((m) => m.id === 'client_docs')?.isDone).toBe(true);
-
-    // 2. Ready to file currentStatus
-    const m2 = deriveCadenceMilestones({ currentStatus: 'Ready to File' });
-    expect(m2.find((m) => m.id === 'client_docs')?.statusLabel).toBe('Received');
-    expect(m2.find((m) => m.id === 'client_docs')?.isDone).toBe(true);
-
-    // 3. Filed / Approved
-    const m3 = deriveCadenceMilestones({ status: 'Approved' });
-    expect(m3.find((m) => m.id === 'client_docs')?.statusLabel).toBe('Received');
-    expect(m3.find((m) => m.id === 'client_docs')?.isDone).toBe(true);
-
-    // 4. ARN present
-    const m4 = deriveCadenceMilestones({ status: 'In progress', arn: 'ARN-12345' });
-    expect(m4.find((m) => m.id === 'client_docs')?.statusLabel).toBe('Received');
-    expect(m4.find((m) => m.id === 'client_docs')?.isDone).toBe(true);
-
-    // 5. Explicit Docs Awaited is a warning
-    const m5 = deriveCadenceMilestones({ currentStatus: 'Docs Awaited' });
-    expect(m5.find((m) => m.id === 'client_docs')?.statusLabel).toBe('Awaited');
-    expect(m5.find((m) => m.id === 'client_docs')?.isWarning).toBe(true);
-  });
-
-  it('renders distinct accessible glyph nodes with accessible names distinguishable in grayscale', () => {
-    const row: Partial<AssignmentRow> = {
-      bankStatementRequired: false,
-      bankRecStatus: 'Not applicable',
-      status: 'Ready for review',
-    };
-
-    render(<CadenceTracker item={row as AssignmentRow} />);
-
-    // Exempt node accessible
-    expect(screen.getByLabelText('Bank Rec: Exempt')).toBeTruthy();
-    // Received node accessible (Client Docs)
-    expect(screen.getByLabelText('Client Docs: Received')).toBeTruthy();
-    // Ready node accessible (Computation & Review)
-    expect(screen.getByLabelText('Computation & Review: Ready')).toBeTruthy();
-    // Pending node accessible (Portal Filing)
-    expect(screen.getByLabelText('Portal Filing: Ready')).toBeTruthy();
+      // Tracking linked assignment lifecycle instead of schedule fallback
+      expect(milestones).toHaveLength(4);
+      expect(milestones[0]!.label).toBe('Assigned');
+      expect(milestones[2]!.label).toBe('Ready for review');
+      expect(milestones[2]!.isDone).toBe(true);
+    });
   });
 });

@@ -296,13 +296,9 @@ function AuthenticatedApp({
   }
 
   async function handleUpdateAssignment(updated: AssignmentRow): Promise<AssignmentRow | undefined> {
-    try {
-      const saved = await updateAssignmentLive(updated);
-      setSelectedAssignmentForDrawer((current) => resolveDrawerSave(current, saved, updated.id));
-      return saved;
-    } catch {
-      return undefined;
-    }
+    const saved = await updateAssignmentLive(updated);
+    setSelectedAssignmentForDrawer((current) => resolveDrawerSave(current, saved, updated.id));
+    return saved;
   }
 
   function handleOpenInvoiceForAssignment(asn: AssignmentRow) {

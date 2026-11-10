@@ -61,6 +61,16 @@ function sanitizeOptionalString(val: unknown): unknown {
   return val;
 }
 
+function sanitizeNullableString(val: unknown): unknown {
+  if (val === undefined) return undefined;
+  if (val === null) return null;
+  if (typeof val === 'string') {
+    const trimmed = val.trim();
+    return trimmed.length === 0 ? null : trimmed;
+  }
+  return val;
+}
+
 function sanitizeOptionalTaxId(val: unknown): unknown {
   if (val === undefined || val === null) return null;
   if (typeof val === 'string') {
@@ -136,6 +146,10 @@ export const createAssignmentSchema = z
   .object({
     clientId: entityUuid,
     title,
+    description: z.preprocess(
+      sanitizeNullableString,
+      z.string().max(4000, 'Description must not exceed 4000 characters.').nullable().optional(),
+    ),
     serviceId: entityUuid.optional(),
     service: z.string().trim().min(2).max(120).optional(),
     ownerId: entityUuid,
@@ -155,8 +169,14 @@ export const assignmentTransitionSchema = z
   .object({
     action: z.enum(ASSIGNMENT_TRANSITIONS),
     expectedUpdatedAt: isoInstantSchema,
-    deliveryNotes: z.string().trim().max(2000).optional(),
-    reviewNotes: z.string().trim().max(2000).optional(),
+    deliveryNotes: z.preprocess(
+      sanitizeNullableString,
+      z.string().max(2000, 'Delivery notes must not exceed 2000 characters.').nullable().optional(),
+    ),
+    reviewNotes: z.preprocess(
+      sanitizeNullableString,
+      z.string().max(2000, 'Review notes must not exceed 2000 characters.').nullable().optional(),
+    ),
     progressPercent: z.number().int().min(0).max(100).optional(),
   })
   .strict();
@@ -164,12 +184,22 @@ export const assignmentTransitionSchema = z
 export const updateAssignmentSchema = z
   .object({
     title: title.optional(),
+    description: z.preprocess(
+      sanitizeNullableString,
+      z.string().max(4000, 'Description must not exceed 4000 characters.').nullable().optional(),
+    ),
     serviceId: entityUuid.optional(),
     ownerId: entityUuid.optional(),
     reviewerIds: z.array(entityUuid).max(5).optional(),
     dueAt: isoInstantSchema.optional(),
-    deliveryNotes: z.string().trim().max(2000).nullable().optional(),
-    reviewNotes: z.string().trim().max(2000).nullable().optional(),
+    deliveryNotes: z.preprocess(
+      sanitizeNullableString,
+      z.string().max(2000, 'Delivery notes must not exceed 2000 characters.').nullable().optional(),
+    ),
+    reviewNotes: z.preprocess(
+      sanitizeNullableString,
+      z.string().max(2000, 'Review notes must not exceed 2000 characters.').nullable().optional(),
+    ),
     progressPercent: z.number().int().min(0).max(100).optional(),
     expectedUpdatedAt: isoInstantSchema,
   })

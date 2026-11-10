@@ -1,20 +1,17 @@
 import React from 'react';
-import { Check, Clock, AlertCircle, Minus, Circle } from 'lucide-react';
+import { Check, AlertCircle, Minus, Circle } from 'lucide-react';
 import type { AssignmentRow, RecurringScheduleRecord } from '../../data';
+import { normalizeLifecycleStage } from '../../api/mapper';
 
 export interface CadenceTrackerProps {
   readonly item?: AssignmentRow | RecurringScheduleRecord;
-  readonly bankStatementRequired?: boolean;
-  readonly bankRecStatus?: string;
-  readonly currentStatus?: string;
+  readonly linkedAssignment?: AssignmentRow;
   readonly status?: string;
-  readonly progress?: number;
-  readonly arn?: string;
   readonly className?: string;
 }
 
 export interface MilestoneState {
-  readonly id: 'bank_rec' | 'client_docs' | 'computation' | 'filing';
+  readonly id: string;
   readonly label: string;
   readonly statusLabel: string;
   readonly isExempt: boolean;
@@ -23,171 +20,102 @@ export interface MilestoneState {
 }
 
 export function deriveCadenceMilestones(props: CadenceTrackerProps): MilestoneState[] {
-  const item = props.item;
+  const isSchedule = Boolean(
+    props.item &&
+      !props.linkedAssignment &&
+      ('cadence' in props.item || 'nextDueDate' in props.item || 'nextRunDate' in props.item)
+  );
 
-  // Resolve bank statement requirement
-  const bankStatementRequired =
-    props.bankStatementRequired !== undefined
-      ? props.bankStatementRequired
-      : item && 'bankStatementRequired' in item
-        ? item.bankStatementRequired
-        : true;
+  const isAssignmentItem = Boolean(props.linkedAssignment) || Boolean(props.item && !isSchedule) || Boolean(props.status);
 
-  // Resolve bank reconciliation status
-  const rawBankRec =
-    props.bankRecStatus ??
-    item?.bankRecStatus ??
-    'Awaited';
+  if (isAssignmentItem) {
+    const rawStatus =
+      props.status ??
+      props.linkedAssignment?.status ??
+      (props.item && 'status' in props.item ? (props.item as AssignmentRow).status : '');
+    const stage = normalizeLifecycleStage(rawStatus);
 
-  const isBankExempt = bankStatementRequired === false || rawBankRec === 'Not applicable';
-
-  // Resolve general status and current status
-  const rawStatus = (props.status ?? item?.status ?? '').toLowerCase().trim();
-  const currentStatus = (props.currentStatus ?? (item && 'currentStatus' in item ? item.currentStatus : '') ?? '').toLowerCase().trim();
-  const rawArn = props.arn ?? (item && 'arn' in item && typeof (item as { arn?: unknown }).arn === 'string' ? (item as { arn: string }).arn : '');
-  const hasArn = Boolean(rawArn && rawArn.trim());
-
-  const isCompletedOrApproved =
-    rawStatus === 'completed' ||
-    rawStatus === 'approved' ||
-    rawStatus === 'closed' ||
-    currentStatus === 'filed' ||
-    hasArn;
-
-  // 1. Bank Rec Milestone (solely derived from bankStatementRequired & bankRecStatus)
-  let bankDone = false;
-  let bankWarning = false;
-  let bankStatusText = 'Awaited';
-
-  if (isBankExempt) {
-    bankStatusText = 'Exempt';
-  } else if (rawBankRec.toLowerCase() === 'completed' || rawBankRec.toLowerCase() === 'reconciled') {
-    bankDone = true;
-    bankStatusText = 'Reconciled';
-  } else if (rawBankRec === 'Not recorded') {
-    bankDone = false;
-    bankWarning = false;
-    bankStatusText = 'Not recorded';
-  } else if (rawBankRec.toLowerCase() === 'in progress') {
-    bankDone = false;
-    bankWarning = false;
-    bankStatusText = 'In progress';
-  } else {
-    bankWarning = true;
-    bankStatusText = rawBankRec;
+    switch (stage) {
+      case 'draft':
+        return [
+          { id: 'assigned', label: 'Assigned', statusLabel: 'Draft', isDone: false, isWarning: false, isExempt: false },
+          { id: 'in_progress', label: 'In progress', statusLabel: 'Pending', isDone: false, isWarning: false, isExempt: false },
+          { id: 'ready_for_review', label: 'Ready for review', statusLabel: 'Pending', isDone: false, isWarning: false, isExempt: false },
+          { id: 'approved', label: 'Approved / Closed', statusLabel: 'Pending', isDone: false, isWarning: false, isExempt: false },
+        ];
+      case 'open':
+        return [
+          { id: 'assigned', label: 'Assigned', statusLabel: 'Assigned', isDone: true, isWarning: false, isExempt: false },
+          { id: 'in_progress', label: 'In progress', statusLabel: 'Pending', isDone: false, isWarning: false, isExempt: false },
+          { id: 'ready_for_review', label: 'Ready for review', statusLabel: 'Pending', isDone: false, isWarning: false, isExempt: false },
+          { id: 'approved', label: 'Approved / Closed', statusLabel: 'Pending', isDone: false, isWarning: false, isExempt: false },
+        ];
+      case 'in_progress':
+        return [
+          { id: 'assigned', label: 'Assigned', statusLabel: 'Assigned', isDone: true, isWarning: false, isExempt: false },
+          { id: 'in_progress', label: 'In progress', statusLabel: 'In progress', isDone: true, isWarning: false, isExempt: false },
+          { id: 'ready_for_review', label: 'Ready for review', statusLabel: 'Pending', isDone: false, isWarning: false, isExempt: false },
+          { id: 'approved', label: 'Approved / Closed', statusLabel: 'Pending', isDone: false, isWarning: false, isExempt: false },
+        ];
+      case 'ready_for_review':
+        return [
+          { id: 'assigned', label: 'Assigned', statusLabel: 'Assigned', isDone: true, isWarning: false, isExempt: false },
+          { id: 'in_progress', label: 'In progress', statusLabel: 'Completed', isDone: true, isWarning: false, isExempt: false },
+          { id: 'ready_for_review', label: 'Ready for review', statusLabel: 'Ready for review', isDone: true, isWarning: false, isExempt: false },
+          { id: 'approved', label: 'Approved / Closed', statusLabel: 'Pending', isDone: false, isWarning: false, isExempt: false },
+        ];
+      case 'changes_requested':
+        return [
+          { id: 'assigned', label: 'Assigned', statusLabel: 'Assigned', isDone: true, isWarning: false, isExempt: false },
+          { id: 'in_progress', label: 'In progress', statusLabel: 'In progress', isDone: true, isWarning: false, isExempt: false },
+          { id: 'ready_for_review', label: 'Ready for review', statusLabel: 'Changes requested', isDone: false, isWarning: true, isExempt: false },
+          { id: 'approved', label: 'Approved / Closed', statusLabel: 'Pending', isDone: false, isWarning: false, isExempt: false },
+        ];
+      case 'approved':
+      case 'completed':
+        return [
+          { id: 'assigned', label: 'Assigned', statusLabel: 'Assigned', isDone: true, isWarning: false, isExempt: false },
+          { id: 'in_progress', label: 'In progress', statusLabel: 'Completed', isDone: true, isWarning: false, isExempt: false },
+          { id: 'ready_for_review', label: 'Ready for review', statusLabel: 'Reviewed', isDone: true, isWarning: false, isExempt: false },
+          { id: 'approved', label: 'Approved / Closed', statusLabel: 'Approved', isDone: true, isWarning: false, isExempt: false },
+        ];
+      case 'cancelled':
+        return [
+          { id: 'assigned', label: 'Assigned', statusLabel: 'Cancelled', isDone: false, isWarning: true, isExempt: true },
+          { id: 'in_progress', label: 'In progress', statusLabel: 'Cancelled', isDone: false, isWarning: false, isExempt: true },
+          { id: 'ready_for_review', label: 'Ready for review', statusLabel: 'Cancelled', isDone: false, isWarning: false, isExempt: true },
+          { id: 'approved', label: 'Approved / Closed', statusLabel: 'Cancelled', isDone: false, isWarning: false, isExempt: true },
+        ];
+      default:
+        return [
+          { id: 'assigned', label: 'Assigned', statusLabel: 'Assigned', isDone: true, isWarning: false, isExempt: false },
+          { id: 'in_progress', label: 'In progress', statusLabel: 'Pending', isDone: false, isWarning: false, isExempt: false },
+          { id: 'ready_for_review', label: 'Ready for review', statusLabel: 'Pending', isDone: false, isWarning: false, isExempt: false },
+          { id: 'approved', label: 'Approved / Closed', statusLabel: 'Pending', isDone: false, isWarning: false, isExempt: false },
+        ];
+    }
   }
 
-  // 2. Client Docs Milestone
-  let docsDone = false;
-  let docsWarning = false;
-  let docsStatusText = 'Pending';
-
-  if (
-    currentStatus === 'docs awaited' ||
-    rawStatus === 'draft' ||
-    rawStatus === 'awaiting documents' ||
-    rawStatus === 'awaiting_documents'
-  ) {
-    docsWarning = true;
-    docsStatusText = 'Awaited';
-  } else if (
-    currentStatus === 'docs received' ||
-    currentStatus === 'bank statement received' ||
-    currentStatus === 'ready to file' ||
-    currentStatus === 'filed' ||
-    rawStatus === 'ready for review' ||
-    rawStatus === 'ready_for_review' ||
-    rawStatus === 'pending review' ||
-    rawStatus === 'pending_review' ||
-    rawStatus === 'approved' ||
-    rawStatus === 'closed' ||
-    hasArn
-  ) {
-    docsDone = true;
-    docsStatusText = 'Received';
-  } else {
-    docsDone = false;
-    docsWarning = false;
-    docsStatusText = 'Pending';
-  }
-
-  // 3. Computation & Review Milestone
-  let compDone = false;
-  let compStatusText = 'Pending';
-
-  if (
-    rawStatus === 'ready for review' ||
-    rawStatus === 'ready_for_review' ||
-    rawStatus === 'pending review' ||
-    rawStatus === 'pending_review' ||
-    rawStatus === 'approved' ||
-    rawStatus === 'closed' ||
-    currentStatus === 'ready to file' ||
-    currentStatus === 'filed' ||
-    hasArn
-  ) {
-    compDone = true;
-    compStatusText = 'Ready';
-  } else if (rawStatus === 'in progress' || rawStatus === 'in_progress' || currentStatus === 'in progress') {
-    compDone = false;
-    compStatusText = 'In progress';
-  }
-
-  // 4. Portal Filing Milestone (Approved is not Filed without explicit ARN or filed status)
-  let filingDone = false;
-  let filingStatusText = 'Pending';
-
-  if (hasArn || currentStatus === 'filed') {
-    filingDone = true;
-    filingStatusText = 'Filed';
-  } else if (
-    currentStatus === 'ready to file' ||
-    rawStatus === 'ready for review' ||
-    rawStatus === 'ready_for_review' ||
-    rawStatus === 'pending review' ||
-    rawStatus === 'pending_review'
-  ) {
-    filingDone = false;
-    filingStatusText = 'Ready';
-  } else if (rawStatus === 'approved' || rawStatus === 'closed') {
-    filingDone = false;
-    filingStatusText = 'Approved (Unfiled)';
-  } else {
-    filingDone = false;
-    filingStatusText = 'Pending';
-  }
+  // Case 2: Schedule without linked assignment
+  const schedule = props.item as RecurringScheduleRecord | undefined;
+  const isActive = schedule ? schedule.status === 'Active' : true;
+  const nextRun = schedule?.nextRunDate && schedule.nextRunDate !== '—' ? schedule.nextRunDate : 'Pending';
 
   return [
     {
-      id: 'bank_rec',
-      label: 'Bank Rec',
-      statusLabel: bankStatusText,
-      isExempt: isBankExempt,
-      isDone: bankDone,
-      isWarning: bankWarning,
-    },
-    {
-      id: 'client_docs',
-      label: 'Client Docs',
-      statusLabel: docsStatusText,
-      isExempt: false,
-      isDone: docsDone,
-      isWarning: docsWarning,
-    },
-    {
-      id: 'computation',
-      label: 'Computation & Review',
-      statusLabel: compStatusText,
-      isExempt: false,
-      isDone: compDone,
+      id: 'schedule_status',
+      label: 'Schedule',
+      statusLabel: isActive ? 'Active' : 'Paused',
+      isExempt: !isActive,
+      isDone: isActive,
       isWarning: false,
     },
     {
-      id: 'filing',
-      label: 'Portal Filing',
-      statusLabel: filingStatusText,
+      id: 'next_generation',
+      label: 'Next Run',
+      statusLabel: nextRun,
       isExempt: false,
-      isDone: filingDone,
+      isDone: false,
       isWarning: false,
     },
   ];
@@ -200,13 +128,15 @@ export function CadenceTracker(props: CadenceTrackerProps): React.ReactElement {
     .map((m) => `${m.label}: ${m.statusLabel}`)
     .join(', ');
 
+  const isScheduleMode = milestones.length === 2 && milestones[0]?.id === 'schedule_status';
+
   return (
     <div
       role="group"
-      aria-label={`Compliance stage: ${ariaSummary}`}
+      aria-label={`${isScheduleMode ? 'Schedule status' : 'Lifecycle stage'}: ${ariaSummary}`}
       className={`cadence-tracker ${props.className ?? ''}`.trim()}
     >
-      <span className="sr-only">{`Compliance stage: ${ariaSummary}`}</span>
+      <span className="sr-only">{`${isScheduleMode ? 'Schedule status' : 'Lifecycle stage'}: ${ariaSummary}`}</span>
 
       {milestones.map((m, index) => {
         const isLast = index === milestones.length - 1;
@@ -215,7 +145,7 @@ export function CadenceTracker(props: CadenceTrackerProps): React.ReactElement {
 
         return (
           <React.Fragment key={m.id}>
-            {/* Milestone Node */}
+            {/* Node */}
             {m.isExempt ? (
               <span
                 className="cadence-node is-exempt"

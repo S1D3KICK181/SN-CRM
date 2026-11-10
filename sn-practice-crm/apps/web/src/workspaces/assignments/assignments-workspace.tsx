@@ -62,14 +62,30 @@ export function AssignmentsWorkspace({
 }) {
   const [activeTab, setActiveTab] = useState<'compliance' | 'oneoff'>('compliance');
   const [staffFilter, setStaffFilter] = useState<string>('All');
-  const [categoryFilter, setCategoryFilter] = useState<'All' | 'GST' | 'TDS' | 'Bookkeeping'>('All');
-  const [statusFilter, setStatusFilter] = useState<'All' | 'Bank Rec Needed' | 'Docs Awaited' | 'Ready to File' | 'Filed'>('All');
+  const [serviceFilter, setServiceFilter] = useState<string>('All');
+  const [statusFilter, setStatusFilter] = useState<'All' | 'Active' | 'Paused' | 'Open Work'>('All');
   const [search, setSearch] = useState('');
   const [selectedSchedule, setSelectedSchedule] = useState<RecurringScheduleRecord | null>(null);
+
+  const availableServices = useMemo(() => {
+    const set = new Set<string>();
+    for (const s of schedules) {
+      const srv = s.service || s.category;
+      if (srv && typeof srv === 'string') {
+        set.add(srv);
+      }
+    }
+    return ['All', ...Array.from(set).sort()];
+  }, [schedules]);
 
   const person = ROLE_PEOPLE[role];
   const leadership = role === 'founder' || role === 'manager';
   const myAssignedStaffName = person.name;
+
+  const isNonTerminalAssignment = (a: AssignmentRow) => {
+    const s = (a.status || '').toLowerCase().trim();
+    return s !== 'approved' && s !== 'completed' && s !== 'closed' && s !== 'cancelled';
+  };
 
   const filteredSchedules = useMemo(() => {
     return schedules.filter((s) => {
@@ -80,18 +96,20 @@ export function AssignmentsWorkspace({
         if (s.defaultOwner !== staffFilter) return false;
       }
 
-      // 2. Category filtering
-      if (categoryFilter !== 'All' && s.category !== categoryFilter) return false;
+      // 2. Service filtering
+      if (serviceFilter !== 'All') {
+        const srv = s.service || s.category;
+        if (srv !== serviceFilter) return false;
+      }
 
       // 3. Status filtering
-      if (statusFilter === 'Bank Rec Needed') {
-        if (s.bankRecStatus !== 'Awaited' && s.bankRecStatus !== 'In progress') return false;
-      } else if (statusFilter === 'Docs Awaited') {
-        if (s.currentStatus !== 'Docs Awaited') return false;
-      } else if (statusFilter === 'Ready to File') {
-        if (s.currentStatus !== 'Ready to File') return false;
-      } else if (statusFilter === 'Filed') {
-        if (s.currentStatus !== 'Filed') return false;
+      if (statusFilter === 'Active') {
+        if (s.status !== 'Active') return false;
+      } else if (statusFilter === 'Paused') {
+        if (s.status !== 'Paused') return false;
+      } else if (statusFilter === 'Open Work') {
+        const linked = assignments.filter((a) => a.recurringScheduleId === s.id);
+        if (!linked.some(isNonTerminalAssignment)) return false;
       }
 
       // 4. Search query
@@ -101,13 +119,14 @@ export function AssignmentsWorkspace({
           s.title.toLowerCase().includes(q) ||
           s.clientName.toLowerCase().includes(q) ||
           s.defaultOwner.toLowerCase().includes(q) ||
-          s.statutoryDueDay.toLowerCase().includes(q);
+          (s.statutoryDueDay && s.statutoryDueDay.toLowerCase().includes(q)) ||
+          ((s.service || s.category || '').toLowerCase().includes(q));
         if (!matches) return false;
       }
 
       return true;
     });
-  }, [schedules, leadership, myAssignedStaffName, staffFilter, categoryFilter, statusFilter, search]);
+  }, [schedules, assignments, leadership, myAssignedStaffName, staffFilter, serviceFilter, statusFilter, search]);
 
   const scopedSchedules = useMemo(() => {
     return schedules.filter((s) => {
@@ -116,33 +135,34 @@ export function AssignmentsWorkspace({
       } else if (staffFilter !== 'All') {
         if (s.defaultOwner !== staffFilter) return false;
       }
-      if (categoryFilter !== 'All' && s.category !== categoryFilter) return false;
+      if (serviceFilter !== 'All') {
+        const srv = s.service || s.category;
+        if (srv !== serviceFilter) return false;
+      }
       return true;
     });
-  }, [schedules, leadership, myAssignedStaffName, staffFilter, categoryFilter]);
+  }, [schedules, leadership, myAssignedStaffName, staffFilter, serviceFilter]);
 
   const tally = useMemo(() => {
     let all = 0;
-    let bankRecNeeded = 0;
-    let docsAwaited = 0;
-    let readyToFile = 0;
-    let filed = 0;
+    let active = 0;
+    let paused = 0;
+    let openWork = 0;
 
     for (const s of scopedSchedules) {
       all += 1;
-      if (s.bankRecStatus === 'Awaited' || s.bankRecStatus === 'In progress') {
-        bankRecNeeded += 1;
+      if (s.status === 'Active') {
+        active += 1;
+      } else if (s.status === 'Paused') {
+        paused += 1;
       }
-      if (s.currentStatus === 'Docs Awaited') {
-        docsAwaited += 1;
-      } else if (s.currentStatus === 'Ready to File') {
-        readyToFile += 1;
-      } else if (s.currentStatus === 'Filed') {
-        filed += 1;
+      const linked = assignments.filter((a) => a.recurringScheduleId === s.id);
+      if (linked.some(isNonTerminalAssignment)) {
+        openWork += 1;
       }
     }
-    return { all, bankRecNeeded, docsAwaited, readyToFile, filed };
-  }, [scopedSchedules]);
+    return { all, active, paused, openWork };
+  }, [scopedSchedules, assignments]);
 
   const distinctClientCount = useMemo(() => {
     const ids = new Set(filteredSchedules.map((s) => s.clientId));
@@ -224,10 +244,9 @@ export function AssignmentsWorkspace({
           >
             {([
               { key: 'All', label: 'All', count: tally.all },
-              { key: 'Bank Rec Needed', label: 'Bank Rec Needed', count: tally.bankRecNeeded },
-              { key: 'Docs Awaited', label: 'Docs Awaited', count: tally.docsAwaited },
-              { key: 'Ready to File', label: 'Ready to File', count: tally.readyToFile },
-              { key: 'Filed', label: 'Filed', count: tally.filed },
+              { key: 'Active', label: 'Active', count: tally.active },
+              { key: 'Paused', label: 'Paused', count: tally.paused },
+              { key: 'Open Work', label: 'Open Work', count: tally.openWork },
             ] as const).map(({ key, label, count }) => (
               <button
                 key={key}
@@ -271,15 +290,15 @@ export function AssignmentsWorkspace({
               />
             </div>
 
-            <div className="cadence-tabs">
-              {(['All', 'GST', 'TDS', 'Bookkeeping'] as const).map((cat) => (
+            <div className="cadence-tabs" aria-label="Filter by Service">
+              {availableServices.map((srv) => (
                 <button
-                  key={cat}
-                  className={`cadence-pill ${categoryFilter === cat ? 'is-active' : ''}`}
+                  key={srv}
+                  className={`cadence-pill ${serviceFilter === srv ? 'is-active' : ''}`}
                   type="button"
-                  onClick={() => setCategoryFilter(cat)}
+                  onClick={() => setServiceFilter(srv)}
                 >
-                  {cat === 'Bookkeeping' ? 'Bank Rec & Books' : cat}
+                  {srv === 'Bookkeeping' ? 'Books & Accounts' : srv}
                 </button>
               ))}
             </div>
@@ -341,7 +360,7 @@ export function AssignmentsWorkspace({
           {/* Horizon Compliance Table */}
           <Card
             title={!leadership ? `My Assigned Clients Compliance (${filteredSchedules.length})` : `Practice Compliance Matrix (${filteredSchedules.length})`}
-            description="Standing compliance schedules assigned to staff · Bank reconciliation is verified as part of monthly GST"
+            description="Standing compliance schedules assigned to staff · Generated per statutory cadence cycle"
             action={<MoreButton />}
             className="table-card"
           >
@@ -377,6 +396,13 @@ export function AssignmentsWorkspace({
                           ? schedule.clientCode
                           : !isValidUuid(schedule.clientId)
                           ? schedule.clientId
+                          : undefined;
+                        const linked = assignments.filter((a) => a.recurringScheduleId === schedule.id);
+                        const latestAssignment = linked[0];
+                        const displayLatestCode = latestAssignment?.code && !isValidUuid(latestAssignment.code)
+                          ? latestAssignment.code
+                          : latestAssignment && !isValidUuid(latestAssignment.id)
+                          ? latestAssignment.id
                           : undefined;
                         return (
                           <tr
@@ -424,8 +450,8 @@ export function AssignmentsWorkspace({
                                   {schedule.title}
                                 </strong>
                                 <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                                  <span className={`category-tag cat-${schedule.category.toLowerCase().replace(/[^a-z]/g, '')}`}>
-                                    {schedule.category}
+                                  <span className={`category-tag cat-${(schedule.service || schedule.category).toLowerCase().replace(/[^a-z]/g, '')}`}>
+                                    {schedule.service || schedule.category}
                                   </span>
                                   <span style={{ fontSize: 12, color: 'var(--ink-muted)', lineHeight: 1 }}>
                                     {schedule.cadence}
@@ -450,7 +476,16 @@ export function AssignmentsWorkspace({
                               </span>
                             </td>
                             <td>
-                              <CadenceTracker item={schedule} />
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                                <CadenceTracker item={schedule} linkedAssignment={latestAssignment} />
+                                <span style={{ fontSize: 11, color: 'var(--ink-muted)', lineHeight: 1.2 }}>
+                                  {latestAssignment
+                                    ? displayLatestCode
+                                      ? `${displayLatestCode}: ${latestAssignment.status}`
+                                      : latestAssignment.status
+                                    : 'No generated assignment yet'}
+                                </span>
+                              </div>
                             </td>
                             <td>
                               <button
@@ -462,7 +497,7 @@ export function AssignmentsWorkspace({
                                   setSelectedSchedule(schedule);
                                 }}
                               >
-                                View Checklist ({schedule.bankRecStatus === 'Not applicable' ? schedule.checklistTemplate.filter(s => !s.toLowerCase().includes('bank') && !s.toLowerCase().includes('reconciliation')).length : schedule.checklistTemplate.length})
+                                View Schedule
                               </button>
                             </td>
                         </tr>
@@ -491,9 +526,11 @@ export function AssignmentsWorkspace({
           schedule={selectedSchedule}
           leadership={leadership}
           role={role}
+          assignments={assignments}
           onClose={() => setSelectedSchedule(null)}
           onToast={onToast}
           onUpdateSchedule={onUpdateSchedule}
+          onSelectLinkedAssignment={onSelectAssignment}
         />
       ) : null}
     </div>
@@ -504,16 +541,20 @@ function ScheduleDetailDrawer({
   schedule,
   leadership,
   role,
+  assignments = [],
   onClose,
   onToast,
   onUpdateSchedule,
+  onSelectLinkedAssignment,
 }: {
   schedule: RecurringScheduleRecord;
   leadership: boolean;
   role?: CompanyRole;
+  assignments?: AssignmentRow[];
   onClose: () => void;
   onToast: (msg: string) => void;
   onUpdateSchedule: (updated: RecurringScheduleRecord) => void;
+  onSelectLinkedAssignment?: (a: AssignmentRow) => void;
 }) {
   const displayClientCode = schedule.clientCode && !isValidUuid(schedule.clientCode)
     ? schedule.clientCode
@@ -527,39 +568,18 @@ function ScheduleDetailDrawer({
     ? schedule.id
     : undefined;
 
-  const [tab, setTab] = useState<'checklist' | 'overview' | 'history'>('checklist');
+  const [tab, setTab] = useState<'overview' | 'assignments'>('overview');
   const [isActive, setIsActive] = useState(schedule.status === 'Active');
   const [nextRunDate, setNextRunDate] = useState(() => {
     return schedule.nextRunDate || '';
   });
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const currentPersonName = role ? ROLE_PEOPLE[role]?.name : '';
-  const isAssignedCustodian = Boolean(
-    currentPersonName &&
-    (schedule.defaultOwner.toLowerCase().includes(currentPersonName.toLowerCase()) ||
-     currentPersonName.toLowerCase().includes(schedule.defaultOwner.toLowerCase()))
-  );
+  const linkedAssignments = useMemo(() => {
+    return assignments.filter((a) => a.recurringScheduleId === schedule.id);
+  }, [assignments, schedule.id]);
 
-  function handleSave() {
-    if (!isAssignedCustodian) return;
-    const updated: RecurringScheduleRecord = {
-      ...schedule,
-      bankRecStatus: schedule.bankRecStatus,
-      currentStatus: schedule.currentStatus,
-    };
-    onUpdateSchedule(updated);
-    onClose();
-  }
-
-  const hasBank = schedule.bankRecStatus !== 'Not applicable';
-
-  const workflowChecklist = useMemo(() => {
-    if (hasBank) return schedule.checklistTemplate;
-    return schedule.checklistTemplate.filter(
-      (step) => !step.toLowerCase().includes('bank') && !step.toLowerCase().includes('reconciliation')
-    );
-  }, [schedule.checklistTemplate, hasBank]);
+  const latestLinkedAssignment = linkedAssignments[0];
 
   // Modal Dialog Focus Trap and Keyboard Listener
   const drawerRef = useRef<HTMLElement>(null);
@@ -644,7 +664,7 @@ function ScheduleDetailDrawer({
       >
         <div className="client-drawer-header">
           <div className="drawer-client-lead">
-            <span className="drawer-monogram">{schedule.category.substring(0, 2).toUpperCase()}</span>
+            <span className="drawer-monogram">{(schedule.service || schedule.category || 'SC').substring(0, 2).toUpperCase()}</span>
             <div>
               <h2>{schedule.title}</h2>
               <p>{schedule.clientName} · {schedule.cadence} Cycle</p>
@@ -657,13 +677,6 @@ function ScheduleDetailDrawer({
 
         <nav className="drawer-tabs">
           <button
-            className={`drawer-tab ${tab === 'checklist' ? 'is-active' : ''}`}
-            type="button"
-            onClick={() => setTab('checklist')}
-          >
-            Workflow Checklist ({workflowChecklist.length})
-          </button>
-          <button
             className={`drawer-tab ${tab === 'overview' ? 'is-active' : ''}`}
             type="button"
             onClick={() => setTab('overview')}
@@ -671,66 +684,15 @@ function ScheduleDetailDrawer({
             Overview &amp; Settings
           </button>
           <button
-            className={`drawer-tab ${tab === 'history' ? 'is-active' : ''}`}
+            className={`drawer-tab ${tab === 'assignments' ? 'is-active' : ''}`}
             type="button"
-            onClick={() => setTab('history')}
+            onClick={() => setTab('assignments')}
           >
-            Generated History ({schedule.history.length})
+            Linked Assignments ({linkedAssignments.length})
           </button>
         </nav>
 
         <div className="drawer-content">
-          {tab === 'checklist' ? (
-            <div className="checklist-step-box">
-              {!isAssignedCustodian ? (
-                <div
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 8,
-                    background: 'var(--canvas)',
-                    border: '1px solid var(--border)',
-                    padding: '10px 14px',
-                    borderRadius: 8,
-                    fontSize: 12,
-                    color: 'var(--ink-secondary)',
-                    marginBottom: 12,
-                  }}
-                >
-                  <Lock size={14} color="var(--ink-muted)" />
-                  <span>
-                    Checklist steps, bank reconciliation, and filing progress can only be updated by the assigned custodian ({schedule.defaultOwner}).
-                  </span>
-                </div>
-              ) : null}
-              <p style={{ fontSize: 12, color: 'var(--ink-muted)', margin: '0 0 10px' }}>
-                {!hasBank
-                  ? 'Banking excluded: Client operates without bank accounts (cash-only). Bank statement collection and reconciliation are excluded from this return workflow.'
-                  : 'Statutory workflow checklist template executed on each occurrence:'}
-              </p>
-              <div className="schedule-checklist-list">
-                {workflowChecklist.map((step, idx) => (
-                  <div key={idx} className="schedule-checklist-item">
-                    <span className="schedule-checklist-bullet" aria-hidden="true" />
-                    <span className="schedule-checklist-text">{step}</span>
-                  </div>
-                ))}
-              </div>
-
-              {!hasBank ? (
-                <div style={{ marginTop: 16, background: 'var(--canvas)', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', padding: '12px 14px' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 600, color: 'var(--ink)' }}>
-                    <Building2 size={13} color="var(--ink-muted)" />
-                    <span>Banking Excluded from Workflow</span>
-                  </div>
-                  <p style={{ margin: '4px 0 0', fontSize: 12, color: 'var(--ink-muted)' }}>
-                    Client operates without bank accounts. Bank statement collection and reconciliation are not required or tracked.
-                  </p>
-                </div>
-              ) : null}
-            </div>
-          ) : null}
-
           {tab === 'overview' ? (
             <>
               {schedule.exceptionReason ? (
@@ -792,20 +754,16 @@ function ScheduleDetailDrawer({
                   <span className="drawer-val">{displayScheduleCode ?? '—'}</span>
                 </div>
                 <div className="drawer-item">
-                  <span className="drawer-label">Category</span>
-                  <span className="drawer-val">{schedule.category}</span>
+                  <span className="drawer-label">Service</span>
+                  <span className="drawer-val">{schedule.service || schedule.category}</span>
                 </div>
                 <div className="drawer-item">
                   <span className="drawer-label">Cadence</span>
                   <span className="drawer-val">{schedule.cadence}</span>
                 </div>
                 <div className="drawer-item">
-                  <span className="drawer-label">Generation Day</span>
-                  <span className="drawer-val">Day {schedule.generationDay} of cycle</span>
-                </div>
-                <div className="drawer-item">
                   <span className="drawer-label">Statutory Due Window</span>
-                  <span className="drawer-val">{schedule.statutoryDueDay}</span>
+                  <span className="drawer-val">{schedule.statutoryDueDay || 'Standard cycle'}</span>
                 </div>
                 <div className="drawer-item">
                   <span className="drawer-label">Default Assignment Owner</span>
@@ -819,6 +777,14 @@ function ScheduleDetailDrawer({
                   <span className="drawer-label">Target Due Date</span>
                   <span className="drawer-val">{schedule.nextDueDate}</span>
                 </div>
+                <div className="drawer-item">
+                  <span className="drawer-label">Latest Assignment</span>
+                  <span className="drawer-val">
+                    {latestLinkedAssignment
+                      ? `${latestLinkedAssignment.title} (${latestLinkedAssignment.status})`
+                      : 'No generated assignment yet'}
+                  </span>
+                </div>
                 <div className="drawer-item full-width">
                   <span className="drawer-label">Client Legal Entity</span>
                   <span className="drawer-val">{schedule.clientName}{displayClientCode ? ` (${displayClientCode})` : ''}</span>
@@ -827,31 +793,55 @@ function ScheduleDetailDrawer({
             </>
           ) : null}
 
-          {tab === 'history' ? (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-              <p style={{ fontSize: 12, color: 'var(--ink-muted)', margin: '0 0 4px' }}>
-                Past assignments generated from this recurring compliance schedule:
-              </p>
-              {schedule.history.map((h) => {
-                const histAsgRef = !isValidUuid(h.assignmentId) ? `Assignment Ref: ${h.assignmentId}` : undefined;
-                return (
-                  <div key={h.period} className="history-card-row">
-                    <div>
-                      <strong>{h.period}</strong>
-                      <small>
-                        {histAsgRef
-                          ? `${histAsgRef}${h.completedOn ? ` · Completed on ${h.completedOn}` : ''}`
-                          : h.completedOn
-                          ? `Completed on ${h.completedOn}`
-                          : 'Compliance Period Filing'}
-                      </small>
-                    </div>
-                    <Status tone={h.status === 'Completed' ? 'success' : h.status === 'In progress' ? 'default' : 'warning'}>
-                      {h.status}
-                    </Status>
-                  </div>
-                );
-              })}
+          {tab === 'assignments' ? (
+            <div>
+              {linkedAssignments.length === 0 ? (
+                <div style={{ textAlign: 'center', padding: '36px 16px', color: 'var(--ink-muted)' }}>
+                  <CalendarClock size={28} style={{ opacity: 0.6, margin: '0 auto 8px', display: 'block' }} />
+                  <p style={{ margin: 0, fontSize: 13, fontWeight: 600, color: 'var(--ink)' }}>
+                    No generated assignment yet
+                  </p>
+                  <p style={{ margin: '4px 0 0', fontSize: 12 }}>
+                    Assignments are automatically generated on each compliance cycle.
+                  </p>
+                </div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  <p style={{ fontSize: 12, color: 'var(--ink-muted)', margin: '0 0 4px' }}>
+                    Practice assignments materialized from this recurring compliance schedule:
+                  </p>
+                  {linkedAssignments.map((asg) => {
+                    const displayAsgCode = asg.code && !isValidUuid(asg.code)
+                      ? asg.code
+                      : !isValidUuid(asg.id)
+                      ? asg.id
+                      : undefined;
+                    return (
+                      <div
+                        key={asg.id}
+                        className="history-card-row"
+                        onClick={() => {
+                          if (onSelectLinkedAssignment) {
+                            onClose();
+                            onSelectLinkedAssignment(asg);
+                          }
+                        }}
+                        style={{ cursor: onSelectLinkedAssignment ? 'pointer' : 'default' }}
+                      >
+                        <div>
+                          <strong>{asg.title}</strong>
+                          <small>
+                            {[displayAsgCode, asg.due ? `Due ${asg.due}` : undefined, asg.owner ? `Owner: ${asg.owner}` : undefined]
+                              .filter(Boolean)
+                              .join(' · ')}
+                          </small>
+                        </div>
+                        <Status tone={asg.tone}>{asg.status}</Status>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           ) : null}
         </div>
@@ -866,12 +856,6 @@ function ScheduleDetailDrawer({
             >
               <CheckCircle2 size={14} /> {isSubmitting ? 'Saving...' : 'Save Schedule Settings'}
             </button>
-          ) : null}
-          {!isAssignedCustodian ? (
-            <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--ink-muted)', background: 'var(--surface-muted)', padding: '6px 12px', borderRadius: 'var(--radius-md)', border: '1px solid var(--border)' }}>
-              <Lock size={13} />
-              <span>Workflow &amp; filing progress locked to assigned custodian ({schedule.defaultOwner})</span>
-            </div>
           ) : null}
           <button className="soft-button" type="button" onClick={onClose} disabled={isSubmitting}>
             Close

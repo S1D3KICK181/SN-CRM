@@ -728,4 +728,59 @@ describe('PostgresCrmRepository Integration Suite', () => {
       });
     });
   });
+
+  it('IT-14: description round-trips create, read, and clearing to null under Postgres RLS', async () => {
+    await runIsolatedTest(async (repo, tx) => {
+      const ctx = { actorId: FOUNDER_ID };
+      const clients = await repo.listClientReferences(ctx);
+      const services = await repo.listServiceReferences(ctx);
+      const firstClient = clients[0]!;
+      const firstService = services[0]!;
+
+      const newId = '90000000-0000-4000-a000-000000000014';
+      const created = await repo.createAssignment(ctx, {
+        id: newId,
+        clientId: firstClient.id,
+        clientName: firstClient.name,
+        serviceId: firstService.id,
+        service: firstService.name,
+        title: 'GST Deliverable with Scope Description',
+        description: 'Statutory GST audit scope instructions',
+        ownerId: SENIOR_ID,
+        reviewerIds: [MANAGER_ID],
+        status: 'assigned',
+        dueAt: new Date(Date.now() + 86400000 * 7).toISOString(),
+        createdById: FOUNDER_ID,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
+
+      expect(created.description).toBe('Statutory GST audit scope instructions');
+
+      // Verify Postgres direct column
+      const rawRows = await tx`SELECT description FROM public.assignments WHERE id = ${newId}::uuid`;
+      expect(rawRows[0]?.['description']).toBe('Statutory GST audit scope instructions');
+
+      // Read back via repository DTO mapping
+      const fetched = await repo.getAssignment(ctx, newId);
+      expect(fetched?.description).toBe('Statutory GST audit scope instructions');
+
+      // Update clearing description to null
+      const updated = await repo.updateAssignment(ctx, {
+        id: newId,
+        actorId: ctx.actorId,
+        expectedUpdatedAt: fetched!.updatedAt,
+        description: null,
+      });
+
+      expect(updated.description).toBeNull();
+
+      // Verify Postgres direct column is null
+      const rawAfterClear = await tx`SELECT description FROM public.assignments WHERE id = ${newId}::uuid`;
+      expect(rawAfterClear[0]?.['description']).toBeNull();
+
+      const fetchedAfterClear = await repo.getAssignment(ctx, newId);
+      expect(fetchedAfterClear?.description).toBeNull();
+    });
+  });
 });

@@ -35,6 +35,7 @@ const SAMPLE_DTO: AssignmentDto = {
   serviceId: '50000000-0000-4000-a000-000000000001',
   service: 'GST Compliance',
   title: 'GSTR-1 & 3B Compliance · Oct 2026',
+  description: 'GSTR-1 and 3B statutory compliance scope',
   ownerId: '00000000-0000-4000-a000-000000000003',
   ownerName: 'Ananya Rao',
   reviewerIds: ['00000000-0000-4000-a000-000000000002'],
@@ -159,7 +160,7 @@ describe('HttpAssignmentsAdapter', () => {
     expect(capturedUrl).toBe('/api/v1/assignments/30000000-0000-4000-a000-000000000001/transitions');
     expect(capturedMethod).toBe('POST');
     expect(capturedBody).toEqual({ action: 'submit' });
-    expect(updated.status).toBe('Pending review');
+    expect(updated.status).toBe('Ready for review');
     expect(updated.tone).toBe('warning');
   });
 
@@ -246,10 +247,10 @@ describe('HttpAssignmentsAdapter', () => {
       adapter.create('founder', {
         clientId: 'CLI-0001',
         clientName: 'Aster Foods Private Limited',
-        title: '',
-        service: '',
-        ownerNameOrId: '',
-        dueDate: '',
+        title: 'Valid Title That Triggers Server 422',
+        service: 'GST Compliance',
+        ownerNameOrId: 'Priya Desai',
+        dueDate: '20/11/2026',
       }),
     ).rejects.toSatisfy((err: unknown) => {
       const opErr = err as AssignmentOperationError;
@@ -305,7 +306,7 @@ describe('HttpAssignmentsAdapter', () => {
   });
 
   describe('Finding 4: lifecycle normalization & drawer vocabulary mapping', () => {
-    it('maps wire status "assigned" to UI "Awaiting documents"', () => {
+    it('maps wire status "assigned" to UI "Assigned"', () => {
       const openDto: AssignmentDto = {
         ...SAMPLE_DTO,
         id: '30000000-0000-4000-a000-000000000099',
@@ -313,14 +314,15 @@ describe('HttpAssignmentsAdapter', () => {
         progressPercent: undefined as any,
       };
       const row = mapDtoToAssignmentRow(openDto);
-      expect(row.status).toBe('Awaiting documents');
-      expect(row.progress).toBe(15);
+      expect(row.status).toBe('Assigned');
+      expect(row.progress).toBe(0);
       expect(row.tone).toBe('default');
     });
 
     it('normalizes lifecycle aliases consistently without string duplication', () => {
       expect(normalizeLifecycleStage('open')).toBe('open');
       expect(normalizeLifecycleStage('Open')).toBe('open');
+      expect(normalizeLifecycleStage('Assigned')).toBe('open');
       expect(normalizeLifecycleStage('Awaiting documents')).toBe('open');
 
       expect(normalizeLifecycleStage('in_progress')).toBe('in_progress');
@@ -442,6 +444,100 @@ describe('HttpAssignmentsAdapter', () => {
       await expect(adapterThrows.list('founder')).rejects.toMatchObject({
         code: 'unauthorized',
       });
+    });
+
+    it('listServices forwards staff/manager caller role, never founder substitution', async () => {
+      const recordedHeaders: Record<string, string | null> = {};
+      const mockFetch = createMockFetch((_url, init) => {
+        const headers = new Headers(init?.headers);
+        recordedHeaders['lastRole'] = headers.get('x-demo-user-id');
+        return jsonResponse({
+          data: [{ id: '50000000-0000-4000-a000-000000000001', name: 'GST Compliance' }],
+        });
+      });
+
+      const adapter = new HttpAssignmentsAdapter({ fetchFn: mockFetch });
+
+      await adapter.listServices('staff');
+      expect(recordedHeaders['lastRole']).toBe('00000000-0000-4000-a000-000000000004');
+
+      await adapter.listServices('manager');
+      expect(recordedHeaders['lastRole']).toBe('00000000-0000-4000-a000-000000000002');
+    });
+
+    it('clearing deliveryNotes and description sends explicit null over the wire and preserves null', async () => {
+      let capturedBody: any = null;
+      const mockFetch = createMockFetch((_url, init) => {
+        capturedBody = JSON.parse(init?.body as string);
+        return jsonResponse({
+          data: {
+            ...SAMPLE_DTO,
+            description: null,
+            deliveryNotes: null,
+          },
+        });
+      });
+
+      const adapter = new HttpAssignmentsAdapter({ fetchFn: mockFetch });
+      const res = await adapter.update('founder', '30000000-0000-4000-a000-000000000001', {
+        description: null,
+        deliveryNotes: null,
+        expectedUpdatedAt: '2026-10-29T09:15:00.000Z',
+      });
+
+      expect(capturedBody.description).toBeNull();
+      expect(capturedBody.deliveryNotes).toBeNull();
+      expect(res.description).toBeNull();
+      expect(res.deliveryNotes).toBeNull();
+    });
+
+    it('status transition forwards deliveryNotes, reviewNotes, and progressPercent in atomic call', async () => {
+      let capturedBody: any = null;
+      const mockFetch = createMockFetch((_url, init) => {
+        capturedBody = JSON.parse(init?.body as string);
+        return jsonResponse({
+          data: {
+            ...SAMPLE_DTO,
+            status: 'pending_review',
+            deliveryNotes: 'All items reconciled',
+            reviewNotes: 'Initial check passed',
+            progressPercent: 90,
+          },
+        });
+      });
+
+      const adapter = new HttpAssignmentsAdapter({ fetchFn: mockFetch });
+      const res = await adapter.transition('founder', '30000000-0000-4000-a000-000000000001', 'submit', {
+        deliveryNotes: 'All items reconciled',
+        reviewNotes: 'Initial check passed',
+        progressPercent: 90,
+      });
+
+      expect(capturedBody.deliveryNotes).toBe('All items reconciled');
+      expect(capturedBody.reviewNotes).toBe('Initial check passed');
+      expect(capturedBody.progressPercent).toBe(90);
+      expect(res.deliveryNotes).toBe('All items reconciled');
+      expect(res.reviewNotes).toBe('Initial check passed');
+      expect(res.progress).toBe(90);
+    });
+
+    it('live mapping never renders raw UUIDs as display names or fabricates scope/billing/checklist facts', () => {
+      const rawUuidDto: AssignmentDto = {
+        ...SAMPLE_DTO,
+        ownerName: '00000000-0000-4000-a000-000000000004',
+        reviewerNames: ['00000000-0000-4000-a000-000000000002'],
+        description: null,
+      };
+
+      const row = mapDtoToAssignmentRow(rawUuidDto);
+      expect(row.owner).toBe('Unavailable');
+      expect(row.reviewer).toBe('Unavailable');
+      expect(row.description).toBeNull();
+      expect(row.scope).toBeUndefined();
+      expect(row.milestones).toBeUndefined();
+      expect(row.billed).toBeUndefined();
+      expect(row.bankStatementRequired).toBeUndefined();
+      expect(row.bankRecStatus).toBeUndefined();
     });
   });
 });

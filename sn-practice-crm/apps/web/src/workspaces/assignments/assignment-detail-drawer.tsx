@@ -81,28 +81,15 @@ export function AssignmentDetailDrawer({
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const [milestones, setMilestones] = useState<AssignmentMilestone[]>(
-    assignment.milestones || [
-      { title: 'Initial document scrutiny and intake', done: true },
-      { title: 'Fieldwork verification & ledger scrutiny', done: assignment.progress >= 50 },
-      { title: 'Managerial quality review', done: assignment.progress >= 80 },
-      { title: 'Partner final sign-off & dispatch', done: assignment.progress === 100 },
-    ]
+    assignment.milestones || []
   );
 
   const visibleMilestones = useMemo(() => {
-    const indexed = milestones.map((milestone, sourceIndex) => ({
+    return milestones.map((milestone, sourceIndex) => ({
       milestone,
       sourceIndex,
     }));
-    if (assignment.bankStatementRequired === false) {
-      return indexed.filter(
-        ({ milestone: m }) =>
-          !m.title.toLowerCase().includes('bank statement') &&
-          !m.title.toLowerCase().includes('bank reconciliation')
-      );
-    }
-    return indexed;
-  }, [milestones, assignment.bankStatementRequired]);
+  }, [milestones]);
 
   const normalizedStatus = (assignment.status || '').toLowerCase().trim();
   const isTerminal =
@@ -142,8 +129,10 @@ export function AssignmentDetailDrawer({
     return match?.id ?? '';
   });
   const [editDue, setEditDue] = useState(assignment.due);
-  const [editScope, setEditScope] = useState(assignment.scope || '');
+  const [editDescription, setEditDescription] = useState(assignment.description ?? assignment.scope ?? '');
   const [editDeliveryNotes, setEditDeliveryNotes] = useState(assignment.deliveryNotes || '');
+  const [showChangeNotes, setShowChangeNotes] = useState(false);
+  const [changeNotes, setChangeNotes] = useState('');
 
   useEffect(() => {
     setEditTitle(assignment.title);
@@ -161,8 +150,10 @@ export function AssignmentDetailDrawer({
     );
     setEditReviewerId(currentReviewer?.id ?? assignment.reviewerId ?? '');
     setEditDue(assignment.due);
-    setEditScope(assignment.scope || '');
+    setEditDescription(assignment.description ?? assignment.scope ?? '');
     setEditDeliveryNotes(assignment.deliveryNotes || '');
+    setShowChangeNotes(false);
+    setChangeNotes('');
     setIsEditing(initialEditing);
   }, [assignment, initialEditing, eligibleStaffOwners, eligibleReviewers]);
 
@@ -242,8 +233,10 @@ export function AssignmentDetailDrawer({
         progress,
         milestones,
       };
-      await onUpdateAssignment(updated);
-      onToast(`Fieldwork progress saved (${progress}%)`);
+      const res = (await onUpdateAssignment(updated)) as unknown;
+      if (res === false || (typeof res === 'object' && res !== null && 'success' in res && !(res as { success: boolean }).success)) {
+        throw new Error('Failed to save fieldwork progress.');
+      }
       onClose();
     } catch (err: unknown) {
       setErrorMessage(err instanceof Error ? err.message : 'Failed to save progress.');
@@ -253,7 +246,11 @@ export function AssignmentDetailDrawer({
   }
 
   // Lifecycle transition handler (explicit transition action)
-  async function handleTransition(targetStatus: string, label: string) {
+  async function handleTransition(
+    targetStatus: string,
+    label: string,
+    transitionOptions?: { deliveryNotes?: string | null; reviewNotes?: string | null },
+  ) {
     if (isSubmitting) return;
     setIsSubmitting(true);
     setErrorMessage(null);
@@ -261,9 +258,13 @@ export function AssignmentDetailDrawer({
       const updated: AssignmentRow = {
         ...assignment,
         status: targetStatus,
+        ...(transitionOptions?.deliveryNotes !== undefined ? { deliveryNotes: transitionOptions.deliveryNotes } : {}),
+        ...(transitionOptions?.reviewNotes !== undefined ? { reviewNotes: transitionOptions.reviewNotes } : {}),
       };
-      await onUpdateAssignment(updated);
-      onToast(`${label} successful`);
+      const res = (await onUpdateAssignment(updated)) as unknown;
+      if (res === false || (typeof res === 'object' && res !== null && 'success' in res && !(res as { success: boolean }).success)) {
+        throw new Error(`Failed to ${label.toLowerCase()}.`);
+      }
       onClose();
     } catch (err: unknown) {
       setErrorMessage(err instanceof Error ? err.message : `Failed to ${label.toLowerCase()}.`);
@@ -272,7 +273,7 @@ export function AssignmentDetailDrawer({
     }
   }
 
-  // Configuration edit save (Title, Service, Owner, Reviewer, Due Date, Delivery Notes)
+  // Configuration edit save (Title, Service, Owner, Reviewer, Due Date, Delivery Notes, Description)
   async function handleSaveEdit(e?: FormEvent) {
     if (e) e.preventDefault();
     if (isTerminal || isSubmitting) return;
@@ -284,9 +285,17 @@ export function AssignmentDetailDrawer({
       const selectedReviewer = eligibleReviewers.find((s) => s.id === editReviewerId);
       const selectedService = services?.find((s) => s.id === editServiceId);
 
+      const trimmedDescription = editDescription.trim();
+      const nextDescription = trimmedDescription.length > 0 ? trimmedDescription : null;
+
+      const trimmedDeliveryNotes = editDeliveryNotes.trim();
+      const nextDeliveryNotes = trimmedDeliveryNotes.length > 0 ? trimmedDeliveryNotes : null;
+
       const updated: AssignmentRow = {
         ...assignment,
         title: editTitle.trim() || assignment.title,
+        description: nextDescription,
+        scope: nextDescription ?? undefined,
         serviceId: selectedService?.id ?? assignment.serviceId,
         service: selectedService?.name ?? editService,
         owner: selectedOwner ? selectedOwner.name : assignment.owner,
@@ -296,14 +305,15 @@ export function AssignmentDetailDrawer({
         reviewerIds: selectedReviewer ? [selectedReviewer.id] : [],
         reviewerNames: selectedReviewer ? [selectedReviewer.name] : [],
         due: editDue.trim() || assignment.due,
-        scope: editScope.trim(),
-        deliveryNotes: editDeliveryNotes.trim() || undefined,
+        deliveryNotes: nextDeliveryNotes,
       };
 
-      await onUpdateAssignment(updated);
+      const res = (await onUpdateAssignment(updated)) as unknown;
+      if (res === false || (typeof res === 'object' && res !== null && 'success' in res && !(res as { success: boolean }).success)) {
+        throw new Error('Failed to save assignment changes.');
+      }
+      onToast(`Assignment ${displayCode ? `${displayCode} ` : ''}details saved`);
       setIsEditing(false);
-      const savedLabel = displayCode ? `Assignment ${displayCode}` : `Assignment "${assignment.title}"`;
-      onToast(`${savedLabel} details saved`);
     } catch (err: unknown) {
       setErrorMessage(err instanceof Error ? err.message : 'Failed to save assignment changes.');
     } finally {
@@ -517,6 +527,23 @@ export function AssignmentDetailDrawer({
                       />
                     )}
                   </Field>
+                  <Field label="Scope / description" full>
+                    <textarea
+                      rows={2}
+                      value={editDescription}
+                      onChange={(e) => setEditDescription(e.target.value)}
+                      disabled={isTerminal || isSubmitting}
+                      placeholder="Describe assignment scope or specific client instructions..."
+                      style={{
+                        width: '100%',
+                        padding: '8px 10px',
+                        borderRadius: 'var(--radius-control)',
+                        border: '1px solid var(--border)',
+                        background: 'var(--surface)',
+                        color: 'var(--ink)',
+                      }}
+                    />
+                  </Field>
                 </div>
               </div>
 
@@ -673,7 +700,9 @@ export function AssignmentDetailDrawer({
                             textAlign: 'right',
                           }}
                         >
-                          {Math.round((visibleMilestones.filter(({ milestone: m }) => m.done).length / (visibleMilestones.length || 1)) * 100)}%
+                          {visibleMilestones.length > 0
+                            ? `${Math.round((visibleMilestones.filter(({ milestone: m }) => m.done).length / visibleMilestones.length) * 100)}%`
+                            : `${assignment.progress}%`}
                         </div>
                       </div>
                     </div>
@@ -749,10 +778,10 @@ export function AssignmentDetailDrawer({
                           className="soft-button"
                           type="button"
                           disabled={isSubmitting}
-                          onClick={() => handleTransition('Changes requested', 'Request Changes')}
+                          onClick={() => setShowChangeNotes((prev) => !prev)}
                           style={{ fontSize: 12, padding: '6px 12px', display: 'inline-flex', alignItems: 'center', gap: 6 }}
                         >
-                          <RotateCcw size={13} /> Request Changes
+                          <RotateCcw size={13} /> {showChangeNotes ? 'Cancel Notes' : 'Request Changes'}
                         </button>
                       ) : null}
 
@@ -769,47 +798,117 @@ export function AssignmentDetailDrawer({
                         </button>
                       ) : null}
                     </div>
+
+                    {showChangeNotes ? (
+                      <div
+                        style={{
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: 8,
+                          marginTop: 10,
+                          padding: 12,
+                          background: 'var(--canvas)',
+                          border: '1px solid var(--border)',
+                          borderRadius: 'var(--radius-md)',
+                        }}
+                      >
+                        <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink)' }}>
+                          Review Notes for Assigned Custodian:
+                        </label>
+                        <textarea
+                          rows={2}
+                          value={changeNotes}
+                          onChange={(e) => setChangeNotes(e.target.value)}
+                          placeholder="Specify revisions or missing documentation required..."
+                          disabled={isSubmitting}
+                          style={{
+                            width: '100%',
+                            padding: '8px 10px',
+                            borderRadius: 'var(--radius-control)',
+                            border: '1px solid var(--border)',
+                            background: 'var(--surface)',
+                            color: 'var(--ink)',
+                            fontSize: 12,
+                          }}
+                        />
+                        <div style={{ display: 'flex', gap: 8 }}>
+                          <button
+                            className="primary-button"
+                            type="button"
+                            disabled={isSubmitting}
+                            onClick={() => {
+                              handleTransition('Changes requested', 'Request Changes', {
+                                reviewNotes: changeNotes.trim() || 'Changes requested by reviewer.',
+                              });
+                            }}
+                            style={{ fontSize: 12, padding: '6px 12px' }}
+                          >
+                            Confirm Request Changes
+                          </button>
+                          <button
+                            className="soft-button"
+                            type="button"
+                            disabled={isSubmitting}
+                            onClick={() => setShowChangeNotes(false)}
+                            style={{ fontSize: 12, padding: '6px 12px' }}
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      </div>
+                    ) : null}
                   </div>
 
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                     <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink-secondary)' }}>
                       Engagement Milestones &amp; Verification
                     </span>
-                    {visibleMilestones.map(({ milestone: m, sourceIndex }, idx) => (
-                      <label
-                        key={m.title}
-                        className={`checklist-interactive-row ${m.done ? 'is-completed' : ''}`}
-                        style={{
-                          cursor: isAssignedCustodian && !isTerminal ? 'pointer' : 'default',
-                          padding: '10px 14px',
-                          borderRadius: 8,
-                          opacity: isAssignedCustodian && !isTerminal ? 1 : 0.85,
-                        }}
-                      >
-                        <input
-                          type="checkbox"
-                          checked={m.done}
-                          disabled={!isAssignedCustodian || isTerminal || isSubmitting}
-                          onChange={() => isAssignedCustodian && !isTerminal && toggleMilestone(sourceIndex)}
-                          className="checklist-checkbox"
-                          style={{ cursor: isAssignedCustodian && !isTerminal ? 'pointer' : 'default' }}
-                        />
-                        <div style={{ display: 'flex', flexDirection: 'column', flex: 1 }}>
-                          <span
-                            style={{
-                              fontSize: 13,
-                              fontWeight: m.done ? 500 : 600,
-                              textDecoration: m.done ? 'line-through' : 'none',
-                            }}
-                          >
-                            {m.title}
-                          </span>
-                          <small style={{ fontSize: 12, color: 'var(--ink-muted)' }}>
-                            {m.done ? 'Verified' : `Step ${idx + 1} pending`}
-                          </small>
-                        </div>
-                      </label>
-                    ))}
+                    {visibleMilestones.length === 0 ? (
+                      <div style={{ textAlign: 'center', padding: '24px 16px', color: 'var(--ink-muted)' }}>
+                        <p style={{ margin: 0, fontSize: 13, fontWeight: 500, color: 'var(--ink)' }}>
+                          No specific milestones recorded for this assignment.
+                        </p>
+                        <p style={{ margin: '4px 0 0', fontSize: 12 }}>
+                          Fieldwork tasks and sub-deliverables are tracked in Work Items.
+                        </p>
+                      </div>
+                    ) : (
+                      visibleMilestones.map(({ milestone: m, sourceIndex }, idx) => (
+                        <label
+                          key={m.title}
+                          className={`checklist-interactive-row ${m.done ? 'is-completed' : ''}`}
+                          style={{
+                            cursor: isAssignedCustodian && !isTerminal ? 'pointer' : 'default',
+                            padding: '10px 14px',
+                            borderRadius: 8,
+                            opacity: isAssignedCustodian && !isTerminal ? 1 : 0.85,
+                          }}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={m.done}
+                            disabled={!isAssignedCustodian || isTerminal || isSubmitting}
+                            onChange={() => isAssignedCustodian && !isTerminal && toggleMilestone(sourceIndex)}
+                            className="checklist-checkbox"
+                            style={{ cursor: isAssignedCustodian && !isTerminal ? 'pointer' : 'default' }}
+                          />
+                          <div style={{ display: 'flex', flexDirection: 'column', flex: 1 }}>
+                            <span
+                              style={{
+                                fontSize: 13,
+                                fontWeight: m.done ? 500 : 600,
+                                textDecoration: m.done ? 'line-through' : 'none',
+                              }}
+                            >
+                              {m.title}
+                            </span>
+                            <small style={{ fontSize: 12, color: 'var(--ink-muted)' }}>
+                              {m.done ? 'Verified' : `Step ${idx + 1} pending`}
+                            </small>
+                          </div>
+                        </label>
+                      ))
+                    )}
                   </div>
                 </div>
               ) : null}
@@ -817,10 +916,9 @@ export function AssignmentDetailDrawer({
               {tab === 'overview' ? (
                 <div className="drawer-grid">
                   <div className="drawer-item" style={{ gridColumn: 'span 2' }}>
-                    <span className="drawer-label">Engagement Scope</span>
+                    <span className="drawer-label">Scope / Description</span>
                     <span className="drawer-val" style={{ fontWeight: 400, fontSize: 13, lineHeight: 1.5 }}>
-                      {assignment.scope ||
-                        'Full statutory deliverable verification and reporting according to ICAI standards.'}
+                      {assignment.description || assignment.scope || 'Not recorded'}
                     </span>
                   </div>
                   <div className="drawer-item">
@@ -840,27 +938,6 @@ export function AssignmentDetailDrawer({
                       {assignment.due}
                     </span>
                   </div>
-                  <div className="drawer-item">
-                    <span className="drawer-label">Bank Rec Requirement</span>
-                    <span className="drawer-val">
-                      {assignment.bankStatementRequired === false ? (
-                        <span
-                          className="category-tag"
-                          style={{
-                            background: 'var(--canvas)',
-                            color: 'var(--ink-muted)',
-                            padding: '2px 8px',
-                          }}
-                        >
-                          Not applicable (Managed in Client profile)
-                        </span>
-                      ) : (
-                        <span style={{ color: 'var(--success)', fontWeight: 600 }}>
-                          Required (Managed in Client profile)
-                        </span>
-                      )}
-                    </span>
-                  </div>
                   <div className="drawer-item" style={{ gridColumn: 'span 2' }}>
                     <span className="drawer-label">Delivery Notes</span>
                     <span className="drawer-val" style={{ fontWeight: 400, fontSize: 12 }}>
@@ -878,7 +955,7 @@ export function AssignmentDetailDrawer({
                   >
                     <span className="drawer-label">Related Settings</span>
                     <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-muted)', lineHeight: 1.5 }}>
-                      Professional fees are managed in Billing. Document and bank-statement requirements are managed on the Client profile.
+                      Professional fees, invoicing, and collections are managed in Billing.
                     </p>
                   </div>
                 </div>
@@ -919,12 +996,14 @@ export function AssignmentDetailDrawer({
                   <div className="drawer-item">
                     <span className="drawer-label">Invoicing Status</span>
                     <span className="drawer-val">
-                      <span className={`status ${assignment.billed ? 'tone-success' : 'tone-warning'}`}>
-                        {assignment.billed ? 'Billed' : 'Unbilled'}
-                      </span>
+                      {assignment.billed === true ? (
+                        <span className="status tone-success">Billed</span>
+                      ) : (
+                        <span style={{ color: 'var(--ink-muted)', fontSize: 13 }}>Managed in Billing</span>
+                      )}
                     </span>
                   </div>
-                  {assignment.billed && assignment.invoiceId ? (
+                  {assignment.billed === true && assignment.invoiceId ? (
                     <div className="drawer-item" style={{ gridColumn: 'span 2' }}>
                       <span className="drawer-label">Linked Tax Invoice</span>
                       <span className="drawer-val" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -935,7 +1014,7 @@ export function AssignmentDetailDrawer({
                       </span>
                     </div>
                   ) : null}
-                  {!assignment.billed && leadership ? (
+                  {assignment.billed !== true && leadership && onOpenInvoice ? (
                     <div
                       className="drawer-item"
                       style={{
@@ -945,18 +1024,19 @@ export function AssignmentDetailDrawer({
                         borderRadius: 8,
                       }}
                     >
-                      <p style={{ fontSize: 12, color: 'var(--ink)', margin: '0 0 10px' }}>
-                        Deliverable is nearing completion. You can raise a Tax Invoice now with standard 18% GST (CGST 9% + SGST 9%).
+                      <p style={{ fontSize: 12, color: 'var(--ink-muted)', margin: '0 0 10px' }}>
+                        Invoicing and fee allocations are managed centrally in Billing.
                       </p>
                       <button
-                        className="primary-button"
+                        className="soft-button"
                         type="button"
                         onClick={() => {
                           onClose();
                           if (onOpenInvoice) onOpenInvoice(assignment);
                         }}
+                        style={{ fontSize: 12, padding: '6px 12px', display: 'inline-flex', alignItems: 'center', gap: 6 }}
                       >
-                        <ReceiptIndianRupee size={14} /> Raise Tax Invoice for this Assignment
+                        <ReceiptIndianRupee size={14} /> Open Billing
                       </button>
                     </div>
                   ) : null}

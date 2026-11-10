@@ -21,6 +21,7 @@ const ROW_FOUNDER: AssignmentRow = {
   status: 'Open',
   progress: 15,
   tone: 'default',
+  expectedUpdatedAt: '2026-11-10T10:00:00.000Z',
 };
 
 const ROW_STAFF: AssignmentRow = {
@@ -33,6 +34,7 @@ const ROW_STAFF: AssignmentRow = {
   status: 'In progress',
   progress: 50,
   tone: 'default',
+  expectedUpdatedAt: '2026-11-10T10:00:00.000Z',
 };
 
 describe('useAssignments React hook integration', () => {

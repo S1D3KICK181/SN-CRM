@@ -15,6 +15,7 @@ const INITIAL_ROWS: AssignmentRow[] = [
     status: 'In progress',
     progress: 50,
     tone: 'default',
+    expectedUpdatedAt: '2026-11-10T12:00:00.000Z',
   },
   {
     id: 'ASN-0002',
@@ -26,6 +27,7 @@ const INITIAL_ROWS: AssignmentRow[] = [
     status: 'Pending review',
     progress: 80,
     tone: 'warning',
+    expectedUpdatedAt: '2026-11-10T12:00:00.000Z',
   },
 ];
 
@@ -39,6 +41,7 @@ const FOUNDER_ROW: AssignmentRow = {
   status: 'Open',
   progress: 15,
   tone: 'default',
+  expectedUpdatedAt: '2026-11-10T12:00:00.000Z',
 };
 
 const STAFF_ROW: AssignmentRow = {
@@ -51,6 +54,7 @@ const STAFF_ROW: AssignmentRow = {
   status: 'In progress',
   progress: 50,
   tone: 'default',
+  expectedUpdatedAt: '2026-11-10T12:00:00.000Z',
 };
 
 describe('AssignmentsCoordinator', () => {
@@ -765,6 +769,7 @@ describe('AssignmentsCoordinator', () => {
         invoiceId: 'INV-999',
         bankStatementRequired: false,
         bankRecStatus: 'Not applicable',
+        expectedUpdatedAt: '2026-11-10T12:00:00.000Z',
       };
 
       // Server returns row with standard mapper defaults
@@ -955,6 +960,7 @@ describe('AssignmentsCoordinator', () => {
           billed: false,
           bankStatementRequired: true,
           bankRecStatus: 'Awaited',
+          expectedUpdatedAt: '2026-11-10T12:00:00.000Z',
         };
 
         const coordinator = new AssignmentsCoordinator({
@@ -966,7 +972,6 @@ describe('AssignmentsCoordinator', () => {
         const updatePromise = coordinator.handleUpdateAssignment({
           ...initialRow,
           status: 'Pending review',
-          title: 'Drawer Submitted Title',
           fee: 42000,
         });
 
@@ -1016,7 +1021,7 @@ describe('AssignmentsCoordinator', () => {
         expect(finalRow.status).toBe('Pending review');
         expect(finalRow.progress).toBe(80);
         // Drawer edits preserved
-        expect(finalRow.title).toBe('Drawer Submitted Title');
+        expect(finalRow.title).toBe('Initial Title');
         expect(finalRow.fee).toBe(42000);
         // CONCURRENT LOCAL MUTATIONS MUST SURVIVE!
         expect(finalRow.billed).toBe(true);
@@ -1128,6 +1133,7 @@ describe('AssignmentsCoordinator', () => {
               status: 'In progress',
               progress: 50,
               tone: 'default',
+              expectedUpdatedAt: '2026-11-10T12:00:00.000Z',
             },
           ],
           port: adapter,
@@ -1171,6 +1177,7 @@ describe('AssignmentsCoordinator', () => {
               status: 'Awaiting documents',
               progress: 15,
               tone: 'default',
+              expectedUpdatedAt: '2026-11-10T12:00:00.000Z',
             },
           ],
           port: adapter,
@@ -1201,6 +1208,7 @@ describe('AssignmentsCoordinator', () => {
               status: 'Awaiting documents',
               progress: 15,
               tone: 'default',
+              expectedUpdatedAt: '2026-11-10T12:00:00.000Z',
             },
           ],
           port: adapter,
@@ -1237,6 +1245,7 @@ describe('AssignmentsCoordinator', () => {
               status: 'In progress',
               progress: 50,
               tone: 'default',
+              expectedUpdatedAt: '2026-11-10T12:00:00.000Z',
             },
           ],
           port: adapter,
@@ -1257,40 +1266,17 @@ describe('AssignmentsCoordinator', () => {
         expect(coordinator.getState().assignments[0]!.title).toBe('Renamed Title');
       });
 
-      it('safely sequences port.update before port.transition when both non-status and status changed', async () => {
-        const sequence: string[] = [];
+      it('combined status + structural edit causes zero port calls and returns conflict error', async () => {
+        let updateCalls = 0;
+        let transitionCalls = 0;
         const adapter = new DeterministicTestAssignmentsAdapter();
-        adapter.update = async (_role, _id, _patch) => {
-          sequence.push('update');
-          return {
-            id: 'ASN-0001',
-            title: 'Sequenced Title',
-            client: 'Acme Corp',
-            service: 'GST Compliance',
-            due: '10/11/2026',
-            owner: 'Priya Desai',
-            status: 'In progress',
-            progress: 80,
-            tone: 'warning',
-            expectedUpdatedAt: '2026-11-10T12:00:00.000Z',
-          };
+        adapter.update = async () => {
+          updateCalls++;
+          return {} as any;
         };
-        adapter.setTransitionResponse('ASN-0001', 'submit', {
-          id: 'ASN-0001',
-          title: 'Sequenced Title',
-          client: 'Acme Corp',
-          service: 'GST Compliance',
-          due: '10/11/2026',
-          owner: 'Priya Desai',
-          status: 'Pending review',
-          progress: 80,
-          tone: 'warning',
-        });
-        const origTransition = adapter.transition.bind(adapter);
-        adapter.transition = async (role, id, action, opts) => {
-          sequence.push('transition');
-          expect(opts?.expectedUpdatedAt).toBe('2026-11-10T12:00:00.000Z');
-          return origTransition(role, id, action, opts);
+        adapter.transition = async () => {
+          transitionCalls++;
+          return {} as any;
         };
 
         const coordinator = new AssignmentsCoordinator({
@@ -1305,6 +1291,7 @@ describe('AssignmentsCoordinator', () => {
               status: 'In progress',
               progress: 50,
               tone: 'default',
+              expectedUpdatedAt: '2026-11-10T12:00:00.000Z',
             },
           ],
           port: adapter,
@@ -1317,10 +1304,112 @@ describe('AssignmentsCoordinator', () => {
           status: 'Pending review',
         });
 
+        expect(res.success).toBe(false);
+        expect(res.error?.code).toBe('conflict');
+        expect(updateCalls).toBe(0);
+        expect(transitionCalls).toBe(0);
+      });
+
+      it('missing expectedUpdatedAt causes zero port mutation calls and returns conflict error', async () => {
+        let updateCalls = 0;
+        let transitionCalls = 0;
+        const adapter = new DeterministicTestAssignmentsAdapter();
+        adapter.update = async () => {
+          updateCalls++;
+          return {} as any;
+        };
+        adapter.transition = async () => {
+          transitionCalls++;
+          return {} as any;
+        };
+
+        const coordinator = new AssignmentsCoordinator({
+          initialRows: [
+            {
+              id: 'ASN-0001',
+              title: 'Original Title',
+              client: 'Acme Corp',
+              service: 'GST Compliance',
+              due: '10/11/2026',
+              owner: 'Priya Desai',
+              status: 'In progress',
+              progress: 50,
+              tone: 'default',
+              // Note: expectedUpdatedAt is intentionally missing
+            },
+          ],
+          port: adapter,
+          initialRole: 'founder',
+        });
+
+        const res = await coordinator.handleUpdateAssignment({
+          ...coordinator.getState().assignments[0]!,
+          title: 'Updated Title',
+        });
+
+        expect(res.success).toBe(false);
+        expect(res.error?.code).toBe('conflict');
+        expect(updateCalls).toBe(0);
+        expect(transitionCalls).toBe(0);
+      });
+
+      it('status + allowed transition notes/progress performs exactly one transition and zero PATCH', async () => {
+        let updateCalls = 0;
+        let transitionCalls = 0;
+        let capturedTransitionOpts: any = null;
+        const adapter = new DeterministicTestAssignmentsAdapter();
+        adapter.update = async () => {
+          updateCalls++;
+          return {} as any;
+        };
+        adapter.transition = async (role, id, action, opts) => {
+          transitionCalls++;
+          capturedTransitionOpts = opts;
+          return {
+            id,
+            title: 'Original Title',
+            client: 'Acme Corp',
+            service: 'GST Compliance',
+            due: '10/11/2026',
+            owner: 'Priya Desai',
+            status: 'Pending review',
+            progress: 85,
+            tone: 'warning',
+            expectedUpdatedAt: '2026-11-10T12:05:00.000Z',
+          };
+        };
+
+        const coordinator = new AssignmentsCoordinator({
+          initialRows: [
+            {
+              id: 'ASN-0001',
+              title: 'Original Title',
+              client: 'Acme Corp',
+              service: 'GST Compliance',
+              due: '10/11/2026',
+              owner: 'Priya Desai',
+              status: 'In progress',
+              progress: 50,
+              tone: 'default',
+              expectedUpdatedAt: '2026-11-10T12:00:00.000Z',
+            },
+          ],
+          port: adapter,
+          initialRole: 'founder',
+        });
+
+        const res = await coordinator.handleUpdateAssignment({
+          ...coordinator.getState().assignments[0]!,
+          status: 'Pending review',
+          deliveryNotes: 'Ready for final partner sign-off',
+          progress: 85,
+        });
+
         expect(res.success).toBe(true);
-        expect(sequence).toEqual(['update', 'transition']);
-        expect(coordinator.getState().assignments[0]!.title).toBe('Sequenced Title');
-        expect(coordinator.getState().assignments[0]!.status).toBe('Pending review');
+        expect(updateCalls).toBe(0);
+        expect(transitionCalls).toBe(1);
+        expect(capturedTransitionOpts?.deliveryNotes).toBe('Ready for final partner sign-off');
+        expect(capturedTransitionOpts?.progressPercent).toBe(85);
       });
 
       it('updates active port via setPort without dropping existing data snapshot', async () => {
@@ -1339,6 +1428,7 @@ describe('AssignmentsCoordinator', () => {
             status: 'In progress',
             progress: 50,
             tone: 'default',
+            expectedUpdatedAt: '2026-11-10T12:05:00.000Z',
           };
         };
 
@@ -1354,6 +1444,7 @@ describe('AssignmentsCoordinator', () => {
               status: 'In progress',
               progress: 50,
               tone: 'default',
+              expectedUpdatedAt: '2026-11-10T12:00:00.000Z',
             },
           ],
           port: adapter1,

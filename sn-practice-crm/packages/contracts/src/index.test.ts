@@ -71,6 +71,7 @@ describe('Contracts Single Status Truth & Runtime Tuples', () => {
   it('verifies DTO and Input type shapes at compile time', () => {
     expectTypeOf<WorkItemDto>().toHaveProperty('code').toBeString();
     expectTypeOf<AssignmentDto>().toHaveProperty('serviceId').toBeString();
+    expectTypeOf<AssignmentDto>().toHaveProperty('description').toBeNullable();
     expectTypeOf<ClientDto>().toHaveProperty('code').toBeString();
     expectTypeOf<ClientDto>().toHaveProperty('status').toMatchTypeOf<ClientStatus>();
     expectTypeOf<ClientDto>().toHaveProperty('relationshipOwnerName').toBeNullable();

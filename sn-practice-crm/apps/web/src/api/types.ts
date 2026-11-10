@@ -77,20 +77,26 @@ export interface CreateAssignmentCommand {
   serviceId?: string;
   service?: string;
   title: string;
+  description?: string | null;
+  ownerId?: string;
   ownerNameOrId?: string;
   owner?: string;
+  reviewerId?: string;
+  reviewerIds?: readonly string[];
   reviewerNameOrId?: string;
   reviewer?: string;
   dueDate?: string;
   due?: string;
   scope?: string;
   status?: string;
+  progressPercent?: number;
   progress?: number;
   tone?: 'default' | 'danger' | 'warning' | 'success';
 }
 
 export interface UpdateAssignmentPatch {
   readonly title?: string;
+  readonly description?: string | null;
   readonly serviceId?: string;
   readonly ownerId?: string;
   readonly reviewerIds?: readonly string[];
@@ -130,7 +136,7 @@ export type AssignmentContractTransition = 'start' | 'submit' | 'complete' | 're
  */
 export interface AssignmentsPort {
   list(role: CompanyRole, options?: PortExecutionOptions): Promise<AssignmentRow[]>;
-  listServices(options?: PortExecutionOptions): Promise<readonly ServiceCatalogItemDto[]>;
+  listServices(role: CompanyRole, options?: PortExecutionOptions): Promise<readonly ServiceCatalogItemDto[]>;
   create(
     role: CompanyRole,
     command: CreateAssignmentCommand,
@@ -146,7 +152,12 @@ export interface AssignmentsPort {
     role: CompanyRole,
     id: string,
     action: AssignmentContractTransition,
-    options?: PortExecutionOptions & { expectedUpdatedAt?: string },
+    options?: PortExecutionOptions & {
+      expectedUpdatedAt?: string;
+      deliveryNotes?: string | null;
+      reviewNotes?: string | null;
+      progressPercent?: number;
+    },
   ): Promise<AssignmentRow>;
   listSchedules(
     role: CompanyRole,

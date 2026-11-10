@@ -246,9 +246,9 @@ export class HttpAssignmentsAdapter implements AssignmentsPort {
     return result.data.map(mapDtoToAssignmentRow);
   }
 
-  async listServices(options?: PortExecutionOptions): Promise<readonly ServiceCatalogItemDto[]> {
+  async listServices(role: CompanyRole, options?: PortExecutionOptions): Promise<readonly ServiceCatalogItemDto[]> {
     const result = await this.execute<ServiceCatalogItemDto[]>(
-      'founder',
+      role,
       '/api/v1/services',
       { method: 'GET' },
       options,
@@ -283,6 +283,7 @@ export class HttpAssignmentsAdapter implements AssignmentsPort {
   ): Promise<AssignmentRow> {
     const body: {
       title?: string;
+      description?: string | null;
       serviceId?: string;
       ownerId?: string;
       reviewerIds?: string[];
@@ -293,6 +294,7 @@ export class HttpAssignmentsAdapter implements AssignmentsPort {
       expectedUpdatedAt?: string;
     } = {};
     if (patch.title !== undefined) body.title = patch.title;
+    if (patch.description !== undefined) body.description = patch.description;
     if (patch.serviceId !== undefined) body.serviceId = patch.serviceId;
     if (patch.ownerId !== undefined) body.ownerId = patch.ownerId;
     if (patch.reviewerIds !== undefined) body.reviewerIds = [...patch.reviewerIds];
@@ -321,16 +323,16 @@ export class HttpAssignmentsAdapter implements AssignmentsPort {
     action: AssignmentContractTransition,
     options?: PortExecutionOptions & {
       expectedUpdatedAt?: string;
-      deliveryNotes?: string;
-      reviewNotes?: string;
+      deliveryNotes?: string | null;
+      reviewNotes?: string | null;
       progressPercent?: number;
     },
   ): Promise<AssignmentRow> {
     const payload: {
       action: AssignmentContractTransition;
       expectedUpdatedAt?: string;
-      deliveryNotes?: string;
-      reviewNotes?: string;
+      deliveryNotes?: string | null;
+      reviewNotes?: string | null;
       progressPercent?: number;
     } = { action };
     if (options?.expectedUpdatedAt) {

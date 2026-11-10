@@ -122,24 +122,16 @@ describe('Assignments workspace source contracts', () => {
     );
   });
 
-  it('verifies custodian gating, bank reconciliation coupling, save mutation flow, and zero-state copy', () => {
-    // custodian gate/lock logic and message
-    expect(workspaceSource).toMatch(/const\s+isAssignedCustodian\s*=\s*Boolean\(/);
-    expect(workspaceSource).toMatch(
-      /Checklist steps, bank reconciliation, and filing progress can only be updated by the assigned custodian/,
-    );
-    expect(workspaceSource).toMatch(
-      /Workflow\s+(?:&|&amp;)\s+filing progress locked to assigned custodian/,
-    );
-
-    // truthful checklist reference: no discarded interactive checkedSteps or fake arn state
+  it('verifies schedule drawer management, real linked assignments, and zero-state copy', () => {
+    // truthful schedule drawer: no synthetic checklist or fake history
     expect(workspaceSource).not.toMatch(/\bcheckedSteps\b/);
     expect(workspaceSource).not.toMatch(/\bsetArn\b/);
-    expect(workspaceSource).toMatch(/workflowChecklist\.map\(/);
+    expect(workspaceSource).not.toMatch(/workflowChecklist/);
+    expect(workspaceSource).not.toMatch(/schedule\.history/);
 
-    // handleSave updates schedule with bankRecStatus/currentStatus then closes
+    // leadership schedule settings mutation
     expect(workspaceSource).toMatch(
-      /function\s+handleSave\(\)\s*\{[\s\S]*?if\s*\(!isAssignedCustodian\)\s*return;[\s\S]*?const\s+updated:\s*RecurringScheduleRecord\s*=\s*\{[\s\S]*?bankRecStatus,[\s\S]*?currentStatus,[\s\S]*?\};[\s\S]*?onUpdateSchedule\(updated\);[\s\S]*?onClose\(\);[\s\S]*?\}/,
+      /async function handleSaveLeadership\(\)\s*\{[\s\S]*?if\s*\(!leadership\s*\|\|\s*isSubmitting\)\s*return;[\s\S]*?const\s+updated:\s*RecurringScheduleRecord\s*=\s*\{[\s\S]*?status:\s*isActive\s*\?\s*['"]Active['"]\s*:\s*['"]Paused['"],[\s\S]*?\};[\s\S]*?onUpdateSchedule\(updated\);[\s\S]*?onClose\(\);[\s\S]*?\}/,
     );
 
     // zero-state copy
@@ -169,7 +161,7 @@ describe('Assignments workspace source contracts', () => {
     expect(drawerSource).toMatch(/initialEditing\s*=\s*false/);
   });
 
-  it('verifies assignment-detail-drawer critical contracts: edit gates, custodian locking, progress, bank exemption, invoice flow, and working papers', () => {
+  it('verifies assignment-detail-drawer critical contracts: edit gates, custodian locking, progress, billing link, and working papers', () => {
     // founder/manager edit gate
     expect(drawerSource).toMatch(
       /const\s+canEditAssignment\s*=\s*role\s*===\s*['"]founder['"]\s*\|\|\s*role\s*===\s*['"]manager['"]/,
@@ -195,28 +187,28 @@ describe('Assignments workspace source contracts', () => {
       /Math\.round\(\s*\(\s*doneCount\s*\/\s*milestones\.length\s*\)\s*\*\s*100\s*\)/,
     );
     expect(drawerSource).toMatch(
-      /Math\.round\(\s*\(\s*visibleMilestones\.filter\([\s\S]*?done\)\.length\s*\/\s*\(visibleMilestones\.length\s*\|\|\s*1\)\s*\)\s*\*\s*100\s*\)/,
+      /visibleMilestones\.length\s*>\s*0[\s\S]*?Math\.round\(\s*\(\s*visibleMilestones\.filter\([\s\S]*?done\)\.length\s*\/\s*visibleMilestones\.length\s*\)\s*\*\s*100\s*\)/,
     );
 
-    // bank exemption filtering and bankRecStatus edit logic
-    expect(drawerSource).toMatch(
-      /if\s*\(\s*assignment\.bankStatementRequired\s*===\s*false\s*\)\s*\{[\s\S]*?(?:milestones|indexed)\.filter\([\s\S]*?bank statement[\s\S]*?bank reconciliation[\s\S]*?\)/,
-    );
     // truthful drawer: no unpersisted bankStatementReq/fee editable controls
     expect(drawerSource).not.toMatch(/editBankStatementReq/);
     expect(drawerSource).not.toMatch(/editFee/);
+    expect(drawerSource).not.toMatch(/Bank Rec Requirement/);
 
-    // invoice leadership/unbilled guard with close then callback
-    expect(drawerSource).toMatch(/!assignment\.billed\s*&&\s*leadership/);
+    // billing link: undefined billing is Managed in Billing, never Unbilled
+    expect(drawerSource).toMatch(/Managed in Billing/);
+    expect(drawerSource).not.toMatch(/'Unbilled'/);
+    expect(drawerSource).toMatch(/assignment\.billed\s*===\s*true\s*\?\s*\([\s\S]*?Billed[\s\S]*?\)\s*:\s*\([\s\S]*?Managed in Billing/);
+
+    // invoice leadership callback with close then callback
     expect(drawerSource).toMatch(
       /onClick=\{\(\)\s*=>\s*\{[\s\S]*?onClose\(\);[\s\S]*?if\s*\(\s*onOpenInvoice\s*\)\s*onOpenInvoice\(\s*assignment\s*\);[\s\S]*?\}\}/,
     );
-    expect(drawerSource).toMatch(/Raise Tax Invoice for this Assignment/);
 
     // truthful working-papers quiet state: no fake add/attach interaction
     expect(drawerSource).not.toMatch(/setWorkingPapers/);
     expect(drawerSource).toMatch(/No linked working papers/);
-    expect(drawerSource).toMatch(/Professional fees are managed in Billing/);
+    expect(drawerSource).toMatch(/Professional fees, invoicing, and collections are managed in Billing/);
   });
 
   it('verifies assignment edit form submits without redundant onClick double save', () => {
@@ -253,12 +245,10 @@ describe('Assignments workspace source contracts', () => {
     expect(drawerSource).not.toMatch(/#f1f5f9/i);
     expect(drawerSource).not.toMatch(/#64748b/i);
 
-    // Uses the existing semantic roles for these exact states
-    expect(drawerSource).toMatch(
-      /background:\s*['"]var\(--canvas\)['"],\s*color:\s*['"]var\(--ink-muted\)['"]/,
-    );
-    expect(drawerSource).toMatch(
-      /color:\s*['"]var\(--success\)['"],\s*fontWeight:\s*600/,
-    );
+    // Uses semantic color tokens
+    expect(drawerSource).toMatch(/var\(--canvas\)/);
+    expect(drawerSource).toMatch(/var\(--ink-muted\)/);
+    expect(drawerSource).toMatch(/var\(--border\)/);
+    expect(drawerSource).toMatch(/var\(--signal\)/);
   });
 });

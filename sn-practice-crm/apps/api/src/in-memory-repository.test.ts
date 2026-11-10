@@ -414,6 +414,7 @@ describe('Client visibility and read operations (CL-02A parity)', () => {
       serviceId: '50000000-0000-4000-a000-000000000001',
       service: 'GST Compliance',
       title: 'Past Closed Assignment',
+      description: null,
       ownerId: DEMO_ACTOR_IDS.manager,
       ownerName: 'Priya Sharma',
       reviewerIds: [DEMO_ACTOR_IDS.senior],
@@ -438,6 +439,7 @@ describe('Client visibility and read operations (CL-02A parity)', () => {
       serviceId: '50000000-0000-4000-a000-000000000001',
       service: 'GST Compliance',
       title: 'Partner-only Active Assignment',
+      description: null,
       ownerId: DEMO_ACTOR_IDS.manager,
       ownerName: 'Priya Sharma',
       reviewerIds: [DEMO_ACTOR_IDS.founder],
@@ -651,6 +653,72 @@ describe('Client visibility and read operations (CL-02A parity)', () => {
         updatedAt: '2026-11-06T12:00:00.000Z',
       });
       expect(staffClient.relationshipOwnerId).toBe(DEMO_ACTOR_IDS.staff);
+    });
+  });
+
+  describe('AS-01-R2 Description round-trip & Service Resolution', () => {
+    const testCtx: RepositoryContext = { actorId: DEMO_ACTOR_IDS.founder };
+
+    it('round-trips description create, read, and clearing to null', async () => {
+      const repository = new InMemoryCrmRepository(createDemoSeed());
+
+      const created = await repository.createAssignment(testCtx, {
+        id: '30000000-0000-4000-a000-000000000099',
+        clientId: '10000000-0000-4000-a000-000000000001',
+        clientName: 'Aster Foods',
+        serviceId: '50000000-0000-4000-a000-000000000001',
+        service: 'GST Compliance',
+        title: 'GST Deliverable With Description',
+        description: 'Comprehensive annual GST return audit',
+        ownerId: DEMO_ACTOR_IDS.manager,
+        reviewerIds: [DEMO_ACTOR_IDS.founder],
+        status: 'assigned',
+        dueAt: '2026-11-20T12:00:00.000Z',
+        createdById: DEMO_ACTOR_IDS.founder,
+        createdAt: '2026-11-10T10:00:00.000Z',
+        updatedAt: '2026-11-10T10:00:00.000Z',
+      });
+
+      expect(created.description).toBe('Comprehensive annual GST return audit');
+
+      const read = await repository.getAssignment(testCtx, '30000000-0000-4000-a000-000000000099');
+      expect(read?.description).toBe('Comprehensive annual GST return audit');
+
+      // Update clearing description to null
+      const updated = await repository.updateAssignment(testCtx, {
+        id: '30000000-0000-4000-a000-000000000099',
+        actorId: testCtx.actorId,
+        expectedUpdatedAt: read!.updatedAt,
+        description: null,
+      });
+
+      expect(updated.description).toBeNull();
+
+      const readAfterClear = await repository.getAssignment(testCtx, '30000000-0000-4000-a000-000000000099');
+      expect(readAfterClear?.description).toBeNull();
+    });
+
+    it('rejects recurring schedule creation with unknown service reference with 422', async () => {
+      const repository = new InMemoryCrmRepository(createDemoSeed());
+
+      await expect(
+        repository.createRecurringSchedule(testCtx, {
+          id: '40000000-0000-4000-a000-000000000099',
+          clientId: '10000000-0000-4000-a000-000000000001',
+          clientName: 'Aster Foods',
+          service: 'Completely Unknown Service Never Cataloged',
+          title: 'Unknown Service Schedule',
+          cadence: 'monthly',
+          ownerId: DEMO_ACTOR_IDS.manager,
+          reviewerIds: [],
+          dueDay: 11,
+          nextOccurrenceOn: '2026-12-01',
+          createdById: DEMO_ACTOR_IDS.founder,
+        }),
+      ).rejects.toMatchObject({
+        status: 422,
+        code: 'referenced_entity_not_found',
+      });
     });
   });
 });

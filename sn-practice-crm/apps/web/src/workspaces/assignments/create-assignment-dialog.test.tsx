@@ -22,6 +22,11 @@ describe('CreateAssignmentDialog', () => {
     { id: '10000000-0000-4000-a000-000000000002', name: 'BluePeak Technologies' },
   ];
 
+  const services = [
+    { id: '20000000-0000-4000-a000-000000000001', name: 'GST Compliance' },
+    { id: '20000000-0000-4000-a000-000000000002', name: 'Income Tax Return' },
+  ];
+
   it('renders with established vanilla CSS classes and semantic structure', () => {
     const { container } = render(
       <CreateAssignmentDialog
@@ -80,6 +85,7 @@ describe('CreateAssignmentDialog', () => {
         role="founder"
         clients={clients}
         teamMembers={staff}
+        services={services}
         onClose={onClose}
         onCreateAssignment={onCreateAssignment}
       />,
@@ -87,6 +93,9 @@ describe('CreateAssignmentDialog', () => {
 
     const titleInput = screen.getByLabelText(/Title/i);
     fireEvent.change(titleInput, { target: { value: 'FY 2026-27 Audit' } });
+
+    const dueInput = screen.getByLabelText(/Target Due Date/i);
+    fireEvent.change(dueInput, { target: { value: '2026-11-20' } });
 
     const form = container.querySelector('form')!;
     fireEvent.submit(form);
@@ -99,6 +108,7 @@ describe('CreateAssignmentDialog', () => {
     expect(callArg.title).toBe('FY 2026-27 Audit');
     expect(callArg.clientId).toBe('10000000-0000-4000-a000-000000000001');
     expect(callArg.ownerNameOrId).toBe('00000000-0000-4000-a000-000000000002');
+    expect(callArg.dueDate).toBe('2026-11-20');
     expect(onClose).toHaveBeenCalled();
   });
 
@@ -112,6 +122,7 @@ describe('CreateAssignmentDialog', () => {
         role="manager"
         clients={clients}
         teamMembers={staff}
+        services={services}
         onClose={onClose}
         onCreateAssignment={vi.fn()}
         onCreateSchedule={onCreateSchedule}
@@ -128,6 +139,12 @@ describe('CreateAssignmentDialog', () => {
     const titleInput = screen.getByLabelText(/Title/i);
     fireEvent.change(titleInput, { target: { value: 'TDS Monthly Filing' } });
 
+    const offsetInput = screen.getByLabelText(/Due offset/i);
+    fireEvent.change(offsetInput, { target: { value: '20' } });
+
+    const nextRunInput = screen.getByLabelText(/First Occurrence/i);
+    fireEvent.change(nextRunInput, { target: { value: '2026-12-01' } });
+
     const form = container.querySelector('form')!;
     fireEvent.submit(form);
 
@@ -140,8 +157,108 @@ describe('CreateAssignmentDialog', () => {
     expect(callArg.cadence).toBe('monthly');
     expect(callArg.clientId).toBe('10000000-0000-4000-a000-000000000001');
     expect(callArg.ownerId).toBe('00000000-0000-4000-a000-000000000002');
+    expect(callArg.dueDay).toBe(20);
+    expect(callArg.nextOccurrenceOn).toBe('2026-12-01');
     expect(callArg.reviewerIds).toBeUndefined();
     expect(onClose).toHaveBeenCalled();
+  });
+
+  it('blocks assignment submission when target due date is missing', async () => {
+    const onCreateAssignment = vi.fn();
+    const { container } = render(
+      <CreateAssignmentDialog
+        isOpen={true}
+        role="founder"
+        clients={clients}
+        teamMembers={staff}
+        services={services}
+        onClose={vi.fn()}
+        onCreateAssignment={onCreateAssignment}
+      />,
+    );
+
+    const titleInput = screen.getByLabelText(/Title/i);
+    fireEvent.change(titleInput, { target: { value: 'Assignment Missing Due Date' } });
+
+    const form = container.querySelector('form')!;
+    fireEvent.submit(form);
+
+    expect(onCreateAssignment).not.toHaveBeenCalled();
+    expect(screen.getByText(/Target due date is required/i)).toBeDefined();
+  });
+
+  it('blocks schedule submission when first occurrence date is missing', async () => {
+    const onCreateSchedule = vi.fn();
+    const { container } = render(
+      <CreateAssignmentDialog
+        isOpen={true}
+        role="founder"
+        clients={clients}
+        teamMembers={staff}
+        services={services}
+        onClose={vi.fn()}
+        onCreateAssignment={vi.fn()}
+        onCreateSchedule={onCreateSchedule}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /Recurring Schedule/i }));
+
+    const titleInput = screen.getByLabelText(/Title/i);
+    fireEvent.change(titleInput, { target: { value: 'Schedule Missing Next Date' } });
+
+    const offsetInput = screen.getByLabelText(/Due offset/i);
+    fireEvent.change(offsetInput, { target: { value: '15' } });
+
+    const form = container.querySelector('form')!;
+    fireEvent.submit(form);
+
+    expect(onCreateSchedule).not.toHaveBeenCalled();
+    expect(screen.getByText(/First occurrence start date is required/i)).toBeDefined();
+  });
+
+  it('blocks schedule submission when due offset is blank or outside 1..31', async () => {
+    const onCreateSchedule = vi.fn();
+    const { container } = render(
+      <CreateAssignmentDialog
+        isOpen={true}
+        role="founder"
+        clients={clients}
+        teamMembers={staff}
+        services={services}
+        onClose={vi.fn()}
+        onCreateAssignment={vi.fn()}
+        onCreateSchedule={onCreateSchedule}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /Recurring Schedule/i }));
+
+    const titleInput = screen.getByLabelText(/Title/i);
+    fireEvent.change(titleInput, { target: { value: 'Schedule Invalid Offset' } });
+
+    const nextRunInput = screen.getByLabelText(/First Occurrence/i);
+    fireEvent.change(nextRunInput, { target: { value: '2026-12-01' } });
+
+    const form = container.querySelector('form')!;
+
+    // Test blank offset
+    fireEvent.submit(form);
+    expect(onCreateSchedule).not.toHaveBeenCalled();
+    expect(screen.getByText(/Due offset is required/i)).toBeDefined();
+
+    // Test offset > 31
+    const offsetInput = screen.getByLabelText(/Due offset/i);
+    fireEvent.change(offsetInput, { target: { value: '35' } });
+    fireEvent.submit(form);
+    expect(onCreateSchedule).not.toHaveBeenCalled();
+    expect(screen.getByText(/Due offset must be an integer between 1 and 31 days/i)).toBeDefined();
+
+    // Test offset < 1
+    fireEvent.change(offsetInput, { target: { value: '0' } });
+    fireEvent.submit(form);
+    expect(onCreateSchedule).not.toHaveBeenCalled();
+    expect(screen.getByText(/Due offset must be an integer between 1 and 31 days/i)).toBeDefined();
   });
 
   it('closes dialog on Escape key and manages accessibility attributes', async () => {
@@ -235,5 +352,25 @@ describe('CreateAssignmentDialog', () => {
     expect(screen.getByText(/No clients available/i)).toBeDefined();
     expect(screen.getByText(/No eligible staff available/i)).toBeDefined();
     expect(screen.getByText(/No eligible reviewers available/i)).toBeDefined();
+  });
+
+  it('blocks creation and shows error when service catalog is empty', () => {
+    const onCreateAssignment = vi.fn();
+    render(
+      <CreateAssignmentDialog
+        isOpen={true}
+        role="founder"
+        clients={clients}
+        teamMembers={staff}
+        services={[]}
+        onClose={vi.fn()}
+        onCreateAssignment={onCreateAssignment}
+      />,
+    );
+
+    expect(screen.getByText(/Service catalog unavailable/i)).toBeDefined();
+    const submitBtn = screen.getByRole('button', { name: /Create Assignment/i });
+    expect(submitBtn.hasAttribute('disabled')).toBe(true);
+    expect(onCreateAssignment).not.toHaveBeenCalled();
   });
 });

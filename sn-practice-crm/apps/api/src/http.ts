@@ -391,7 +391,7 @@ export function createApiServer(application: CrmApplication, options: ApiServerO
           context,
           allowedOrigins,
           200,
-          await application.transitionAssignment(actor, assignmentTransitionId, body.action, body),
+          await application.transitionAssignment(actor, assignmentTransitionId, body.action, body as unknown as import('@sn/contracts').AssignmentTransitionInput),
         );
         return;
       }
@@ -403,7 +403,7 @@ export function createApiServer(application: CrmApplication, options: ApiServerO
           context,
           allowedOrigins,
           200,
-          await application.updateAssignment(actor, assignmentId, body),
+          await application.updateAssignment(actor, assignmentId, body as unknown as import('@sn/contracts').UpdateAssignmentInput),
         );
         return;
       }
