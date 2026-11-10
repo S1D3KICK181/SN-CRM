@@ -1253,4 +1253,218 @@ describe('HTTP API', () => {
       expect(longRes.status).toBe(422);
     });
   });
+
+  describe('AS-01: Assignments PATCH and Idempotent Due Generation', () => {
+    it('allows Founder/Manager to update assignment title, owner, and reviewers', async () => {
+      const baseUrl = await startServer();
+      const res = await fetch(`${baseUrl}/api/v1/assignments/${CANONICAL_ASSIGNMENT_1}`, {
+        method: 'PATCH',
+        headers: {
+          'x-demo-user-id': DEMO_ACTOR_IDS.founder,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          title: 'Updated GSTR-1 Review Engagement',
+          ownerId: DEMO_ACTOR_IDS.senior,
+          reviewerIds: [DEMO_ACTOR_IDS.manager],
+        }),
+      });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.title).toBe('Updated GSTR-1 Review Engagement');
+      expect(body.data.ownerId).toBe(DEMO_ACTOR_IDS.senior);
+      expect(body.data.reviewerIds).toEqual([DEMO_ACTOR_IDS.manager]);
+    });
+
+    it('rejects non-leadership attempts to reassign owner or reviewers with 403', async () => {
+      const baseUrl = await startServer();
+      const res = await fetch(`${baseUrl}/api/v1/assignments/${CANONICAL_ASSIGNMENT_1}`, {
+        method: 'PATCH',
+        headers: {
+          'x-demo-user-id': DEMO_ACTOR_IDS.staff,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          ownerId: DEMO_ACTOR_IDS.staff,
+        }),
+      });
+      expect(res.status).toBe(403);
+      const body = await res.json();
+      expect(body.error.code).toBe('role_not_permitted');
+    });
+
+    it('rejects assigning a Trainee as assignment owner with 422 trainee_cannot_own_assignment', async () => {
+      const baseUrl = await startServer();
+      const res = await fetch(`${baseUrl}/api/v1/assignments/${CANONICAL_ASSIGNMENT_1}`, {
+        method: 'PATCH',
+        headers: {
+          'x-demo-user-id': DEMO_ACTOR_IDS.founder,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          ownerId: DEMO_ACTOR_IDS.trainee,
+        }),
+      });
+      expect(res.status).toBe(422);
+      const body = await res.json();
+      expect(body.error.code).toBe('trainee_cannot_own_assignment');
+    });
+
+    it('rejects editing owner on an approved assignment with 409 conflict', async () => {
+      const baseUrl = await startServer();
+      // First, progress and approve the assignment
+      // assigned -> in_progress
+      await fetch(`${baseUrl}/api/v1/assignments/${CANONICAL_ASSIGNMENT_1}/transitions`, {
+        method: 'POST',
+        headers: { 'x-demo-user-id': DEMO_ACTOR_IDS.founder, 'content-type': 'application/json' },
+        body: JSON.stringify({ action: 'start' }),
+      });
+      // in_progress -> ready_for_review
+      await fetch(`${baseUrl}/api/v1/assignments/${CANONICAL_ASSIGNMENT_1}/transitions`, {
+        method: 'POST',
+        headers: { 'x-demo-user-id': DEMO_ACTOR_IDS.founder, 'content-type': 'application/json' },
+        body: JSON.stringify({ action: 'submit' }),
+      });
+      // ready_for_review -> approved
+      await fetch(`${baseUrl}/api/v1/assignments/${CANONICAL_ASSIGNMENT_1}/transitions`, {
+        method: 'POST',
+        headers: { 'x-demo-user-id': DEMO_ACTOR_IDS.founder, 'content-type': 'application/json' },
+        body: JSON.stringify({ action: 'complete' }),
+      });
+
+      // Now attempt to update owner
+      const res = await fetch(`${baseUrl}/api/v1/assignments/${CANONICAL_ASSIGNMENT_1}`, {
+        method: 'PATCH',
+        headers: { 'x-demo-user-id': DEMO_ACTOR_IDS.founder, 'content-type': 'application/json' },
+        body: JSON.stringify({ ownerId: DEMO_ACTOR_IDS.staff }),
+      });
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.error.code).toBe('invalid_state_transition');
+    });
+
+    it('rejects updates with mismatched expectedUpdatedAt with 409 conflict', async () => {
+      const baseUrl = await startServer();
+      const res = await fetch(`${baseUrl}/api/v1/assignments/${CANONICAL_ASSIGNMENT_1}`, {
+        method: 'PATCH',
+        headers: { 'x-demo-user-id': DEMO_ACTOR_IDS.founder, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          title: 'Concurrent Title',
+          expectedUpdatedAt: '2020-01-01T00:00:00.000Z',
+        }),
+      });
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.error.code).toBe('concurrency_conflict');
+    });
+
+    it('generates due recurring assignments for leadership and enforces idempotency', async () => {
+      const baseUrl = await startServer();
+
+      // First create a recurring schedule with nextOccurrenceOn = 2026-10-31
+      const schedRes = await fetch(`${baseUrl}/api/v1/recurring-schedules`, {
+        method: 'POST',
+        headers: { 'x-demo-user-id': DEMO_ACTOR_IDS.founder, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          clientId: CANONICAL_CLIENT_1,
+          title: 'Recurring GST Filing',
+          cadence: 'monthly',
+          ownerId: DEMO_ACTOR_IDS.senior,
+          nextOccurrenceOn: '2026-10-31',
+          dueDay: 11,
+        }),
+      });
+      expect(schedRes.status).toBe(201);
+
+      // Generate due through 2026-11-05
+      const genRes1 = await fetch(`${baseUrl}/api/v1/recurring-schedules/generate-due`, {
+        method: 'POST',
+        headers: { 'x-demo-user-id': DEMO_ACTOR_IDS.founder, 'content-type': 'application/json' },
+        body: JSON.stringify({ throughDate: '2026-11-05' }),
+      });
+      expect(genRes1.status).toBe(200);
+      const genBody1 = await genRes1.json();
+      expect(genBody1.data.generatedCount).toBeGreaterThanOrEqual(1);
+
+      // Repeated execution: idempotent, 0 duplicate occurrences generated
+      const genRes2 = await fetch(`${baseUrl}/api/v1/recurring-schedules/generate-due`, {
+        method: 'POST',
+        headers: { 'x-demo-user-id': DEMO_ACTOR_IDS.founder, 'content-type': 'application/json' },
+        body: JSON.stringify({ throughDate: '2026-11-05' }),
+      });
+      expect(genRes2.status).toBe(200);
+      const genBody2 = await genRes2.json();
+      expect(genBody2.data.generatedCount).toBe(0);
+    });
+
+    it('rejects generate-due when called by non-leadership roles with 403', async () => {
+      const baseUrl = await startServer();
+      for (const roleId of [DEMO_ACTOR_IDS.senior, DEMO_ACTOR_IDS.staff, DEMO_ACTOR_IDS.trainee]) {
+        const res = await fetch(`${baseUrl}/api/v1/recurring-schedules/generate-due`, {
+          method: 'POST',
+          headers: { 'x-demo-user-id': roleId, 'content-type': 'application/json' },
+          body: JSON.stringify({}),
+        });
+        expect(res.status).toBe(403);
+        const body = await res.json();
+        expect(body.error.code).toBe('role_not_permitted');
+      }
+    });
+
+    it('rejects invalid non-existent calendar dates like 2026-02-31 with 422 validation_failed', async () => {
+      const baseUrl = await startServer();
+      const invalidDates = ['2026-02-31', '2026-04-31', '2026-02-29', '2026-13-01', '2026-00-10'];
+
+      for (const badDate of invalidDates) {
+        const res = await fetch(`${baseUrl}/api/v1/recurring-schedules`, {
+          method: 'POST',
+          headers: { 'x-demo-user-id': DEMO_ACTOR_IDS.founder, 'content-type': 'application/json' },
+          body: JSON.stringify({
+            clientId: CANONICAL_CLIENT_1,
+            title: 'Invalid Date Schedule',
+            cadence: 'monthly',
+            ownerId: DEMO_ACTOR_IDS.senior,
+            nextOccurrenceOn: badDate,
+            dueDay: 11,
+          }),
+        });
+        expect(res.status).toBe(422);
+        const body = await res.json();
+        expect(body.error.code).toBe('validation_failed');
+      }
+    });
+
+    it('rejects core mutations on approved/closed assignments with 409 invalid_state_transition', async () => {
+      const baseUrl = await startServer();
+
+      // Progress CANONICAL_ASSIGNMENT_1 to approved
+      await fetch(`${baseUrl}/api/v1/assignments/${CANONICAL_ASSIGNMENT_1}/transitions`, {
+        method: 'POST',
+        headers: { 'x-demo-user-id': DEMO_ACTOR_IDS.founder, 'content-type': 'application/json' },
+        body: JSON.stringify({ action: 'start' }),
+      });
+      await fetch(`${baseUrl}/api/v1/assignments/${CANONICAL_ASSIGNMENT_1}/transitions`, {
+        method: 'POST',
+        headers: { 'x-demo-user-id': DEMO_ACTOR_IDS.founder, 'content-type': 'application/json' },
+        body: JSON.stringify({ action: 'submit' }),
+      });
+      const approveRes = await fetch(`${baseUrl}/api/v1/assignments/${CANONICAL_ASSIGNMENT_1}/transitions`, {
+        method: 'POST',
+        headers: { 'x-demo-user-id': DEMO_ACTOR_IDS.founder, 'content-type': 'application/json' },
+        body: JSON.stringify({ action: 'complete' }),
+      });
+      expect(approveRes.status).toBe(200);
+
+      // Now attempt PATCH with core changes
+      const patchRes = await fetch(`${baseUrl}/api/v1/assignments/${CANONICAL_ASSIGNMENT_1}`, {
+        method: 'PATCH',
+        headers: { 'x-demo-user-id': DEMO_ACTOR_IDS.founder, 'content-type': 'application/json' },
+        body: JSON.stringify({ title: 'New Locked Title' }),
+      });
+      expect(patchRes.status).toBe(409);
+      const patchBody = await patchRes.json();
+      expect(patchBody.error.code).toBe('invalid_state_transition');
+      expect(patchBody.error.message).toBe('An approved or closed Assignment is an immutable audit artifact.');
+    });
+  });
 });

@@ -1,10 +1,12 @@
 import { useMemo, useState } from 'react';
 import {
+  AlertCircle,
   BriefcaseBusiness,
   Building2,
   CalendarClock,
   Check,
   CheckCircle2,
+  Clock,
   FileText,
   Lock,
   Plus,
@@ -24,6 +26,8 @@ import {
   type RecurringScheduleRecord,
 } from '../../data';
 import { AssignmentsTable } from './assignments-table';
+import { CadenceTracker } from './cadence-tracker';
+import { isValidUuid } from '../../api/metadata-safety';
 
 type DialogMode = 'assignment' | 'personal' | 'delegated' | 'client' | 'schedule' | 'invoice' | 'receipt' | null;
 
@@ -36,6 +40,11 @@ export function AssignmentsWorkspace({
   onUpdateSchedule,
   onUpdateAssignment,
   onSelectAssignment,
+  onGenerateDue,
+  isGeneratingDue = false,
+  isLoading = false,
+  error = null,
+  onRetry,
 }: {
   role: CompanyRole;
   schedules: RecurringScheduleRecord[];
@@ -45,6 +54,11 @@ export function AssignmentsWorkspace({
   onUpdateSchedule: (updated: RecurringScheduleRecord) => void;
   onUpdateAssignment: (updated: AssignmentRow) => void;
   onSelectAssignment: (assignment: AssignmentRow) => void;
+  onGenerateDue?: () => void;
+  isGeneratingDue?: boolean;
+  isLoading?: boolean;
+  error?: string | null;
+  onRetry?: () => void;
 }) {
   const [activeTab, setActiveTab] = useState<'compliance' | 'oneoff'>('compliance');
   const [staffFilter, setStaffFilter] = useState<string>('All');
@@ -95,25 +109,48 @@ export function AssignmentsWorkspace({
     });
   }, [schedules, leadership, myAssignedStaffName, staffFilter, categoryFilter, statusFilter, search]);
 
+  const scopedSchedules = useMemo(() => {
+    return schedules.filter((s) => {
+      if (!leadership) {
+        if (s.defaultOwner !== myAssignedStaffName) return false;
+      } else if (staffFilter !== 'All') {
+        if (s.defaultOwner !== staffFilter) return false;
+      }
+      if (categoryFilter !== 'All' && s.category !== categoryFilter) return false;
+      return true;
+    });
+  }, [schedules, leadership, myAssignedStaffName, staffFilter, categoryFilter]);
+
+  const tally = useMemo(() => {
+    let all = 0;
+    let bankRecNeeded = 0;
+    let docsAwaited = 0;
+    let readyToFile = 0;
+    let filed = 0;
+
+    for (const s of scopedSchedules) {
+      all += 1;
+      if (s.bankRecStatus === 'Awaited' || s.bankRecStatus === 'In progress') {
+        bankRecNeeded += 1;
+      }
+      if (s.currentStatus === 'Docs Awaited') {
+        docsAwaited += 1;
+      } else if (s.currentStatus === 'Ready to File') {
+        readyToFile += 1;
+      } else if (s.currentStatus === 'Filed') {
+        filed += 1;
+      }
+    }
+    return { all, bankRecNeeded, docsAwaited, readyToFile, filed };
+  }, [scopedSchedules]);
+
   const distinctClientCount = useMemo(() => {
     const ids = new Set(filteredSchedules.map((s) => s.clientId));
     return ids.size;
   }, [filteredSchedules]);
 
-  const pendingGstCount = useMemo(() => {
-    return filteredSchedules.filter((s) => s.category === 'GST' && s.currentStatus !== 'Filed').length;
-  }, [filteredSchedules]);
-
-  const pendingTdsCount = useMemo(() => {
-    return filteredSchedules.filter((s) => s.category === 'TDS' && s.currentStatus !== 'Filed').length;
-  }, [filteredSchedules]);
-
-  const bankRecsPendingCount = useMemo(() => {
-    return filteredSchedules.filter((s) => s.bankRecStatus === 'In progress' || s.bankRecStatus === 'Awaited').length;
-  }, [filteredSchedules]);
-
   return (
-    <div className="assignments-workspace" style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+    <div className="assignments-workspace">
       {/* View Switcher: Monthly Compliance Tracker vs One-Off Assignments */}
       <div className="work-mode-switcher">
         <button
@@ -155,7 +192,7 @@ export function AssignmentsWorkspace({
 
             {leadership ? (
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <span style={{ fontSize: 11, color: 'var(--ink-muted)' }}>Filter by Staff:</span>
+                <span style={{ fontSize: 12, color: 'var(--ink-muted)' }}>Filter by Staff:</span>
                 <select
                   className="staff-scope-select"
                   value={staffFilter}
@@ -169,58 +206,57 @@ export function AssignmentsWorkspace({
                 </select>
               </div>
             ) : (
-              <span style={{ fontSize: 11, color: 'var(--ink-muted)' }}>
+              <span style={{ fontSize: 12, color: 'var(--ink-muted)' }}>
                 {distinctClientCount} clients in your care
               </span>
             )}
           </div>
 
-          {/* Horizon KPI Metric Cards */}
-          <section className="workspace-stats-grid">
-            <article className="workspace-stat-card">
-              <div className="workspace-stat-info">
-                <span>Assigned Clients</span>
-                <strong>{distinctClientCount}</strong>
-                <small>Under active compliance</small>
-              </div>
-              <span className="workspace-stat-icon">
-                <Building2 aria-hidden="true" />
-              </span>
-            </article>
-
-            <article className="workspace-stat-card">
-              <div className="workspace-stat-info">
-                <span>Pending GST Returns</span>
-                <strong>{pendingGstCount}</strong>
-                <small>Due on 11th &amp; 20th</small>
-              </div>
-              <span className="workspace-stat-icon stat-warning">
-                <FileText aria-hidden="true" />
-              </span>
-            </article>
-
-            <article className="workspace-stat-card">
-              <div className="workspace-stat-info">
-                <span>TDS &amp; Challans Due</span>
-                <strong>{pendingTdsCount}</strong>
-                <small>Due on 7th &amp; 31st</small>
-              </div>
-              <span className="workspace-stat-icon stat-gold">
-                <ReceiptIndianRupee aria-hidden="true" />
-              </span>
-            </article>
-
-            <article className="workspace-stat-card">
-              <div className="workspace-stat-info">
-                <span>Bank Rec Pending</span>
-                <strong>{bankRecsPendingCount}</strong>
-                <small>Required before GST filing</small>
-              </div>
-              <span className="workspace-stat-icon" style={{ background: '#eff6ff', color: '#2563eb' }}>
-                <WalletCards aria-hidden="true" />
-              </span>
-            </article>
-          </section>
+          {/* Status Filter Tally Strip */}
+          <div
+            className="cadence-tally-strip"
+            style={{
+              display: 'flex',
+              gap: 6,
+              flexWrap: 'wrap',
+              alignItems: 'center',
+            }}
+          >
+            {([
+              { key: 'All', label: 'All', count: tally.all },
+              { key: 'Bank Rec Needed', label: 'Bank Rec Needed', count: tally.bankRecNeeded },
+              { key: 'Docs Awaited', label: 'Docs Awaited', count: tally.docsAwaited },
+              { key: 'Ready to File', label: 'Ready to File', count: tally.readyToFile },
+              { key: 'Filed', label: 'Filed', count: tally.filed },
+            ] as const).map(({ key, label, count }) => (
+              <button
+                key={key}
+                className={`cadence-pill ${statusFilter === key ? 'is-active' : ''}`}
+                type="button"
+                onClick={() => setStatusFilter(key)}
+                style={{
+                  fontSize: 12,
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 6,
+                }}
+              >
+                <span>{label}</span>
+                <span
+                  style={{
+                    fontSize: 12,
+                    padding: '1px 6px',
+                    borderRadius: 10,
+                    background: statusFilter === key ? 'var(--primary)' : 'var(--canvas)',
+                    color: statusFilter === key ? 'var(--surface)' : 'var(--ink-muted)',
+                    fontWeight: 600,
+                  }}
+                >
+                  {count}
+                </span>
+              </button>
+            ))}
+          </div>
 
           {/* Search & Domain Filter Pills */}
           <div className="client-toolbar">
@@ -248,30 +284,59 @@ export function AssignmentsWorkspace({
               ))}
             </div>
 
-            <div className="cadence-tabs">
-              {(['All', 'Bank Rec Needed', 'Docs Awaited', 'Ready to File', 'Filed'] as const).map((st) => (
-                <button
-                  key={st}
-                  className={`cadence-pill ${statusFilter === st ? 'is-active' : ''}`}
-                  type="button"
-                  onClick={() => setStatusFilter(st)}
-                  style={{ fontSize: 11 }}
-                >
-                  {st}
-                </button>
-              ))}
-            </div>
-
             {leadership ? (
-              <button
-                className="primary-button"
-                type="button"
-                onClick={() => onCompose('schedule')}
-              >
-                <Plus aria-hidden="true" /> Add schedule
-              </button>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                {onGenerateDue && (
+                  <button
+                    className="soft-button"
+                    type="button"
+                    onClick={onGenerateDue}
+                    disabled={isGeneratingDue}
+                    style={{ fontSize: 12, padding: '6px 12px', height: 'auto', display: 'inline-flex', alignItems: 'center', gap: 6 }}
+                  >
+                    <CalendarClock size={13} />
+                    {isGeneratingDue ? 'Generating Due...' : 'Generate due assignments'}
+                  </button>
+                )}
+                <button
+                  className="primary-button"
+                  type="button"
+                  onClick={() => onCompose('schedule')}
+                >
+                  <Plus aria-hidden="true" /> Add schedule
+                </button>
+              </div>
             ) : null}
           </div>
+
+          {error && (
+            <div
+              className="field-error-banner"
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                padding: '10px 14px',
+                borderRadius: 'var(--radius-md)',
+                background: 'var(--danger-soft)',
+                border: '1px solid var(--danger)',
+                color: 'var(--danger)',
+                fontSize: 13,
+              }}
+            >
+              <span>{error}</span>
+              {onRetry && (
+                <button
+                  className="soft-button"
+                  type="button"
+                  onClick={onRetry}
+                  style={{ fontSize: 12, padding: '4px 10px' }}
+                >
+                  Retry
+                </button>
+              )}
+            </div>
+          )}
 
           {/* Horizon Compliance Table */}
           <Card
@@ -280,120 +345,134 @@ export function AssignmentsWorkspace({
             action={<MoreButton />}
             className="table-card"
           >
-            <div className="table-scroll">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Target Client</th>
-                    <th>Compliance Obligation</th>
-                    <th>Staff In-Charge</th>
-                    <th>Statutory Due Date</th>
-                    <th>Bank Reconciliation</th>
-                    <th>Filing Status</th>
-                    <th>Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {filteredSchedules.length === 0 ? (
+            {isLoading ? (
+              <div style={{ display: 'grid', gap: 12, padding: '24px 16px' }} data-testid="schedules-loading-skeleton">
+                <div className="skeleton-pulse" style={{ height: 44, background: 'var(--canvas)', borderRadius: 6 }} />
+                <div className="skeleton-pulse" style={{ height: 44, background: 'var(--canvas)', borderRadius: 6 }} />
+                <div className="skeleton-pulse" style={{ height: 44, background: 'var(--canvas)', borderRadius: 6 }} />
+              </div>
+            ) : (
+              <div className="table-scroll">
+                <table>
+                  <thead>
                     <tr>
-                      <td colSpan={7} style={{ textAlign: 'center', padding: '32px 16px', color: 'var(--ink-muted)' }}>
-                        No compliance schedules match your current filters.
-                      </td>
+                      <th>Target Client</th>
+                      <th>Compliance Obligation</th>
+                      <th>Staff In-Charge</th>
+                      <th>Statutory Due Date</th>
+                      <th>Statutory Cadence Horizon</th>
+                      <th>Actions</th>
                     </tr>
-                  ) : (
-                    filteredSchedules.map((schedule) => (
-                      <tr
-                        key={schedule.id}
-                        onClick={() => setSelectedSchedule(schedule)}
-                        style={{ cursor: 'pointer' }}
-                      >
-                        <td>
-                          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                            <strong style={{ color: 'var(--ink-strong)', fontSize: 12 }}>
-                              {schedule.clientName}
-                            </strong>
-                            <span className="client-id-chip" style={{ width: 'fit-content' }}>
-                              {schedule.clientId}
-                            </span>
-                          </div>
-                        </td>
-                        <td>
-                          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                            <strong style={{ color: 'var(--ink-strong)' }}>{schedule.title}</strong>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                              <span className={`category-tag cat-${schedule.category.toLowerCase().replace(/[^a-z]/g, '')}`}>
-                                {schedule.category}
-                              </span>
-                              <span style={{ fontSize: 10, color: 'var(--ink-muted)' }}>
-                                {schedule.cadence}
-                              </span>
-                            </div>
-                          </div>
-                        </td>
-                        <td>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
-                            <span className="user-avatar" style={{ width: 24, height: 24, fontSize: 10 }}>
-                              {schedule.defaultOwner.substring(0, 2).toUpperCase()}
-                            </span>
-                            <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink-strong)' }}>
-                              {schedule.defaultOwner}
-                            </span>
-                          </div>
-                        </td>
-                        <td>
-                          <span className="due-chip">
-                            <CalendarClock size={12} />
-                            {schedule.nextDueDate}
-                          </span>
-                        </td>
-                        <td>
-                          <span className={`bank-rec-chip ${
-                            schedule.bankRecStatus === 'Completed'
-                              ? 'is-done'
-                              : schedule.bankRecStatus === 'In progress'
-                              ? 'is-progress'
-                              : schedule.bankRecStatus === 'Awaited'
-                              ? 'is-awaited'
-                              : 'is-na'
-                          }`}>
-                            {schedule.bankRecStatus === 'Completed' && '✓ Reconciled'}
-                            {schedule.bankRecStatus === 'In progress' && '⏳ In Progress'}
-                            {schedule.bankRecStatus === 'Awaited' && '⚠️ Statement Awaited'}
-                            {schedule.bankRecStatus === 'Not applicable' && 'N/A (No Bank)'}
-                          </span>
-                        </td>
-                        <td>
-                          <span className={`filing-chip ${
-                            schedule.currentStatus === 'Ready to File'
-                              ? 'is-ready'
-                              : schedule.currentStatus === 'Docs Awaited'
-                              ? 'is-awaited'
-                              : schedule.currentStatus === 'Bank Statement Received' || schedule.currentStatus === 'Filed'
-                              ? 'is-done'
-                              : 'is-pending'
-                          }`}>
-                            {schedule.currentStatus || 'Pending'}
-                          </span>
-                        </td>
-                        <td>
-                          <button
-                            className="soft-button"
-                            type="button"
-                            style={{ fontSize: 11, padding: '4px 10px' }}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setSelectedSchedule(schedule);
-                            }}
-                          >
-                            View Checklist ({schedule.bankRecStatus === 'Not applicable' ? schedule.checklistTemplate.filter(s => !s.toLowerCase().includes('bank') && !s.toLowerCase().includes('reconciliation')).length : schedule.checklistTemplate.length})
-                          </button>
+                  </thead>
+                  <tbody>
+                    {filteredSchedules.length === 0 ? (
+                      <tr>
+                        <td colSpan={6} style={{ textAlign: 'center', padding: '32px 16px', color: 'var(--ink-muted)' }}>
+                          No compliance schedules match your current filters.
                         </td>
                       </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
-            </div>
+                    ) : (
+                      filteredSchedules.map((schedule) => {
+                        const displayClientCode = schedule.clientCode && !isValidUuid(schedule.clientCode)
+                          ? schedule.clientCode
+                          : !isValidUuid(schedule.clientId)
+                          ? schedule.clientId
+                          : undefined;
+                        return (
+                          <tr
+                            key={schedule.id}
+                            onClick={() => setSelectedSchedule(schedule)}
+                            style={{ cursor: 'pointer' }}
+                          >
+                            <td>
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+                                <strong
+                                  title={schedule.clientName}
+                                  style={{
+                                    color: 'var(--ink-strong)',
+                                    fontSize: 13,
+                                    lineHeight: 1.25,
+                                    whiteSpace: 'nowrap',
+                                    overflow: 'hidden',
+                                    textOverflow: 'ellipsis',
+                                    maxWidth: 220,
+                                  }}
+                                >
+                                  {schedule.clientName}
+                                </strong>
+                                {displayClientCode ? (
+                                  <span className="client-id-chip" style={{ width: 'fit-content' }}>
+                                    {displayClientCode}
+                                  </span>
+                                ) : null}
+                              </div>
+                            </td>
+                            <td>
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                                <strong
+                                  title={schedule.title}
+                                  style={{
+                                    color: 'var(--ink-strong)',
+                                    fontSize: 13,
+                                    lineHeight: 1.25,
+                                    whiteSpace: 'nowrap',
+                                    overflow: 'hidden',
+                                    textOverflow: 'ellipsis',
+                                    maxWidth: 260,
+                                  }}
+                                >
+                                  {schedule.title}
+                                </strong>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                  <span className={`category-tag cat-${schedule.category.toLowerCase().replace(/[^a-z]/g, '')}`}>
+                                    {schedule.category}
+                                  </span>
+                                  <span style={{ fontSize: 12, color: 'var(--ink-muted)', lineHeight: 1 }}>
+                                    {schedule.cadence}
+                                  </span>
+                                </div>
+                              </div>
+                            </td>
+                            <td>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                <span className="user-avatar" style={{ width: 22, height: 22, fontSize: 12 }}>
+                                  {schedule.defaultOwner.substring(0, 2).toUpperCase()}
+                                </span>
+                                <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink-strong)', lineHeight: 1.2 }}>
+                                  {schedule.defaultOwner}
+                                </span>
+                              </div>
+                            </td>
+                            <td>
+                              <span className="due-chip">
+                                <CalendarClock size={12} />
+                                {schedule.nextDueDate}
+                              </span>
+                            </td>
+                            <td>
+                              <CadenceTracker item={schedule} />
+                            </td>
+                            <td>
+                              <button
+                                className="soft-button"
+                                type="button"
+                                style={{ fontSize: 12, padding: '0 10px', height: 26, minHeight: 26, lineHeight: '24px' }}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setSelectedSchedule(schedule);
+                                }}
+                              >
+                                View Checklist ({schedule.bankRecStatus === 'Not applicable' ? schedule.checklistTemplate.filter(s => !s.toLowerCase().includes('bank') && !s.toLowerCase().includes('reconciliation')).length : schedule.checklistTemplate.length})
+                              </button>
+                            </td>
+                        </tr>
+                        );
+                      })
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </Card>
         </>
       ) : (
@@ -437,6 +516,18 @@ function ScheduleDetailDrawer({
   onUpdateSchedule: (updated: RecurringScheduleRecord) => void;
 }) {
   const currentPersonName = role ? ROLE_PEOPLE[role]?.name : '';
+  const displayClientCode = schedule.clientCode && !isValidUuid(schedule.clientCode)
+    ? schedule.clientCode
+    : !isValidUuid(schedule.clientId)
+    ? schedule.clientId
+    : undefined;
+
+  const displayScheduleCode = schedule.code && !isValidUuid(schedule.code)
+    ? schedule.code
+    : !isValidUuid(schedule.id)
+    ? schedule.id
+    : undefined;
+
   const isAssignedCustodian = Boolean(
     currentPersonName &&
     (schedule.defaultOwner.toLowerCase().includes(currentPersonName.toLowerCase()) ||
@@ -445,10 +536,6 @@ function ScheduleDetailDrawer({
   const [tab, setTab] = useState<'checklist' | 'overview' | 'history'>('checklist');
   const [bankRecStatus, setBankRecStatus] = useState(schedule.bankRecStatus || 'Awaited');
   const [currentStatus, setCurrentStatus] = useState(schedule.currentStatus || 'Pending');
-  const [checkedSteps, setCheckedSteps] = useState<Record<number, boolean>>({
-    0: schedule.bankRecStatus === 'Completed',
-  });
-  const [arn, setArn] = useState('');
 
   const hasBank = schedule.bankRecStatus !== 'Not applicable' && bankRecStatus !== 'Not applicable';
 
@@ -458,17 +545,6 @@ function ScheduleDetailDrawer({
       (step) => !step.toLowerCase().includes('bank') && !step.toLowerCase().includes('reconciliation')
     );
   }, [schedule.checklistTemplate, hasBank]);
-
-  function toggleStep(idx: number) {
-    if (!isAssignedCustodian) return;
-    setCheckedSteps((prev) => {
-      const next = { ...prev, [idx]: !prev[idx] };
-      if (hasBank && idx === 0 && next[0] && schedule.category === 'GST') {
-        setBankRecStatus('Completed');
-      }
-      return next;
-    });
-  }
 
   function handleSave() {
     if (!isAssignedCustodian) return;
@@ -537,25 +613,13 @@ function ScheduleDetailDrawer({
               <p style={{ fontSize: 12, color: 'var(--ink-muted)', margin: '0 0 10px' }}>
                 {!hasBank
                   ? 'Banking excluded: Client operates without bank accounts (cash-only). Bank statement collection and reconciliation are not part of this return workflow.'
-                  : 'Complete each prerequisite step. Bank statement receipt is verified before filing GST returns:'}
+                  : 'Workflow checklist reference for recurring compliance execution:'}
               </p>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <div className="schedule-checklist-list">
                 {workflowChecklist.map((step, idx) => (
-                  <div
-                    key={idx}
-                    className={`checklist-interactive-row ${checkedSteps[idx] ? 'is-completed' : ''}`}
-                    style={{
-                      cursor: isAssignedCustodian ? 'pointer' : 'not-allowed',
-                      opacity: isAssignedCustodian ? 1 : 0.85,
-                    }}
-                    onClick={isAssignedCustodian ? () => toggleStep(idx) : undefined}
-                  >
-                    <div className="checklist-checkbox">
-                      {checkedSteps[idx] ? <Check size={12} /> : null}
-                    </div>
-                    <span className="checklist-step-text" style={{ fontSize: 12, lineHeight: 1.4 }}>
-                      {step}
-                    </span>
+                  <div key={idx} className="schedule-checklist-item">
+                    <span className="schedule-checklist-bullet" aria-hidden="true" />
+                    <span className="schedule-checklist-text">{step}</span>
                   </div>
                 ))}
               </div>
@@ -564,33 +628,36 @@ function ScheduleDetailDrawer({
               <div style={{ marginTop: 20, paddingTop: 16, borderTop: '1px solid var(--border)', display: 'flex', flexDirection: 'column', gap: 14 }}>
                 {hasBank ? (
                   <div>
-                    <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--ink-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                    <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--ink-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
                       Bank Reconciliation Status
                     </span>
-                    <div style={{ display: 'flex', gap: 6, marginTop: 6, flexWrap: 'wrap' }}>
+                    <div className="bank-rec-status-group">
                       {(['Completed', 'In progress', 'Awaited'] as const).map((st) => (
                         <button
                           key={st}
                           type="button"
                           disabled={!isAssignedCustodian}
-                          onClick={() => {
-                            if (!isAssignedCustodian) return;
-                            setBankRecStatus(st);
-                            if (st === 'Completed') {
-                              setCheckedSteps((prev) => ({ ...prev, 0: true }));
-                            }
-                          }}
-                          className={`work-tab-btn ${bankRecStatus === st ? 'is-active' : ''}`}
-                          style={{
-                            fontSize: 11,
-                            padding: '4px 10px',
-                            cursor: isAssignedCustodian ? 'pointer' : 'not-allowed',
-                            opacity: isAssignedCustodian ? 1 : 0.7,
-                          }}
+                          onClick={() => isAssignedCustodian && setBankRecStatus(st)}
+                          className={`schedule-status-btn ${bankRecStatus === st ? 'is-active' : ''}`}
                         >
-                          {st === 'Completed' && '✓ Reconciled'}
-                          {st === 'In progress' && '⏳ In Progress'}
-                          {st === 'Awaited' && '⚠️ Statement Awaited'}
+                          {st === 'Completed' && (
+                            <>
+                              <Check size={12} aria-hidden="true" />
+                              <span>Reconciled</span>
+                            </>
+                          )}
+                          {st === 'In progress' && (
+                            <>
+                              <Clock size={12} aria-hidden="true" />
+                              <span>In Progress</span>
+                            </>
+                          )}
+                          {st === 'Awaited' && (
+                            <>
+                              <AlertCircle size={12} aria-hidden="true" />
+                              <span>Statement Awaited</span>
+                            </>
+                          )}
                         </button>
                       ))}
                     </div>
@@ -601,17 +668,17 @@ function ScheduleDetailDrawer({
                       <Building2 size={13} color="var(--ink-muted)" />
                       <span>Banking Excluded from GST Workflow</span>
                     </div>
-                    <p style={{ margin: '4px 0 0', fontSize: 11, color: 'var(--ink-muted)' }}>
+                    <p style={{ margin: '4px 0 0', fontSize: 12, color: 'var(--ink-muted)' }}>
                       Client operates without bank accounts (cash-only). Bank statement collection and reconciliation are not required or tracked for this return filing.
                     </p>
                   </div>
                 )}
 
                 <div>
-                  <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--ink-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--ink-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
                     Filing Progress Status
                   </span>
-                  <div style={{ display: 'flex', gap: 6, marginTop: 6, flexWrap: 'wrap' }}>
+                  <div className="schedule-status-group">
                     {(hasBank
                       ? ['Pending', 'Docs Awaited', 'Bank Statement Received', 'Ready to File', 'Filed'] as const
                       : ['Pending', 'Docs Awaited', 'Ready to File', 'Filed'] as const
@@ -621,41 +688,12 @@ function ScheduleDetailDrawer({
                         type="button"
                         disabled={!isAssignedCustodian}
                         onClick={() => isAssignedCustodian && setCurrentStatus(fs)}
-                        className={`work-tab-btn ${currentStatus === fs ? 'is-active' : ''}`}
-                        style={{
-                          fontSize: 11,
-                          padding: '4px 10px',
-                          cursor: isAssignedCustodian ? 'pointer' : 'not-allowed',
-                          opacity: isAssignedCustodian ? 1 : 0.7,
-                        }}
+                        className={`schedule-status-btn ${currentStatus === fs ? 'is-active' : ''}`}
                       >
                         {fs}
                       </button>
                     ))}
                   </div>
-                </div>
-
-                <div>
-                  <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--ink-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-                    Portal Filing Proof / Acknowledgment ARN
-                  </span>
-                  <input
-                    value={arn}
-                    readOnly={!isAssignedCustodian}
-                    onChange={(e) => setArn(e.target.value)}
-                    placeholder="e.g. AA271026001923M (GSTN ARN / Challan BSR)"
-                    style={{
-                      width: '100%',
-                      marginTop: 6,
-                      padding: '8px 12px',
-                      borderRadius: 'var(--radius-md)',
-                      border: '1px solid var(--border)',
-                      fontSize: 12,
-                      fontFamily: 'monospace',
-                      background: isAssignedCustodian ? 'var(--surface)' : 'var(--canvas)',
-                      cursor: isAssignedCustodian ? 'text' : 'not-allowed',
-                    }}
-                  />
                 </div>
               </div>
             </div>
@@ -675,7 +713,7 @@ function ScheduleDetailDrawer({
               <div className="drawer-grid">
                 <div className="drawer-item">
                   <span className="drawer-label">Schedule ID</span>
-                  <span className="drawer-val">{schedule.id}</span>
+                  <span className="drawer-val">{displayScheduleCode ?? '—'}</span>
                 </div>
                 <div className="drawer-item">
                   <span className="drawer-label">Category</span>
@@ -707,7 +745,7 @@ function ScheduleDetailDrawer({
                 </div>
                 <div className="drawer-item full-width">
                   <span className="drawer-label">Client Legal Entity</span>
-                  <span className="drawer-val">{schedule.clientName} ({schedule.clientId})</span>
+                  <span className="drawer-val">{schedule.clientName}{displayClientCode ? ` (${displayClientCode})` : ''}</span>
                 </div>
               </div>
             </>
@@ -718,17 +756,26 @@ function ScheduleDetailDrawer({
               <p style={{ fontSize: 12, color: 'var(--ink-muted)', margin: '0 0 4px' }}>
                 Past assignments generated from this recurring compliance schedule:
               </p>
-              {schedule.history.map((h) => (
-                <div key={h.period} className="history-card-row">
-                  <div>
-                    <strong>{h.period}</strong>
-                    <small>Assignment Ref: {h.assignmentId} {h.completedOn ? `· Completed on ${h.completedOn}` : ''}</small>
+              {schedule.history.map((h) => {
+                const histAsgRef = !isValidUuid(h.assignmentId) ? `Assignment Ref: ${h.assignmentId}` : undefined;
+                return (
+                  <div key={h.period} className="history-card-row">
+                    <div>
+                      <strong>{h.period}</strong>
+                      <small>
+                        {histAsgRef
+                          ? `${histAsgRef}${h.completedOn ? ` · Completed on ${h.completedOn}` : ''}`
+                          : h.completedOn
+                          ? `Completed on ${h.completedOn}`
+                          : 'Compliance Period Filing'}
+                      </small>
+                    </div>
+                    <Status tone={h.status === 'Completed' ? 'success' : h.status === 'In progress' ? 'default' : 'warning'}>
+                      {h.status}
+                    </Status>
                   </div>
-                  <Status tone={h.status === 'Completed' ? 'success' : h.status === 'In progress' ? 'default' : 'warning'}>
-                    {h.status}
-                  </Status>
-                </div>
-              ))}
+                );
+              })}
             </div>
           ) : null}
         </div>

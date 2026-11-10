@@ -3,6 +3,7 @@ import type {
   ClientDto,
   CreateLedgerEntryInput,
   CreateRecurringScheduleInput,
+  GenerateDueAssignmentsResult,
   LedgerEntryDto,
   OfficeAccountsSummaryDto,
   RecurringScheduleDto,
@@ -22,6 +23,7 @@ import type {
   EmployeeRecord,
   RepositoryContext,
   ServiceReference,
+  UpdateAssignmentCommand,
   UpdateAssignmentReviewersCommand,
   UpdateAssignmentStatusCommand,
   UpdateWorkItemStatusCommand,
@@ -65,6 +67,38 @@ const DEFAULT_SERVICES: readonly ServiceReference[] = [
   { id: '50000000-0000-4000-a000-000000000005', name: 'Statutory Audit' },
   { id: '50000000-0000-4000-a000-000000000006', name: 'Direct Tax Advisory' },
 ];
+
+function clampOccurrenceDate(origYear: number, origMonth1: number, origDay: number, monthsToAdd: number): string {
+  const totalMonths = origYear * 12 + (origMonth1 - 1) + monthsToAdd;
+  const targetYear = Math.floor(totalMonths / 12);
+  const targetMonth1 = (totalMonths % 12) + 1;
+  const daysInMonth = new Date(Date.UTC(targetYear, targetMonth1, 0)).getUTCDate();
+  const clampedDay = Math.min(origDay, daysInMonth);
+  return `${targetYear}-${String(targetMonth1).padStart(2, '0')}-${String(clampedDay).padStart(2, '0')}`;
+}
+
+function calculateRecurrenceDates(
+  occurrence: string,
+  cadence: 'monthly' | 'quarterly' | 'annual',
+  dueOffsetDays: number,
+): { nextOccurrence: string; periodEnd: string; dueAt: string } {
+  const months = cadence === 'monthly' ? 1 : cadence === 'quarterly' ? 3 : 12;
+  const parts = occurrence.split('-');
+  const y = Number.parseInt(parts[0] ?? '0', 10);
+  const m = Number.parseInt(parts[1] ?? '1', 10);
+  const d = Number.parseInt(parts[2] ?? '1', 10);
+
+  const nextOccurrence = clampOccurrenceDate(y, m, d, months);
+  const nextOccurDate = new Date(`${nextOccurrence}T00:00:00.000Z`);
+  const periodEndDate = new Date(nextOccurDate.getTime() - 86400000);
+  const periodEnd = periodEndDate.toISOString().slice(0, 10);
+
+  const dueDate = new Date(periodEndDate.getTime() + dueOffsetDays * 86400000);
+  const dueDateStr = dueDate.toISOString().slice(0, 10);
+  const dueAt = `${dueDateStr}T18:29:00.000Z`;
+
+  return { nextOccurrence, periodEnd, dueAt };
+}
 
 export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
   private readonly employees = new Map<string, EmployeeRecord>();
@@ -518,6 +552,31 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
     return copy(updated);
   }
 
+  async updateAssignment(
+    _ctx: RepositoryContext,
+    command: UpdateAssignmentCommand,
+  ): Promise<AssignmentDto> {
+    const existing = this.assignments.get(command.id);
+    if (!existing) {
+      throw new ApiError(404, 'assignment_not_found', 'Assignment was not found.');
+    }
+    if (command.expectedUpdatedAt !== undefined && command.expectedUpdatedAt !== existing.updatedAt) {
+      throw new ApiError(409, 'concurrency_conflict', 'The resource was updated concurrently by another operation.');
+    }
+    const updated: AssignmentDto = {
+      ...existing,
+      title: command.title !== undefined ? command.title : existing.title,
+      serviceId: command.serviceId !== undefined ? command.serviceId : existing.serviceId,
+      service: command.service !== undefined ? command.service : existing.service,
+      ownerId: command.ownerId !== undefined ? command.ownerId : existing.ownerId,
+      reviewerIds: command.reviewerIds !== undefined ? [...command.reviewerIds] : existing.reviewerIds,
+      dueAt: command.dueAt !== undefined ? command.dueAt : existing.dueAt,
+      updatedAt: new Date().toISOString(),
+    };
+    this.assignments.set(updated.id, copy(updated));
+    return copy(updated);
+  }
+
   // --- Work Items ---
 
   async getWorkItem(_ctx: RepositoryContext, id: string): Promise<WorkItemDto | null> {
@@ -607,7 +666,7 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
       title: input.title,
       cadence: input.cadence,
       ownerId: input.ownerId,
-      reviewerIds: input.reviewerIds ? [...input.reviewerIds] : [],
+      reviewerIds: [],
       nextOccurrenceOn: input.nextOccurrenceOn,
       dueDay: input.dueDay,
       active: true,
@@ -636,6 +695,67 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
     };
     this.schedules.set(updated.id, copy(updated));
     return copy(updated);
+  }
+
+  async materializeDueAssignments(
+    _ctx: RepositoryContext,
+    throughDate: string,
+  ): Promise<GenerateDueAssignmentsResult> {
+    const generated: Array<{ scheduleId: string; assignmentId: string; occurrenceDate: string }> = [];
+    for (const schedule of this.schedules.values()) {
+      if (!schedule.active) continue;
+      let occurrence = schedule.nextOccurrenceOn;
+      while (occurrence <= throughDate) {
+        // Idempotency: skip if occurrence for (scheduleId, periodStart) already exists
+        const exists = [...this.assignments.values()].some(
+          (a) => a.recurringScheduleId === schedule.id && a.periodStart === occurrence,
+        );
+        if (!exists) {
+          this.assignmentCounter += 1;
+          const code = `AS-${String(this.assignmentCounter).padStart(6, '0')}`;
+          const id = crypto.randomUUID();
+          const now = new Date().toISOString();
+          const recurrenceDates = calculateRecurrenceDates(occurrence, schedule.cadence, schedule.dueDay);
+          const assignment: AssignmentDto = {
+            id,
+            code,
+            clientId: schedule.clientId,
+            clientName: schedule.clientName,
+            serviceId: schedule.serviceId,
+            service: schedule.service,
+            title: schedule.title,
+            ownerId: schedule.ownerId,
+            reviewerIds: [],
+            status: 'assigned',
+            dueAt: recurrenceDates.dueAt,
+            recurringScheduleId: schedule.id,
+            periodStart: occurrence,
+            periodEnd: recurrenceDates.periodEnd,
+            priority: 'normal',
+            createdById: schedule.createdById,
+            createdAt: now,
+            updatedAt: now,
+          };
+          this.assignments.set(id, copy(assignment));
+          generated.push({
+            scheduleId: schedule.id,
+            assignmentId: id,
+            occurrenceDate: occurrence,
+          });
+        }
+        // advance occurrence according to cadence with calendar clamping
+        const recurrenceDates = calculateRecurrenceDates(occurrence, schedule.cadence, schedule.dueDay);
+        occurrence = recurrenceDates.nextOccurrence;
+      }
+      this.schedules.set(schedule.id, {
+        ...schedule,
+        nextOccurrenceOn: occurrence,
+      });
+    }
+    return {
+      generatedCount: generated.length,
+      occurrences: generated,
+    };
   }
 
   // --- Office Accounts & Ledger ---

@@ -14,7 +14,9 @@ import {
   createRecurringScheduleSchema,
   createWorkItemSchema,
   entityUuid,
+  generateDueAssignmentsSchema,
   reportingLineSchema,
+  updateAssignmentSchema,
   updateRecurringScheduleSchema,
   workItemTransitionSchema,
 } from './schemas';
@@ -388,9 +390,32 @@ export function createApiServer(application: CrmApplication, options: ApiServerO
         );
         return;
       }
+      const assignmentId = routeId(pathname, /^\/api\/v1\/assignments\/([^/]+)$/);
+      if (request.method === 'PATCH' && assignmentId) {
+        const body = await readJson(request, updateAssignmentSchema);
+        sendData(
+          response,
+          context,
+          allowedOrigins,
+          200,
+          await application.updateAssignment(actor, assignmentId, body),
+        );
+        return;
+      }
 
       if (request.method === 'GET' && pathname === '/api/v1/recurring-schedules') {
         sendData(response, context, allowedOrigins, 200, await application.listRecurringSchedules(actor));
+        return;
+      }
+      if (request.method === 'POST' && pathname === '/api/v1/recurring-schedules/generate-due') {
+        const body = await readJson(request, generateDueAssignmentsSchema);
+        sendData(
+          response,
+          context,
+          allowedOrigins,
+          200,
+          await application.generateDueAssignments(actor, body),
+        );
         return;
       }
       if (request.method === 'POST' && pathname === '/api/v1/recurring-schedules') {

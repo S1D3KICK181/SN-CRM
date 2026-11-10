@@ -95,6 +95,20 @@ export type CreateAssignmentInput = {
   readonly priority?: 'low' | 'normal' | 'high' | 'urgent';
 } & ServiceReferenceInput;
 
+export interface UpdateAssignmentInput {
+  readonly title?: string;
+  readonly serviceId?: string;
+  readonly ownerId?: string;
+  readonly reviewerIds?: readonly string[];
+  readonly dueAt?: string; // ISO-8601 UTC
+  readonly fee?: number;
+  readonly deliveryNotes?: string | null;
+  readonly reviewNotes?: string | null;
+  readonly progressPercent?: number;
+  readonly bankStatementRequired?: boolean;
+  readonly expectedUpdatedAt?: string;
+}
+
 // --- Work Item Domain ---
 
 export type WorkItemKind = 'delegated' | 'internal' | 'personal';
@@ -219,6 +233,19 @@ export interface CreateRecurringScheduleInput {
 export interface UpdateRecurringScheduleInput {
   readonly active?: boolean;
   readonly nextOccurrenceOn?: string;
+}
+
+export interface GenerateDueAssignmentsInput {
+  readonly throughDate?: string; // ISO date YYYY-MM-DD
+}
+
+export interface GenerateDueAssignmentsResult {
+  readonly generatedCount: number;
+  readonly occurrences: ReadonlyArray<{
+    scheduleId: string;
+    assignmentId: string;
+    occurrenceDate: string;
+  }>;
 }
 
 // --- Office Accounts & Ledger Domain ---

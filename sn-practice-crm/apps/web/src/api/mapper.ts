@@ -1,10 +1,11 @@
-import type { AssignmentDto, CreateAssignmentInput } from '@sn/contracts';
-import type { AssignmentMilestone, AssignmentRow } from '../data';
+import type { AssignmentDto, CreateAssignmentInput, CreateRecurringScheduleInput, RecurringScheduleDto } from '@sn/contracts';
+import type { AssignmentMilestone, AssignmentRow, RecurringScheduleRecord } from '../data';
 import { resolveClientUuid } from './client-compat';
 import { DEMO_ACTOR_ID_TO_NAME, NAME_TO_DEMO_ACTOR_ID } from './dev-auth';
 import type {
   AssignmentContractTransition,
   CreateAssignmentCommand,
+  CreateRecurringScheduleCommand,
 } from './types';
 
 export function formatIsoToDisplayDate(iso: string): string {
@@ -41,6 +42,28 @@ export function parseDisplayDateToIso(dateStr?: string): string {
     // fallback below
   }
   return new Date().toISOString();
+}
+
+export function normalizeDisplayDateToIso(dateStr?: string): string {
+  if (!dateStr || !dateStr.trim()) return '';
+  const trimmed = dateStr.trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return trimmed;
+  const match = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(trimmed);
+  if (match) {
+    const dd = match[1]!.padStart(2, '0');
+    const mm = match[2]!.padStart(2, '0');
+    const yyyy = match[3]!;
+    return `${yyyy}-${mm}-${dd}`;
+  }
+  try {
+    const d = new Date(trimmed);
+    if (!Number.isNaN(d.getTime())) {
+      return d.toISOString().slice(0, 10);
+    }
+  } catch {
+    // fallback below
+  }
+  return trimmed;
 }
 
 export function mapDtoToAssignmentRow(dto: AssignmentDto): AssignmentRow {
@@ -125,15 +148,18 @@ export function mapDtoToAssignmentRow(dto: AssignmentDto): AssignmentRow {
     service: dto.service,
     due: formatIsoToDisplayDate(dto.dueAt),
     owner: ownerName,
+    ownerId: dto.ownerId,
     reviewer: reviewerName,
+    reviewerId: dto.reviewerIds && dto.reviewerIds.length > 0 ? dto.reviewerIds[0] : undefined,
+    reviewerIds: dto.reviewerIds ? [...dto.reviewerIds] : undefined,
+    expectedUpdatedAt: dto.updatedAt,
     status: displayStatus,
     progress,
     tone,
     scope: 'Standard statutory compliance fieldwork and verification.',
     milestones,
-    fee: 25000,
+    deliveryNotes: (dto as unknown as { deliveryNotes?: string | null }).deliveryNotes ?? undefined,
     billed: dto.status === 'approved' || dto.status === 'closed',
-    bankStatementRequired: true,
     bankRecStatus: dto.status === 'approved' || dto.status === 'closed' ? 'Completed' : 'Awaited',
   };
 }
@@ -222,4 +248,130 @@ export function mapStatusTransitionToAction(
   }
 
   return null;
+}
+
+export function mapDtoToRecurringScheduleRecord(dto: RecurringScheduleDto): RecurringScheduleRecord {
+  const servLower = (dto.service || dto.title).toLowerCase();
+  let category: 'GST' | 'TDS' | 'Bookkeeping' = 'GST';
+  if (servLower.includes('tds') || servLower.includes('tax')) {
+    category = 'TDS';
+  } else if (
+    servLower.includes('bookkeeping') ||
+    servLower.includes('accounts') ||
+    servLower.includes('ledger') ||
+    servLower.includes('reconciliation')
+  ) {
+    category = 'Bookkeeping';
+  }
+
+  const cadenceDisplay =
+    dto.cadence === 'monthly'
+      ? 'Monthly'
+      : dto.cadence === 'quarterly'
+      ? 'Quarterly'
+      : 'Annual';
+
+  const defaultOwner = DEMO_ACTOR_ID_TO_NAME[dto.ownerId] ?? dto.ownerId;
+
+  return {
+    id: dto.id,
+    code: dto.code,
+    title: dto.title,
+    category,
+    clientId: dto.clientId,
+    clientName: dto.clientName,
+    cadence: cadenceDisplay,
+    generationDay: 1,
+    statutoryDueDay: `${dto.dueDay}th of month`,
+    defaultOwner,
+    nextRunDate: dto.nextOccurrenceOn ? formatIsoToDisplayDate(dto.nextOccurrenceOn) : '—',
+    nextDueDate: dto.nextOccurrenceOn ? formatIsoToDisplayDate(dto.nextOccurrenceOn) : '—',
+    status: (dto.active ? 'Active' : 'Paused') as RecurringScheduleRecord['status'],
+    bankRecStatus: 'Awaited',
+    currentStatus: 'Pending',
+    checklistTemplate: [
+      `Review statutory compliance for ${dto.title}`,
+      `Scrutinize client ledgers and supporting invoices`,
+      `Verify computations and prepare filing payload`,
+      `Upload and submit via statutory portal`,
+    ],
+    history: [],
+  };
+}
+
+export function mapAssignmentRowToUpdatePatch(
+  updated: AssignmentRow,
+  existing?: AssignmentRow,
+): import('./types').UpdateAssignmentPatch {
+  let title: string | undefined;
+  let dueAt: string | undefined;
+  let deliveryNotes: string | null | undefined;
+  let ownerId: string | undefined;
+  let reviewerIds: string[] | undefined;
+
+  if (!existing || updated.title !== existing.title) {
+    title = updated.title.trim();
+  }
+  if (!existing || updated.due !== existing.due) {
+    dueAt = parseDisplayDateToIso(updated.due);
+  }
+  if (
+    !existing ||
+    updated.deliveryNotes !== existing.deliveryNotes ||
+    updated.scope !== existing.scope
+  ) {
+    deliveryNotes = (updated.deliveryNotes || updated.scope || '').trim() || null;
+  }
+  if (!existing || updated.owner !== existing.owner) {
+    const rawOwner = updated.owner;
+    ownerId = NAME_TO_DEMO_ACTOR_ID[rawOwner] ?? rawOwner;
+  }
+  if (!existing || updated.reviewer !== existing.reviewer) {
+    if (updated.reviewer) {
+      const reviewerId = NAME_TO_DEMO_ACTOR_ID[updated.reviewer] ?? updated.reviewer;
+      reviewerIds = [reviewerId];
+    } else {
+      reviewerIds = [];
+    }
+  }
+
+  return {
+    title,
+    dueAt,
+    deliveryNotes,
+    ownerId,
+    reviewerIds,
+  };
+}
+
+export function mapScheduleCommandToCreateInput(
+  command: CreateRecurringScheduleCommand,
+): CreateRecurringScheduleInput {
+  const rawClientId = command.clientId;
+  const clientId = resolveClientUuid(rawClientId);
+
+  const rawOwner = command.ownerNameOrId ?? command.ownerId;
+  const ownerId = NAME_TO_DEMO_ACTOR_ID[rawOwner] ?? rawOwner;
+
+  const cadenceLower = command.cadence.toLowerCase() as 'monthly' | 'quarterly' | 'annual';
+
+  let nextOccurrenceOn = command.nextOccurrenceOn;
+  if (nextOccurrenceOn.includes('/')) {
+    const parts = nextOccurrenceOn.split('/');
+    if (parts.length === 3) {
+      nextOccurrenceOn = `${parts[2]}-${parts[1]!.padStart(2, '0')}-${parts[0]!.padStart(2, '0')}`;
+    }
+  }
+
+  return {
+    clientId,
+    title: command.title.trim(),
+    serviceId: command.serviceId,
+    service: command.service ?? 'Statutory Compliance',
+    cadence: cadenceLower,
+    ownerId,
+    reviewerIds: command.reviewerIds,
+    nextOccurrenceOn,
+    dueDay: Number(command.dueDay) || 11,
+  };
 }

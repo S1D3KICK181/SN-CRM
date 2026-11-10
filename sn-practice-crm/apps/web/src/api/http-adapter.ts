@@ -1,29 +1,63 @@
-import type { AssignmentDto, ApiEnvelope, ApiErrorEnvelope } from '@sn/contracts';
+import type {
+  ApiEnvelope,
+  ApiErrorEnvelope,
+  AssignmentDto,
+  GenerateDueAssignmentsResult,
+  RecurringScheduleDto,
+} from '@sn/contracts';
 import type { CompanyRole } from '@sn/domain';
-import type { AssignmentRow } from '../data';
-import { ROLE_TO_DEMO_ACTOR_ID } from './dev-auth';
-import { mapCommandToCreateInput, mapDtoToAssignmentRow } from './mapper';
+import type { AssignmentRow, RecurringScheduleRecord } from '../data';
+import type { AuthSessionSource } from './auth/types';
+import { ROLE_TO_DEMO_ACTOR_ID, NAME_TO_DEMO_ACTOR_ID } from './dev-auth';
+import {
+  mapCommandToCreateInput,
+  mapDtoToAssignmentRow,
+  mapDtoToRecurringScheduleRecord,
+  mapScheduleCommandToCreateInput,
+  parseDisplayDateToIso,
+} from './mapper';
+import { sanitizeRequestId, sanitizeServerCode } from './metadata-safety';
 import {
   AssignmentOperationError,
+  SAFE_ASSIGNMENT_ERROR_MESSAGES,
+  sanitizeAssignmentError,
   type AssignmentContractTransition,
   type AssignmentErrorCode,
   type AssignmentsPort,
   type CreateAssignmentCommand,
+  type CreateRecurringScheduleCommand,
   type PortExecutionOptions,
+  type UpdateAssignmentPatch,
+  type UpdateRecurringSchedulePatch,
 } from './types';
 
 export interface HttpAssignmentsAdapterOptions {
   fetchFn?: typeof fetch;
   baseUrl?: string;
+  getAccessToken?: () => Promise<string | null> | string | null;
+  authSource?: AuthSessionSource;
 }
 
 export class HttpAssignmentsAdapter implements AssignmentsPort {
   private readonly fetchFn: typeof fetch;
   private readonly baseUrl: string;
+  private readonly getAccessToken?: () => Promise<string | null> | string | null;
+  private readonly authSource?: AuthSessionSource;
 
   constructor(options: HttpAssignmentsAdapterOptions = {}) {
     this.fetchFn = options.fetchFn ?? ((input, init) => globalThis.fetch(input, init));
     this.baseUrl = options.baseUrl?.replace(/\/+$/, '') ?? '';
+    this.getAccessToken = options.getAccessToken;
+    this.authSource = options.authSource;
+
+    this.list = this.list.bind(this);
+    this.create = this.create.bind(this);
+    this.update = this.update.bind(this);
+    this.transition = this.transition.bind(this);
+    this.listSchedules = this.listSchedules.bind(this);
+    this.createSchedule = this.createSchedule.bind(this);
+    this.updateSchedule = this.updateSchedule.bind(this);
+    this.generateDueAssignments = this.generateDueAssignments.bind(this);
   }
 
   private buildUrl(path: string): string {
@@ -54,17 +88,74 @@ export class HttpAssignmentsAdapter implements AssignmentsPort {
     init: RequestInit,
     options?: PortExecutionOptions,
   ): Promise<{ data: T; requestId?: string }> {
-    const actorId = ROLE_TO_DEMO_ACTOR_ID[role];
-    if (!actorId) {
+    if (options?.signal?.aborted) {
       throw new AssignmentOperationError({
-        code: 'unauthorized',
-        message: `Unknown company role: ${role}`,
+        code: 'aborted',
+        message: 'The assignment operation was aborted.',
+        requestId: sanitizeRequestId(options?.requestId),
+      });
+    }
+
+    const hasTokenSource = Boolean(this.getAccessToken || this.authSource);
+    let token: string | null = null;
+
+    if (this.getAccessToken) {
+      try {
+        const resolved = await this.getAccessToken();
+        if (typeof resolved === 'string' && resolved.trim().length > 0) {
+          token = resolved.trim();
+        }
+      } catch {
+        token = null;
+      }
+    } else if (this.authSource) {
+      try {
+        const session = await this.authSource.getSession();
+        if (session && typeof session.accessToken === 'string' && session.accessToken.trim().length > 0) {
+          token = session.accessToken.trim();
+        }
+      } catch {
+        token = null;
+      }
+    }
+
+    if (options?.signal?.aborted) {
+      throw new AssignmentOperationError({
+        code: 'aborted',
+        message: 'The assignment operation was aborted.',
+        requestId: sanitizeRequestId(options?.requestId),
       });
     }
 
     const headers = new Headers(init.headers);
-    // Explicit insecure dev auth header
-    headers.set('x-demo-user-id', actorId);
+
+    if (hasTokenSource) {
+      // Production authenticated transport path: must have a valid Bearer token.
+      // If a token source is configured but resolves null, blank, or threw, fail locally closed.
+      // Never fall back to x-demo-user-id and never dispatch fetch without a valid Bearer token.
+      if (!token) {
+        throw sanitizeAssignmentError(
+          new AssignmentOperationError({
+            code: 'unauthorized',
+            message: 'Session expired or unauthenticated. Please sign in again to manage assignments.',
+            requestId: sanitizeRequestId(options?.requestId),
+          }),
+        );
+      }
+      headers.set('authorization', `Bearer ${token}`);
+    } else {
+      // Demo preview path: x-demo-user-id based on explicit role.
+      const actorId = ROLE_TO_DEMO_ACTOR_ID[role];
+      if (!actorId) {
+        throw new AssignmentOperationError({
+          code: 'unauthorized',
+          message: `Unknown company role: ${role}`,
+          requestId: sanitizeRequestId(options?.requestId),
+        });
+      }
+      headers.set('x-demo-user-id', actorId);
+    }
+
     if (options?.requestId) {
       headers.set('x-request-id', options.requestId);
     }
@@ -94,7 +185,7 @@ export class HttpAssignmentsAdapter implements AssignmentsPort {
       });
     }
 
-    const requestId = response.headers.get('x-request-id') ?? undefined;
+    const requestId = sanitizeRequestId(response.headers.get('x-request-id') ?? undefined);
 
     if (!response.ok) {
       let errorMessage = `HTTP ${response.status}: ${response.statusText}`;
@@ -105,29 +196,32 @@ export class HttpAssignmentsAdapter implements AssignmentsPort {
         const errorJson = (await response.json()) as Partial<ApiErrorEnvelope>;
         if (errorJson.error) {
           errorMessage = errorJson.error.message || errorMessage;
-          serverCode = errorJson.error.code;
+          serverCode = sanitizeServerCode(errorJson.error.code);
         }
         if (errorJson.requestId) {
-          bodyRequestId = errorJson.requestId;
+          bodyRequestId = sanitizeRequestId(errorJson.requestId) ?? bodyRequestId;
         }
       } catch {
         // Failed to parse error JSON (e.g. 500 HTML)
       }
 
-      throw new AssignmentOperationError({
-        code: this.mapStatusToErrorCode(response.status),
-        message: errorMessage,
-        requestId: bodyRequestId,
-        status: response.status,
-        serverCode,
-      });
+      const code = this.mapStatusToErrorCode(response.status);
+      throw sanitizeAssignmentError(
+        new AssignmentOperationError({
+          code,
+          message: errorMessage,
+          requestId: bodyRequestId,
+          status: response.status,
+          serverCode,
+        }),
+      );
     }
 
     try {
       const envelope = (await response.json()) as ApiEnvelope<T>;
       return {
         data: envelope.data,
-        requestId: envelope.requestId ?? requestId,
+        requestId: sanitizeRequestId(envelope.requestId) ?? requestId,
       };
     } catch (err) {
       throw new AssignmentOperationError({
@@ -169,22 +263,145 @@ export class HttpAssignmentsAdapter implements AssignmentsPort {
     return mapDtoToAssignmentRow(result.data);
   }
 
+  async update(
+    role: CompanyRole,
+    id: string,
+    patch: UpdateAssignmentPatch,
+    options?: PortExecutionOptions,
+  ): Promise<AssignmentRow> {
+    const body: {
+      title?: string;
+      serviceId?: string;
+      ownerId?: string;
+      reviewerIds?: string[];
+      dueAt?: string;
+      deliveryNotes?: string | null;
+      reviewNotes?: string | null;
+      progressPercent?: number;
+      expectedUpdatedAt?: string;
+    } = {};
+    if (patch.title !== undefined) body.title = patch.title;
+    if (patch.serviceId !== undefined) body.serviceId = patch.serviceId;
+    if (patch.ownerId !== undefined) body.ownerId = patch.ownerId;
+    if (patch.reviewerIds !== undefined) body.reviewerIds = [...patch.reviewerIds];
+    if (patch.dueAt !== undefined) body.dueAt = patch.dueAt;
+    if (patch.deliveryNotes !== undefined) body.deliveryNotes = patch.deliveryNotes;
+    if (patch.reviewNotes !== undefined) body.reviewNotes = patch.reviewNotes;
+    if (patch.progressPercent !== undefined) body.progressPercent = patch.progressPercent;
+    if (patch.expectedUpdatedAt !== undefined) body.expectedUpdatedAt = patch.expectedUpdatedAt;
+
+    const result = await this.execute<AssignmentDto>(
+      role,
+      `/api/v1/assignments/${encodeURIComponent(id)}`,
+      {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      },
+      options,
+    );
+    return mapDtoToAssignmentRow(result.data);
+  }
+
   async transition(
     role: CompanyRole,
     id: string,
     action: AssignmentContractTransition,
-    options?: PortExecutionOptions,
+    options?: PortExecutionOptions & { expectedUpdatedAt?: string },
   ): Promise<AssignmentRow> {
+    const payload: { action: AssignmentContractTransition; expectedUpdatedAt?: string } = { action };
+    if (options?.expectedUpdatedAt) {
+      payload.expectedUpdatedAt = options.expectedUpdatedAt;
+    }
     const result = await this.execute<AssignmentDto>(
       role,
       `/api/v1/assignments/${encodeURIComponent(id)}/transitions`,
       {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ action }),
+        body: JSON.stringify(payload),
       },
       options,
     );
     return mapDtoToAssignmentRow(result.data);
+  }
+
+  async listSchedules(
+    role: CompanyRole,
+    options?: PortExecutionOptions,
+  ): Promise<RecurringScheduleRecord[]> {
+    const result = await this.execute<RecurringScheduleDto[]>(
+      role,
+      '/api/v1/recurring-schedules',
+      { method: 'GET' },
+      options,
+    );
+    return result.data.map(mapDtoToRecurringScheduleRecord);
+  }
+
+  async createSchedule(
+    role: CompanyRole,
+    command: CreateRecurringScheduleCommand,
+    options?: PortExecutionOptions,
+  ): Promise<RecurringScheduleRecord> {
+    const input = mapScheduleCommandToCreateInput(command);
+    const result = await this.execute<RecurringScheduleDto>(
+      role,
+      '/api/v1/recurring-schedules',
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(input),
+      },
+      options,
+    );
+    return mapDtoToRecurringScheduleRecord(result.data);
+  }
+
+  async updateSchedule(
+    role: CompanyRole,
+    id: string,
+    patch: UpdateRecurringSchedulePatch,
+    options?: PortExecutionOptions,
+  ): Promise<RecurringScheduleRecord> {
+    const body: {
+      active?: boolean;
+      nextOccurrenceOn?: string;
+    } = {};
+    if (patch.active !== undefined) body.active = patch.active;
+    if (patch.nextOccurrenceOn !== undefined) body.nextOccurrenceOn = patch.nextOccurrenceOn;
+
+    const result = await this.execute<RecurringScheduleDto>(
+      role,
+      `/api/v1/recurring-schedules/${encodeURIComponent(id)}`,
+      {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      },
+      options,
+    );
+    return mapDtoToRecurringScheduleRecord(result.data);
+  }
+
+  async generateDueAssignments(
+    role: CompanyRole,
+    options?: PortExecutionOptions & { throughDate?: string },
+  ): Promise<GenerateDueAssignmentsResult> {
+    const body: { throughDate?: string } = {};
+    if (options?.throughDate) {
+      body.throughDate = options.throughDate;
+    }
+    const result = await this.execute<GenerateDueAssignmentsResult>(
+      role,
+      '/api/v1/recurring-schedules/generate-due',
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      },
+      options,
+    );
+    return result.data;
   }
 }

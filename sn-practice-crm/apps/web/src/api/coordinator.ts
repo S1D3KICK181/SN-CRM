@@ -1,19 +1,31 @@
 import type { CompanyRole } from '@sn/domain';
-import type { AssignmentRow } from '../data';
+import type { AssignmentRow, RecurringScheduleRecord } from '../data';
 import { mergeCreateResult, mergeTransitionResult } from './domain-merge';
-import { mapStatusTransitionToAction, normalizeLifecycleStage } from './mapper';
+import {
+  mapAssignmentRowToUpdatePatch,
+  mapStatusTransitionToAction,
+  normalizeLifecycleStage,
+  parseDisplayDateToIso,
+} from './mapper';
+import { NAME_TO_DEMO_ACTOR_ID } from './dev-auth';
+import { isValidUuid } from './metadata-safety';
 import {
   AssignmentOperationError,
   type AssignmentsPort,
   type CreateAssignmentCommand,
+  type CreateRecurringScheduleCommand,
+  type GenerateDueAssignmentsResult,
+  type UpdateRecurringSchedulePatch,
 } from './types';
 
 export interface CoordinatorState {
   assignments: AssignmentRow[];
+  schedules: RecurringScheduleRecord[];
   loading: boolean;
   error: AssignmentOperationError | null;
   role: CompanyRole;
   hasLiveSnapshot: boolean;
+  isGeneratingDue?: boolean;
 }
 
 export interface ClientFieldCascadePayload {
@@ -25,15 +37,24 @@ export interface ClientFieldCascadePayload {
 
 export interface AssignmentsCoordinatorOptions {
   initialRows: AssignmentRow[];
+  initialSchedules?: RecurringScheduleRecord[];
   port: AssignmentsPort;
   initialRole?: CompanyRole;
   onError?: (error: AssignmentOperationError) => void;
   onToast?: (message: string) => void;
 }
 
+function formatEntityIdentity(entity: { id: string; code?: string }): string | undefined {
+  if (entity.code && !isValidUuid(entity.code)) return entity.code;
+  if (!isValidUuid(entity.id)) return entity.id;
+  return undefined;
+}
+
 export class AssignmentsCoordinator {
   private assignments: AssignmentRow[];
+  private schedules: RecurringScheduleRecord[];
   private loading = false;
+  private isGeneratingDue = false;
   private error: AssignmentOperationError | null = null;
   private currentRole: CompanyRole;
   private hasLiveSnapshot = false;
@@ -43,13 +64,14 @@ export class AssignmentsCoordinator {
   private readonly activeWriteControllers = new Set<AbortController>();
   private disposed = false;
 
-  private readonly port: AssignmentsPort;
+  private port: AssignmentsPort;
   private readonly onError?: (error: AssignmentOperationError) => void;
   private readonly onToast?: (message: string) => void;
   private readonly listeners = new Set<() => void>();
 
   constructor(options: AssignmentsCoordinatorOptions) {
     this.assignments = [...options.initialRows];
+    this.schedules = options.initialSchedules ? [...options.initialSchedules] : [];
     this.port = options.port;
     this.currentRole = options.initialRole ?? 'founder';
     this.onError = options.onError;
@@ -59,10 +81,12 @@ export class AssignmentsCoordinator {
   getState(): CoordinatorState {
     return {
       assignments: this.assignments,
+      schedules: this.schedules,
       loading: this.loading,
       error: this.error,
       role: this.currentRole,
       hasLiveSnapshot: this.hasLiveSnapshot,
+      isGeneratingDue: this.isGeneratingDue,
     };
   }
 
@@ -197,6 +221,7 @@ export class AssignmentsCoordinator {
       this.cancelPending({ notify: false });
       this.currentRole = nextRole;
       this.assignments = [];
+      this.schedules = [];
       this.hasLiveSnapshot = false;
       this.error = null;
       this.notify();
@@ -206,7 +231,7 @@ export class AssignmentsCoordinator {
   }
 
   /**
-   * Fetches the role-scoped live assignments snapshot from the API.
+   * Fetches the role-scoped live assignments and recurring schedules snapshot from the API.
    * On first success, replaces initial rows with the live snapshot.
    * On failure, preserves previous snapshot and reports an explicit error.
    */
@@ -225,7 +250,10 @@ export class AssignmentsCoordinator {
     this.notify();
 
     try {
-      const serverRows = await this.port.list(role, { signal: controller.signal });
+      const [serverRows, serverSchedules] = await Promise.all([
+        this.port.list(role, { signal: controller.signal }),
+        this.port.listSchedules(role, { signal: controller.signal }),
+      ]);
 
       // Guard: discard if disposed or generation or role changed while fetching
       if (this.disposed || generation !== this.currentGeneration || role !== this.currentRole) {
@@ -233,6 +261,7 @@ export class AssignmentsCoordinator {
       }
 
       this.assignments = serverRows;
+      this.schedules = serverSchedules;
       this.hasLiveSnapshot = true;
       this.loading = false;
       this.notify();
@@ -315,7 +344,12 @@ export class AssignmentsCoordinator {
         this.assignments = [mergedRow, ...this.assignments];
       }
       this.notify();
-      this.onToast?.(`Assignment ${mergedRow.id} (${mergedRow.title}) created`);
+      const asgIdentity = formatEntityIdentity(mergedRow);
+      this.onToast?.(
+        asgIdentity
+          ? `Assignment ${asgIdentity} (${mergedRow.title}) created`
+          : `Assignment "${mergedRow.title}" created`,
+      );
       return { success: true, row: mergedRow };
     } catch (err: unknown) {
       if (this.disposed || writeGen !== this.currentGeneration || writeRole !== this.currentRole) {
@@ -347,11 +381,15 @@ export class AssignmentsCoordinator {
     }
   }
 
+  setPort(nextPort: AssignmentsPort): void {
+    this.port = nextPort;
+  }
+
   /**
-   * Server-authoritative assignment update / lifecycle transition.
-   * - If id does not exist: returns not_found error, preserves state, notifies onError, no success toast.
-   * - If status is unchanged: UI-only edit, remains local.
-   * - If status changed: maps to contract transition action and calls API.
+   * Updates an assignment's status and/or core non-status fields.
+   * - Non-status changes are dispatched to port.update (PATCH /api/v1/assignments/:id).
+   * - Status changes are dispatched to port.transition.
+   * - If both non-status and status changed, updates are sequenced safely with refreshed expectedUpdatedAt.
    * - State updated only after success; failure preserves state.
    */
   async handleUpdateAssignment(
@@ -384,26 +422,68 @@ export class AssignmentsCoordinator {
 
     const currentStage = normalizeLifecycleStage(existing.status);
     const targetStage = normalizeLifecycleStage(updated.status);
+    const isStatusChanged =
+      existing.status !== updated.status &&
+      !(currentStage !== 'unknown' && currentStage === targetStage);
 
-    // If same status or equivalent alias (e.g. "Open" ↔ "Awaiting documents", "In progress" ↔ "On track"):
-    // UI-only edit, remains local
-    if (existing.status === updated.status || (currentStage !== 'unknown' && currentStage === targetStage)) {
-      this.assignments = this.assignments.map((a) => (a.id === updated.id ? updated : a));
-      this.notify();
-      this.onToast?.(`Updated ${updated.id} (${updated.title})`);
-      return { success: true, row: updated, localOnly: true };
+    // Build patch for non-status fields
+    let title: string | undefined;
+    let ownerId: string | undefined;
+    let reviewerIds: string[] | undefined;
+    let dueAt: string | undefined;
+    let deliveryNotes: string | null | undefined;
+    let progressPercent: number | undefined;
+    let hasNonStatusChanges = false;
+
+    if (updated.title && updated.title !== existing.title) {
+      title = updated.title.trim();
+      hasNonStatusChanges = true;
+    }
+    if (updated.ownerId && updated.ownerId !== existing.ownerId) {
+      ownerId = updated.ownerId;
+      hasNonStatusChanges = true;
+    } else if (updated.owner && updated.owner !== existing.owner && NAME_TO_DEMO_ACTOR_ID[updated.owner]) {
+      ownerId = NAME_TO_DEMO_ACTOR_ID[updated.owner];
+      hasNonStatusChanges = true;
+    }
+    if (updated.reviewerIds !== undefined && updated.reviewerIds !== existing.reviewerIds) {
+      reviewerIds = [...updated.reviewerIds];
+      hasNonStatusChanges = true;
+    } else if (updated.reviewerId && updated.reviewerId !== existing.reviewerId) {
+      reviewerIds = [updated.reviewerId];
+      hasNonStatusChanges = true;
+    } else if (updated.reviewer !== undefined && updated.reviewer !== existing.reviewer && NAME_TO_DEMO_ACTOR_ID[updated.reviewer]) {
+      reviewerIds = [NAME_TO_DEMO_ACTOR_ID[updated.reviewer]!];
+      hasNonStatusChanges = true;
+    }
+    if (updated.due && updated.due !== existing.due) {
+      dueAt = parseDisplayDateToIso(updated.due);
+      hasNonStatusChanges = true;
+    }
+    if (updated.deliveryNotes !== undefined && updated.deliveryNotes !== existing.deliveryNotes) {
+      deliveryNotes = updated.deliveryNotes;
+      hasNonStatusChanges = true;
+    }
+    if (updated.progress !== undefined && updated.progress !== existing.progress) {
+      progressPercent = updated.progress;
+      hasNonStatusChanges = true;
     }
 
-    // Status changed: check if it maps to a valid adjacent contract transition
-    const transitionAction = mapStatusTransitionToAction(existing.status, updated.status);
-    if (!transitionAction) {
-      const err = new AssignmentOperationError({
-        code: 'conflict',
-        message: `Cannot transition assignment from "${existing.status}" to "${updated.status}".`,
-      });
-      this.onError?.(err);
-      this.onToast?.(`Invalid transition: ${err.message}`);
-      return { success: false, error: err };
+    const patch: import('./types').UpdateAssignmentPatch = {
+      ...(title !== undefined ? { title } : {}),
+      ...(ownerId !== undefined ? { ownerId } : {}),
+      ...(reviewerIds !== undefined ? { reviewerIds } : {}),
+      ...(dueAt !== undefined ? { dueAt } : {}),
+      ...(deliveryNotes !== undefined ? { deliveryNotes } : {}),
+      ...(progressPercent !== undefined ? { progressPercent } : {}),
+      ...(existing.expectedUpdatedAt ? { expectedUpdatedAt: existing.expectedUpdatedAt } : {}),
+    };
+
+    // Pure local edit (e.g. checkbox state without server-persisted changes)
+    if (!isStatusChanged && !hasNonStatusChanges) {
+      this.assignments = this.assignments.map((a) => (a.id === updated.id ? updated : a));
+      this.notify();
+      return { success: true, row: updated, localOnly: true };
     }
 
     const writeGen = this.currentGeneration;
@@ -412,27 +492,60 @@ export class AssignmentsCoordinator {
     this.activeWriteControllers.add(controller);
 
     try {
-      const serverRow = await this.port.transition(
-        writeRole,
-        updated.id,
-        transitionAction,
-        { signal: controller.signal },
-      );
+      let latestServerRow: AssignmentRow | undefined = undefined;
 
-      // Generation & disposal guard on writes
-      if (this.disposed || writeGen !== this.currentGeneration || writeRole !== this.currentRole) {
-        return {
-          success: false,
-          error: new AssignmentOperationError({
-            code: 'aborted',
-            message: 'Transition discarded due to role switch or disposal.',
-          }),
-        };
+      // Sequence 1: Non-status field patch
+      if (hasNonStatusChanges) {
+        latestServerRow = await this.port.update(writeRole, updated.id, patch, {
+          signal: controller.signal,
+        });
+
+        if (this.disposed || writeGen !== this.currentGeneration || writeRole !== this.currentRole) {
+          return {
+            success: false,
+            error: new AssignmentOperationError({
+              code: 'aborted',
+              message: 'Update discarded due to role switch or disposal.',
+            }),
+          };
+        }
       }
 
-      // Re-read latest same-row state from this.assignments
+      // Sequence 2: Status transition (using refreshed expectedUpdatedAt if patch was executed)
+      if (isStatusChanged) {
+        const transitionAction = mapStatusTransitionToAction(existing.status, updated.status);
+        if (!transitionAction) {
+          const err = new AssignmentOperationError({
+            code: 'conflict',
+            message: `Cannot transition assignment from "${existing.status}" to "${updated.status}".`,
+          });
+          this.onError?.(err);
+          this.onToast?.(`Invalid transition: ${err.message}`);
+          return { success: false, error: err };
+        }
+
+        const transitionExpectedUpdatedAt = latestServerRow?.expectedUpdatedAt ?? existing.expectedUpdatedAt;
+
+        latestServerRow = await this.port.transition(
+          writeRole,
+          updated.id,
+          transitionAction,
+          { signal: controller.signal, expectedUpdatedAt: transitionExpectedUpdatedAt },
+        );
+
+        if (this.disposed || writeGen !== this.currentGeneration || writeRole !== this.currentRole) {
+          return {
+            success: false,
+            error: new AssignmentOperationError({
+              code: 'aborted',
+              message: 'Transition discarded due to role switch or disposal.',
+            }),
+          };
+        }
+      }
+
       const currentRow = this.assignments.find((a) => a.id === updated.id);
-      if (!currentRow) {
+      if (!currentRow || !latestServerRow) {
         return {
           success: false,
           error: new AssignmentOperationError({
@@ -442,11 +555,15 @@ export class AssignmentsCoordinator {
         };
       }
 
-      // Merge server-authoritative lifecycle result with latest local fields & drawer edits
-      const mergedRow = mergeTransitionResult(existing, updated, serverRow, currentRow);
+      const mergedRow = mergeTransitionResult(existing, updated, latestServerRow, currentRow);
       this.assignments = this.assignments.map((a) => (a.id === mergedRow.id ? mergedRow : a));
       this.notify();
-      this.onToast?.(`Updated ${mergedRow.id} (${mergedRow.title})`);
+      const asgIdentity = formatEntityIdentity(mergedRow);
+      this.onToast?.(
+        asgIdentity
+          ? `Updated ${asgIdentity} (${mergedRow.title})`
+          : `Updated "${mergedRow.title}"`,
+      );
       return { success: true, row: mergedRow };
     } catch (err: unknown) {
       if (this.disposed || writeGen !== this.currentGeneration || writeRole !== this.currentRole) {
@@ -454,7 +571,7 @@ export class AssignmentsCoordinator {
           success: false,
           error: new AssignmentOperationError({
             code: 'aborted',
-            message: 'Transition discarded.',
+            message: 'Operation discarded.',
           }),
         };
       }
@@ -464,17 +581,320 @@ export class AssignmentsCoordinator {
           ? err
           : new AssignmentOperationError({
               code: 'unexpected',
-              message: err instanceof Error ? err.message : 'Failed to transition assignment.',
+              message: err instanceof Error ? err.message : 'Failed to update assignment.',
               cause: err,
             });
 
       if (opError.code !== 'aborted') {
         this.onError?.(opError);
-        this.onToast?.(`Failed to transition assignment: ${opError.message}`);
+        this.onToast?.(`Failed to update assignment: ${opError.message}`);
       }
       return { success: false, error: opError };
     } finally {
       this.activeWriteControllers.delete(controller);
+    }
+  }
+
+  async handlePatchAssignment(
+    id: string,
+    patch: import('./types').UpdateAssignmentPatch,
+  ): Promise<{ success: boolean; row?: AssignmentRow; error?: AssignmentOperationError }> {
+    if (this.disposed) {
+      return {
+        success: false,
+        error: new AssignmentOperationError({
+          code: 'aborted',
+          message: 'Coordinator is disposed.',
+        }),
+      };
+    }
+
+    const existing = this.assignments.find((a) => a.id === id);
+    if (!existing) {
+      const err = new AssignmentOperationError({
+        code: 'not_found',
+        message: `Assignment with id "${id}" not found.`,
+      });
+      this.onError?.(err);
+      return { success: false, error: err };
+    }
+
+    const writeGen = this.currentGeneration;
+    const writeRole = this.currentRole;
+    const controller = new AbortController();
+    this.activeWriteControllers.add(controller);
+
+    try {
+      const serverRow = await this.port.update(writeRole, id, patch, {
+        signal: controller.signal,
+      });
+
+      if (this.disposed || writeGen !== this.currentGeneration || writeRole !== this.currentRole) {
+        return {
+          success: false,
+          error: new AssignmentOperationError({
+            code: 'aborted',
+            message: 'Update discarded due to role switch or disposal.',
+          }),
+        };
+      }
+
+      this.assignments = this.assignments.map((a) => (a.id === id ? { ...a, ...serverRow } : a));
+      this.notify();
+      const asgIdentity = formatEntityIdentity(serverRow);
+      this.onToast?.(
+        asgIdentity
+          ? `Updated ${asgIdentity} (${serverRow.title})`
+          : `Updated "${serverRow.title}"`,
+      );
+      return { success: true, row: serverRow };
+    } catch (err: unknown) {
+      if (this.disposed || writeGen !== this.currentGeneration || writeRole !== this.currentRole) {
+        return {
+          success: false,
+          error: new AssignmentOperationError({
+            code: 'aborted',
+            message: 'Update discarded.',
+          }),
+        };
+      }
+
+      const opError =
+        err instanceof AssignmentOperationError
+          ? err
+          : new AssignmentOperationError({
+              code: 'unexpected',
+              message: err instanceof Error ? err.message : 'Failed to update assignment.',
+              cause: err,
+            });
+
+      if (opError.code !== 'aborted') {
+        this.onError?.(opError);
+        this.onToast?.(`Failed to update assignment: ${opError.message}`);
+      }
+      return { success: false, error: opError };
+    } finally {
+      this.activeWriteControllers.delete(controller);
+    }
+  }
+
+  async handleCreateSchedule(
+    command: CreateRecurringScheduleCommand,
+  ): Promise<{ success: boolean; schedule?: RecurringScheduleRecord; error?: AssignmentOperationError }> {
+    if (this.disposed) {
+      return {
+        success: false,
+        error: new AssignmentOperationError({
+          code: 'aborted',
+          message: 'Coordinator is disposed.',
+        }),
+      };
+    }
+
+    const writeGen = this.currentGeneration;
+    const writeRole = this.currentRole;
+    const controller = new AbortController();
+    this.activeWriteControllers.add(controller);
+
+    try {
+      const serverSchedule = await this.port.createSchedule(writeRole, command, {
+        signal: controller.signal,
+      });
+
+      if (this.disposed || writeGen !== this.currentGeneration || writeRole !== this.currentRole) {
+        return {
+          success: false,
+          error: new AssignmentOperationError({
+            code: 'aborted',
+            message: 'Create schedule operation discarded due to role switch or disposal.',
+          }),
+        };
+      }
+
+      this.schedules = [serverSchedule, ...this.schedules.filter((s) => s.id !== serverSchedule.id)];
+      this.notify();
+      const schIdentity = formatEntityIdentity(serverSchedule);
+      this.onToast?.(
+        schIdentity
+          ? `Schedule ${schIdentity} (${serverSchedule.title}) created`
+          : `Schedule "${serverSchedule.title}" created`,
+      );
+      return { success: true, schedule: serverSchedule };
+    } catch (err: unknown) {
+      if (this.disposed || writeGen !== this.currentGeneration || writeRole !== this.currentRole) {
+        return {
+          success: false,
+          error: new AssignmentOperationError({
+            code: 'aborted',
+            message: 'Create schedule operation discarded.',
+          }),
+        };
+      }
+
+      const opError =
+        err instanceof AssignmentOperationError
+          ? err
+          : new AssignmentOperationError({
+              code: 'unexpected',
+              message: err instanceof Error ? err.message : 'Failed to create recurring schedule.',
+              cause: err,
+            });
+
+      if (opError.code !== 'aborted') {
+        this.onError?.(opError);
+        this.onToast?.(`Failed to create schedule: ${opError.message}`);
+      }
+      return { success: false, error: opError };
+    } finally {
+      this.activeWriteControllers.delete(controller);
+    }
+  }
+
+  async handleUpdateSchedule(
+    id: string,
+    patch: UpdateRecurringSchedulePatch,
+  ): Promise<{ success: boolean; schedule?: RecurringScheduleRecord; error?: AssignmentOperationError }> {
+    if (this.disposed) {
+      return {
+        success: false,
+        error: new AssignmentOperationError({
+          code: 'aborted',
+          message: 'Coordinator is disposed.',
+        }),
+      };
+    }
+
+    const writeGen = this.currentGeneration;
+    const writeRole = this.currentRole;
+    const controller = new AbortController();
+    this.activeWriteControllers.add(controller);
+
+    try {
+      const serverSchedule = await this.port.updateSchedule(writeRole, id, patch, {
+        signal: controller.signal,
+      });
+
+      if (this.disposed || writeGen !== this.currentGeneration || writeRole !== this.currentRole) {
+        return {
+          success: false,
+          error: new AssignmentOperationError({
+            code: 'aborted',
+            message: 'Update schedule operation discarded due to role switch or disposal.',
+          }),
+        };
+      }
+
+      this.schedules = this.schedules.map((s) => (s.id === serverSchedule.id ? serverSchedule : s));
+      this.notify();
+      const schIdentity = formatEntityIdentity(serverSchedule);
+      this.onToast?.(
+        schIdentity
+          ? `Schedule ${schIdentity} updated`
+          : `Schedule "${serverSchedule.title}" updated`,
+      );
+      return { success: true, schedule: serverSchedule };
+    } catch (err: unknown) {
+      if (this.disposed || writeGen !== this.currentGeneration || writeRole !== this.currentRole) {
+        return {
+          success: false,
+          error: new AssignmentOperationError({
+            code: 'aborted',
+            message: 'Update schedule operation discarded.',
+          }),
+        };
+      }
+
+      const opError =
+        err instanceof AssignmentOperationError
+          ? err
+          : new AssignmentOperationError({
+              code: 'unexpected',
+              message: err instanceof Error ? err.message : 'Failed to update schedule.',
+              cause: err,
+            });
+
+      if (opError.code !== 'aborted') {
+        this.onError?.(opError);
+        this.onToast?.(`Failed to update schedule: ${opError.message}`);
+      }
+      return { success: false, error: opError };
+    } finally {
+      this.activeWriteControllers.delete(controller);
+    }
+  }
+
+  async generateDueAssignments(
+    options?: { throughDate?: string },
+  ): Promise<{ success: boolean; result?: GenerateDueAssignmentsResult; error?: AssignmentOperationError }> {
+    if (this.disposed) {
+      return {
+        success: false,
+        error: new AssignmentOperationError({
+          code: 'aborted',
+          message: 'Coordinator is disposed.',
+        }),
+      };
+    }
+
+    const writeGen = this.currentGeneration;
+    const writeRole = this.currentRole;
+    const controller = new AbortController();
+    this.activeWriteControllers.add(controller);
+    this.isGeneratingDue = true;
+    this.notify();
+
+    try {
+      const result = await this.port.generateDueAssignments(writeRole, {
+        signal: controller.signal,
+      });
+
+      if (this.disposed || writeGen !== this.currentGeneration || writeRole !== this.currentRole) {
+        return {
+          success: false,
+          error: new AssignmentOperationError({
+            code: 'aborted',
+            message: 'Generate due operation discarded due to role switch or disposal.',
+          }),
+        };
+      }
+
+      if (result.generatedCount > 0) {
+        this.onToast?.(`Generated ${result.generatedCount} due compliance assignments.`);
+      } else {
+        this.onToast?.('All compliance assignments are already up to date.');
+      }
+
+      await this.sync();
+      return { success: true, result };
+    } catch (err: unknown) {
+      if (this.disposed || writeGen !== this.currentGeneration || writeRole !== this.currentRole) {
+        return {
+          success: false,
+          error: new AssignmentOperationError({
+            code: 'aborted',
+            message: 'Generate due operation discarded.',
+          }),
+        };
+      }
+
+      const opError =
+        err instanceof AssignmentOperationError
+          ? err
+          : new AssignmentOperationError({
+              code: 'unexpected',
+              message: err instanceof Error ? err.message : 'Failed to generate due assignments.',
+              cause: err,
+            });
+
+      if (opError.code !== 'aborted') {
+        this.onError?.(opError);
+        this.onToast?.(`Failed to generate due assignments: ${opError.message}`);
+      }
+      return { success: false, error: opError };
+    } finally {
+      this.isGeneratingDue = false;
+      this.activeWriteControllers.delete(controller);
+      this.notify();
     }
   }
 }

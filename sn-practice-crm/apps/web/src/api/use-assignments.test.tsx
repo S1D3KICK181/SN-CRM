@@ -224,4 +224,85 @@ describe('useAssignments React hook integration', () => {
     expect(renderFrames[0]?.rows).toEqual([]);
     expect(renderFrames[0]?.loading).toBe(true);
   });
+
+  it('rebinds coordinator port when port changes upon auth token hydration', async () => {
+    const adapterInitial = new DeterministicTestAssignmentsAdapter();
+    adapterInitial.setListResponse('founder', [ROW_FOUNDER]);
+    const adapterHydrated = new DeterministicTestAssignmentsAdapter();
+    adapterHydrated.setListResponse('founder', [ROW_FOUNDER]);
+
+    let hydratedUpdateCalled = false;
+    adapterHydrated.update = async (_role, id, patch) => {
+      hydratedUpdateCalled = true;
+      return {
+        id,
+        title: patch.title ?? 'Updated',
+        client: 'Hydrated Client',
+        service: 'GST Compliance',
+        due: '10/11/2026',
+        owner: 'S. Narayanan',
+        status: 'In progress',
+        progress: 50,
+        tone: 'default',
+      };
+    };
+
+    const { result, rerender } = renderHook(
+      ({ port }: { port: DeterministicTestAssignmentsAdapter }) =>
+        useAssignments('founder', {
+          port,
+          initialRows: [ROW_FOUNDER],
+        }),
+      {
+        initialProps: { port: adapterInitial },
+      },
+    );
+
+    // Initial port active, wait for initial sync
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(result.current.assignments).toEqual([ROW_FOUNDER]);
+
+    // Token hydration: rerender with hydrated adapter
+    rerender({ port: adapterHydrated });
+
+    let updateRes: any;
+    await act(async () => {
+      updateRes = await result.current.handleUpdateAssignment({
+        ...ROW_FOUNDER,
+        title: 'Hydrated Mutation',
+      });
+      await Promise.resolve();
+    });
+
+    expect(hydratedUpdateCalled).toBe(true);
+    expect(updateRes?.title).toBe('Hydrated Mutation');
+    expect(result.current.assignments[0]?.title).toBe('Hydrated Mutation');
+  });
+
+  it('maintains safe lifecycle during React.StrictMode double-mount', async () => {
+    const adapter = new DeterministicTestAssignmentsAdapter();
+    adapter.setListResponse('founder', [ROW_FOUNDER]);
+
+    const { result, unmount } = renderHook(
+      () =>
+        useAssignments('founder', {
+          port: adapter,
+          initialRows: [ROW_FOUNDER],
+        }),
+      {
+        wrapper: ({ children }) => <React.StrictMode>{children}</React.StrictMode>,
+      },
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(result.current.assignments).toEqual([ROW_FOUNDER]);
+    expect(result.current.loading).toBe(false);
+
+    unmount();
+  });
 });

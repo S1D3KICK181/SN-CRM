@@ -397,5 +397,45 @@ describe('HttpAssignmentsAdapter', () => {
         globalThis.fetch = originalFetch;
       }
     });
+
+    it('injects Bearer token in authenticated mode and never falls back to x-demo-user-id', async () => {
+      let capturedHeaders: Headers | undefined;
+      const mockFetch = createMockFetch((_url, init) => {
+        capturedHeaders = new Headers(init?.headers);
+        return jsonResponse({ data: [SAMPLE_DTO] });
+      });
+
+      const adapter = new HttpAssignmentsAdapter({
+        getAccessToken: async () => 'test-jwt-token-xyz',
+        fetchFn: mockFetch,
+      });
+
+      await adapter.list('founder');
+
+      expect(capturedHeaders?.get('authorization')).toBe('Bearer test-jwt-token-xyz');
+      expect(capturedHeaders?.get('x-demo-user-id')).toBeNull();
+    });
+
+    it('fails closed with unauthorized when getAccessToken returns null or throws in authenticated mode', async () => {
+      const adapterNull = new HttpAssignmentsAdapter({
+        getAccessToken: async () => null,
+        fetchFn: createMockFetch(() => jsonResponse({ data: [] })),
+      });
+
+      await expect(adapterNull.list('founder')).rejects.toMatchObject({
+        code: 'unauthorized',
+      });
+
+      const adapterThrows = new HttpAssignmentsAdapter({
+        getAccessToken: async () => {
+          throw new Error('Storage inaccessible');
+        },
+        fetchFn: createMockFetch(() => jsonResponse({ data: [] })),
+      });
+
+      await expect(adapterThrows.list('founder')).rejects.toMatchObject({
+        code: 'unauthorized',
+      });
+    });
   });
 });

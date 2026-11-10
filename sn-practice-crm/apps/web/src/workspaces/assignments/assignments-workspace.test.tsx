@@ -132,15 +132,10 @@ describe('Assignments workspace source contracts', () => {
       /Workflow\s+(?:&|&amp;)\s+filing progress locked to assigned custodian/,
     );
 
-    // bank reconciliation / checklist coupling: checking step 0 marks bank rec Completed
-    expect(workspaceSource).toMatch(
-      /if\s*\(hasBank\s*&&\s*idx\s*===\s*0\s*&&\s*next\[0\]\s*&&\s*schedule\.category\s*===\s*['"]GST['"]\)\s*\{\s*setBankRecStatus\(\s*['"]Completed['"]\s*\);\s*\}/,
-    );
-
-    // bank reconciliation Completed button marks step 0 checked
-    expect(workspaceSource).toMatch(
-      /if\s*\(st\s*===\s*['"]Completed['"]\)\s*\{\s*setCheckedSteps\(\s*\(prev\)\s*=>\s*\(\{\s*\.\.\.prev,\s*0:\s*true\s*\}\)\s*\);\s*\}/,
-    );
+    // truthful checklist reference: no discarded interactive checkedSteps or fake arn state
+    expect(workspaceSource).not.toMatch(/\bcheckedSteps\b/);
+    expect(workspaceSource).not.toMatch(/\bsetArn\b/);
+    expect(workspaceSource).toMatch(/workflowChecklist\.map\(/);
 
     // handleSave updates schedule with bankRecStatus/currentStatus then closes
     expect(workspaceSource).toMatch(
@@ -207,9 +202,9 @@ describe('Assignments workspace source contracts', () => {
     expect(drawerSource).toMatch(
       /if\s*\(\s*assignment\.bankStatementRequired\s*===\s*false\s*\)\s*\{[\s\S]*?(?:milestones|indexed)\.filter\([\s\S]*?bank statement[\s\S]*?bank reconciliation[\s\S]*?\)/,
     );
-    expect(drawerSource).toMatch(
-      /bankRecStatus:\s*editBankStatementReq\s*\?\s*\(assignment\.bankRecStatus\s*\|\|\s*['"]Awaited['"]\)\s*:\s*['"]Not applicable['"]/,
-    );
+    // truthful drawer: no unpersisted bankStatementReq/fee editable controls
+    expect(drawerSource).not.toMatch(/editBankStatementReq/);
+    expect(drawerSource).not.toMatch(/editFee/);
 
     // invoice leadership/unbilled guard with close then callback
     expect(drawerSource).toMatch(/!assignment\.billed\s*&&\s*leadership/);
@@ -218,9 +213,10 @@ describe('Assignments workspace source contracts', () => {
     );
     expect(drawerSource).toMatch(/Raise Tax Invoice for this Assignment/);
 
-    // working-paper toasts
-    expect(drawerSource).toMatch(/onToast\(\s*`Downloaded \$\{paper\}`\s*\)/);
-    expect(drawerSource).toMatch(/onToast\(\s*`Added working paper reference`\s*\)/);
+    // truthful working-papers quiet state: no fake add/attach interaction
+    expect(drawerSource).not.toMatch(/setWorkingPapers/);
+    expect(drawerSource).toMatch(/No linked working papers/);
+    expect(drawerSource).toMatch(/Professional fees are managed in Billing/);
   });
 
   it('verifies assignment edit form submits without redundant onClick double save', () => {

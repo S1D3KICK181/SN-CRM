@@ -9,11 +9,15 @@ import type {
   CreateLedgerEntryInput,
   CreateRecurringScheduleInput,
   CreateWorkItemInput,
+  GenerateDueAssignmentsInput,
+  GenerateDueAssignmentsResult,
   LedgerEntryDto,
   OfficeAccountsSummaryDto,
   RecurringScheduleDto,
   ReportingLineDto,
   SessionActor,
+  UpdateAssignmentInput,
+  UpdateRecurringScheduleInput,
   WorkItemDto,
   WorkItemStatus,
   WorkItemTransition,
@@ -27,6 +31,7 @@ import type {
   EmployeeRecord,
   RepositoryContext,
   ServiceReference,
+  UpdateAssignmentCommand,
 } from './repository';
 import { parseIsoInstant } from './schemas';
 
@@ -324,6 +329,109 @@ export class CrmApplication {
     });
   }
 
+  async updateAssignment(
+    actor: SessionActor,
+    assignmentId: string,
+    input: UpdateAssignmentInput,
+  ): Promise<AssignmentDto> {
+    const ctx: RepositoryContext = { actorId: actor.id };
+    const assignment = await this.getAssignment(ctx, assignmentId);
+
+    const isModifyingLeadershipFields =
+      input.title !== undefined ||
+      input.serviceId !== undefined ||
+      input.ownerId !== undefined ||
+      input.reviewerIds !== undefined ||
+      input.dueAt !== undefined ||
+      input.fee !== undefined;
+
+    if (isModifyingLeadershipFields) {
+      if (!isLeadership(actor.role)) {
+        throw forbidden('role_not_permitted', 'Only Founder and Manager may modify assignment configuration, ownership, or review gates.');
+      }
+    }
+
+    // Any core mutation is locked once assignment is approved or closed
+    if (assignment.status === 'approved' || assignment.status === 'closed') {
+      const hasCoreMutation =
+        input.title !== undefined ||
+        input.serviceId !== undefined ||
+        input.ownerId !== undefined ||
+        input.reviewerIds !== undefined ||
+        input.dueAt !== undefined ||
+        input.fee !== undefined ||
+        input.deliveryNotes !== undefined ||
+        input.reviewNotes !== undefined ||
+        input.progressPercent !== undefined ||
+        input.bankStatementRequired !== undefined;
+
+      if (hasCoreMutation) {
+        throw new ApiError(
+          409,
+          'invalid_state_transition',
+          'An approved or closed Assignment is an immutable audit artifact.',
+        );
+      }
+    }
+
+    // If updating delivery notes or progress percent as non-leadership, must be owner or reviewer
+    if (input.deliveryNotes !== undefined || input.progressPercent !== undefined) {
+      requireAuthority({
+        action: 'assignment.progress',
+        actor: asActor(actor),
+        assignmentOwnerId: assignment.ownerId,
+        reviewerIds: assignment.reviewerIds,
+      });
+    }
+
+    let serviceName = assignment.service;
+    if (input.serviceId !== undefined) {
+      const serviceRef = await this.repository.getServiceReferenceById(ctx, input.serviceId);
+      if (!serviceRef) {
+        throw new ApiError(422, 'referenced_entity_not_found', 'Referenced service does not exist in catalog.');
+      }
+      serviceName = serviceRef.name;
+    }
+
+    let targetOwnerId: string | undefined = undefined;
+    if (input.ownerId !== undefined) {
+      const owner = await this.getActiveEmployee(ctx, input.ownerId);
+      if (owner.role === 'trainee') {
+        throw new ApiError(
+          422,
+          'trainee_cannot_own_assignment',
+          'A Trainee receives Work Items, not primary ownership of an Assignment.',
+        );
+      }
+      requireAuthority({ action: 'assignment.assign', actor: asActor(actor), target: owner });
+      targetOwnerId = owner.id;
+    }
+
+    let targetReviewerIds: string[] | undefined = undefined;
+    if (input.reviewerIds !== undefined) {
+      targetReviewerIds = await this.validateReviewerIds(ctx, input.reviewerIds);
+    }
+
+    const command: UpdateAssignmentCommand = {
+      id: assignment.id,
+      title: input.title,
+      serviceId: input.serviceId,
+      service: serviceName,
+      ownerId: targetOwnerId,
+      reviewerIds: targetReviewerIds,
+      dueAt: input.dueAt,
+      fee: input.fee,
+      deliveryNotes: input.deliveryNotes,
+      reviewNotes: input.reviewNotes,
+      progressPercent: input.progressPercent,
+      bankStatementRequired: input.bankStatementRequired,
+      expectedUpdatedAt: input.expectedUpdatedAt,
+      actorId: actor.id,
+    };
+
+    return await this.repository.updateAssignment(ctx, command);
+  }
+
   async listRecurringSchedules(actor: SessionActor): Promise<RecurringScheduleDto[]> {
     const ctx: RepositoryContext = { actorId: actor.id };
     const schedules = await this.repository.listRecurringSchedules(ctx);
@@ -380,6 +488,16 @@ export class CrmApplication {
     const ctx: RepositoryContext = { actorId: actor.id };
     requireAuthority({ action: 'schedule.manage', actor: asActor(actor) });
     return await this.repository.updateRecurringSchedule(ctx, scheduleId, patch);
+  }
+
+  async generateDueAssignments(
+    actor: SessionActor,
+    input?: GenerateDueAssignmentsInput,
+  ): Promise<GenerateDueAssignmentsResult> {
+    const ctx: RepositoryContext = { actorId: actor.id };
+    requireAuthority({ action: 'schedule.manage', actor: asActor(actor) });
+    const throughDate = input?.throughDate ?? this.now().toISOString().slice(0, 10);
+    return await this.repository.materializeDueAssignments(ctx, throughDate);
   }
 
   async listWorkItems(actor: SessionActor): Promise<WorkItemDto[]> {

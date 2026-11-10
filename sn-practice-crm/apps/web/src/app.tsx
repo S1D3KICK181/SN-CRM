@@ -65,12 +65,20 @@ import { AssignmentDetailDrawer } from './workspaces/assignments/assignment-deta
 import { AssignmentsTable } from './workspaces/assignments/assignments-table';
 import { AssignmentsWorkspace } from './workspaces/assignments/assignments-workspace';
 import {
+  CreateAssignmentDialog,
+  type DialogClientOption,
+  type DialogStaffOption,
+} from './workspaces/assignments/create-assignment-dialog';
+import {
   resolveDrawerSave,
   syncDrawerAssignment,
   useAssignments,
+  useClients,
+  useTeamDirectory,
   useWorkItems,
   getDelegationTargets,
   getParentAssignmentOptions,
+  normalizeDisplayDateToIso,
   type CreateDelegatedInput,
   type CreatePersonalInput,
   type CreateInternalInput,
@@ -158,13 +166,23 @@ function AuthenticatedApp({
   const [activePage, setActivePage] = useState<PageKey>('Dashboard');
   const [dialog, setDialog] = useState<DialogMode>(null);
   const [toast, setToast] = useState<string | null>(null);
-  const [schedules, setSchedules] = useState<RecurringScheduleRecord[]>(RECURRING_SCHEDULES);
   const {
     assignments,
+    schedules,
+    loading: assignmentsLoading,
+    error: assignmentsError,
+    refresh: refreshAssignments,
     handleCreateAssignment: createAssignmentLive,
     handleUpdateAssignment: updateAssignmentLive,
+    handleCreateSchedule: createScheduleLive,
+    handleUpdateSchedule: updateScheduleLive,
+    generateDueAssignments: generateDueLive,
+    isGeneratingDue,
     markAssignmentBilled,
   } = useAssignments(role, { onToast: setToast });
+  const { items: directoryClients } = useClients(role);
+  const { lines: directoryLines } = useTeamDirectory(role);
+
   const {
     loading: workItemsLoading,
     error: workItemsError,
@@ -190,6 +208,33 @@ function AuthenticatedApp({
   const [clients, setClients] = useState<ClientRecord[]>(CLIENTS);
   const [presetInvoiceForReceipt, setPresetInvoiceForReceipt] = useState<InvoiceRecord | null>(null);
   const [presetAssignmentForInvoice, setPresetAssignmentForInvoice] = useState<AssignmentRow | null>(null);
+
+  const staffOptions = useMemo<readonly DialogStaffOption[]>(() => {
+    if (!directoryLines || directoryLines.length === 0) return [];
+    const seen = new Set<string>();
+    const list: DialogStaffOption[] = [];
+    for (const line of directoryLines) {
+      if (!seen.has(line.employee.id)) {
+        seen.add(line.employee.id);
+        list.push({
+          id: line.employee.id,
+          name: line.employee.name,
+          role: line.employee.role,
+        });
+      }
+    }
+    return list;
+  }, [directoryLines]);
+
+  const clientOptions = useMemo<readonly DialogClientOption[]>(() => {
+    if (!directoryClients || directoryClients.length === 0) {
+      return clients.map((c) => ({ id: c.id, name: c.name }));
+    }
+    return directoryClients.map((c) => ({
+      id: c.id,
+      name: c.displayName,
+    }));
+  }, [directoryClients, clients]);
 
   const canCreateAssignment = authorize({ action: 'assignment.create', actor }).allowed;
 
@@ -224,9 +269,20 @@ function AuthenticatedApp({
     }
   }
 
-  function handleUpdateSchedule(updated: RecurringScheduleRecord) {
-    setSchedules((prev) => prev.map((s) => (s.id === updated.id ? updated : s)));
-    setToast(`Updated ${updated.title} (${updated.clientName})`);
+  async function handleUpdateSchedule(updated: RecurringScheduleRecord) {
+    try {
+      const nextDate = normalizeDisplayDateToIso(updated.nextRunDate);
+      const res = await updateScheduleLive(updated.id, {
+        active: updated.status !== 'Paused',
+        nextOccurrenceOn: nextDate || undefined,
+      });
+      if (res) {
+        setToast(`Updated ${updated.title} (${updated.clientName})`);
+      }
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Failed to update recurring schedule';
+      setToast(message);
+    }
   }
 
   async function handleCreateAssignment(newAssignment: AssignmentRow): Promise<boolean> {
@@ -435,7 +491,17 @@ function AuthenticatedApp({
     }
 
     if (newSchedules.length > 0) {
-      setSchedules((prev) => [...prev, ...newSchedules]);
+      for (const s of newSchedules) {
+        void createScheduleLive({
+          clientId: s.clientId,
+          clientName: s.clientName,
+          title: s.title,
+          cadence: s.cadence.toLowerCase() as 'monthly' | 'quarterly' | 'annual',
+          ownerId: s.defaultOwner,
+          dueDay: s.generationDay ?? 11,
+          nextOccurrenceOn: s.nextRunDate,
+        });
+      }
     }
 
     setToast(`Client ${newClient.name} onboarded with ${newSchedules.length} recurring schedules assigned to ${assignedOwner}`);
@@ -513,9 +579,26 @@ function AuthenticatedApp({
               onToast={setToast}
               onUpdateAssignment={handleUpdateAssignment}
               onOpenInvoice={handleOpenInvoiceForAssignment}
+              teamMembers={staffOptions}
             />
           ) : null}
-          {dialog && !['personal', 'delegated', 'internal'].includes(dialog) ? (
+          <CreateAssignmentDialog
+            isOpen={(dialog === 'assignment' || dialog === 'schedule') && (role === 'founder' || role === 'manager')}
+            role={role}
+            clients={clientOptions}
+            teamMembers={staffOptions}
+            onClose={() => setDialog(null)}
+            onCreateAssignment={async (cmd) => {
+              const res = await createAssignmentLive(cmd);
+              return Boolean(res && res.id);
+            }}
+            onCreateSchedule={async (cmd) => {
+              const res = await createScheduleLive(cmd);
+              return Boolean(res && res.id);
+            }}
+            onToast={setToast}
+          />
+          {dialog && !['personal', 'delegated', 'internal', 'assignment', 'schedule'].includes(dialog) ? (
             <ComposerDialog
               key={dialog}
               mode={dialog}
@@ -575,6 +658,9 @@ function AuthenticatedApp({
           assignments={assignments}
           invoices={invoices}
           receipts={receipts}
+          assignmentsLoading={assignmentsLoading}
+          assignmentsError={assignmentsError ? assignmentsError.message : null}
+          onRetryAssignments={refreshAssignments}
           workItemsModel={{
             personalTasks,
             assignedToMe,
@@ -604,6 +690,8 @@ function AuthenticatedApp({
           onSelectAssignment={setSelectedAssignmentForDrawer}
           onRecordPaymentForInvoice={openReceiptModalForInvoice}
           onOpenInvoiceForAssignment={handleOpenInvoiceForAssignment}
+          onGenerateDue={generateDueLive}
+          isGeneratingDue={isGeneratingDue}
         />
       )}
     </ApplicationChrome>
@@ -1261,7 +1349,7 @@ function GuidanceCard() {
   );
 }
 
-function ModuleWorkspace({
+export function ModuleWorkspace({
   page,
   role,
   currentActor,
@@ -1281,6 +1369,11 @@ function ModuleWorkspace({
   onSelectAssignment,
   onRecordPaymentForInvoice,
   onOpenInvoiceForAssignment,
+  onGenerateDue,
+  isGeneratingDue,
+  assignmentsLoading,
+  assignmentsError,
+  onRetryAssignments,
 }: {
   page: PageKey;
   role: CompanyRole;
@@ -1301,21 +1394,26 @@ function ModuleWorkspace({
   onSelectAssignment: (assignment: AssignmentRow) => void;
   onRecordPaymentForInvoice: (inv: InvoiceRecord) => void;
   onOpenInvoiceForAssignment: (asn: AssignmentRow) => void;
+  onGenerateDue?: () => void;
+  isGeneratingDue?: boolean;
+  assignmentsLoading?: boolean;
+  assignmentsError?: string | null;
+  onRetryAssignments?: () => void;
 }) {
   const leadership = role === 'founder' || role === 'manager';
   const primaryLabel =
-    page === 'Assignments' && leadership
-      ? 'New assignment'
+    page === 'Assignments'
+      ? (leadership ? 'New assignment' : undefined)
       : page === 'My Tasks'
       ? 'New personal task'
       : page === 'Clients'
       ? undefined
       : page === 'Billing & Collections'
       ? (leadership ? 'Raise invoice' : 'Record receipt')
-      : `Add ${page.toLowerCase()}`;
+      : undefined;
   const primaryMode: DialogMode =
-    page === 'Assignments' && leadership
-      ? 'assignment'
+    page === 'Assignments'
+      ? (leadership ? 'assignment' : null)
       : page === 'My Tasks'
       ? 'personal'
       : page === 'Clients'
@@ -1349,6 +1447,11 @@ function ModuleWorkspace({
           onUpdateSchedule={onUpdateSchedule}
           onUpdateAssignment={onUpdateAssignment}
           onSelectAssignment={onSelectAssignment}
+          onGenerateDue={onGenerateDue}
+          isGeneratingDue={isGeneratingDue}
+          isLoading={assignmentsLoading}
+          error={assignmentsError}
+          onRetry={onRetryAssignments}
         />
       ) : null}
       {page === 'Billing & Collections' ? (
@@ -1804,8 +1907,6 @@ export function ComposerDialog({
               <InternalTaskFields role={role} />
             ) : mode === 'client' ? (
               <NewClientFields />
-            ) : mode === 'schedule' ? (
-              <NewScheduleFields />
             ) : mode === 'invoice' ? (
               <NewInvoiceFields clients={clients} presetAssignment={presetAssignment} />
             ) : mode === 'receipt' ? (
@@ -1825,8 +1926,6 @@ export function ComposerDialog({
                 ? 'Delegate task'
                 : mode === 'client'
                 ? 'Create client & activate schedules'
-                : mode === 'schedule'
-                ? 'Save schedule'
                 : mode === 'invoice'
                 ? 'Issue Invoice'
                 : mode === 'receipt'
@@ -1837,69 +1936,6 @@ export function ComposerDialog({
         </form>
       </section>
     </div>
-  );
-}
-
-function NewScheduleFields() {
-  return (
-    <>
-      <Field label="Target client" full>
-        <select required defaultValue="">
-          <option value="" disabled>Select client</option>
-          {CLIENTS.map((c) => (
-            <option key={c.id} value={c.name}>
-              {c.name} ({c.type})
-            </option>
-          ))}
-        </select>
-      </Field>
-      <Field label="Schedule title" full>
-        <input required placeholder="e.g. GSTR-3B Summary Return & Tax Offset" />
-      </Field>
-      <Field label="Compliance category">
-        <select required defaultValue="GST">
-          <option value="GST">GST Compliance</option>
-          <option value="TDS">TDS / TCS Compliance</option>
-          <option value="Bookkeeping">Bookkeeping & Reconciliations</option>
-          <option value="Payroll">Payroll & PF/ESI</option>
-          <option value="Audit & ROC">Audit & Statutory ROC</option>
-        </select>
-      </Field>
-      <Field label="Cadence">
-        <select required defaultValue="Monthly">
-          <option value="Monthly">Monthly</option>
-          <option value="Quarterly">Quarterly</option>
-          <option value="Annual">Annual</option>
-        </select>
-      </Field>
-      <Field label="Generation trigger day">
-        <select required defaultValue="1">
-          <option value="1">Day 1 of cycle (recommended)</option>
-          <option value="2">Day 2</option>
-          <option value="3">Day 3</option>
-          <option value="5">Day 5</option>
-          <option value="12">Day 12 (post GSTR-2B)</option>
-          <option value="15">Day 15</option>
-        </select>
-      </Field>
-      <Field label="Statutory due date rule">
-        <input required placeholder="e.g. 20th of every month" defaultValue="11th of every month" />
-      </Field>
-      <Field label="Default Assignment Owner" full>
-        <select required defaultValue="Priya Desai · Senior Staff">
-          <option>Priya Desai · Senior Staff</option>
-          <option>Rohan Mehta · Staff</option>
-          <option>Ananya Rao · Manager</option>
-          <option>S. Narayanan · Founder</option>
-        </select>
-      </Field>
-      <Field label="Standard workflow checklist template" full hint="These steps will be instantiated inside every generated assignment.">
-        <textarea
-          rows={3}
-          defaultValue="1. Collect client documentation & registers&#10;2. Validate GSTIN/PAN & statutory limits&#10;3. Generate & review computation pack&#10;4. File return and archive acknowledgment receipt"
-        />
-      </Field>
-    </>
   );
 }
 

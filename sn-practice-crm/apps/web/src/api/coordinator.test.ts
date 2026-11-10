@@ -318,7 +318,7 @@ describe('AssignmentsCoordinator', () => {
     expect(errors[0]).toContain('Assignment state conflict');
   });
 
-  it('treats same-status edits as UI-only local updates without calling API transition', async () => {
+  it('dispatches port.update for same-status core edits, and treats non-wire edits as local-only', async () => {
     const adapter = new DeterministicTestAssignmentsAdapter();
     const coordinator = new AssignmentsCoordinator({
       initialRows: INITIAL_ROWS,
@@ -337,11 +337,14 @@ describe('AssignmentsCoordinator', () => {
     const result = await coordinator.handleUpdateAssignment(editedRow);
 
     expect(result.success).toBe(true);
-    expect(result.localOnly).toBe(true);
-    expect(adapter.getTransitionCallCount()).toBe(0); // Zero API calls!
+    expect(adapter.getTransitionCallCount()).toBe(0); // Zero transition API calls!
     const inState = coordinator.getState().assignments.find((a) => a.id === 'ASN-0001');
     expect(inState?.title).toBe('Edited Title Locally');
-    expect(inState?.fee).toBe(45000);
+
+    // Pure local edit (no wire field changed)
+    const localResult = await coordinator.handleUpdateAssignment(inState!);
+    expect(localResult.success).toBe(true);
+    expect(localResult.localOnly).toBe(true);
   });
 
   it('fails with not_found AssignmentOperationError when updated.id does not exist', async () => {
@@ -960,7 +963,6 @@ describe('AssignmentsCoordinator', () => {
           initialRole: 'senior_staff',
         });
 
-        // Start transition write (e.g. from drawer)
         const updatePromise = coordinator.handleUpdateAssignment({
           ...initialRow,
           status: 'Pending review',
@@ -983,6 +985,9 @@ describe('AssignmentsCoordinator', () => {
         expect(currentMidState.billed).toBe(true);
         expect(currentMidState.bankStatementRequired).toBe(false);
         expect(currentMidState.bankRecStatus).toBe('Not applicable');
+
+        // Allow update step microtasks to complete and transition promise to be created
+        await new Promise((r) => setTimeout(r, 10));
 
         // Now resolve server transition
         resolveTransition({
@@ -1209,6 +1214,162 @@ describe('AssignmentsCoordinator', () => {
 
         expect(res.success).toBe(false);
         expect(res.error?.code).toBe('conflict');
+      });
+
+      it('dispatches port.update for non-status field changes when status is unchanged', async () => {
+        const updateCalls: Array<{ role: string; id: string; patch: any }> = [];
+        const adapter = new DeterministicTestAssignmentsAdapter();
+        const origUpdate = adapter.update.bind(adapter);
+        adapter.update = async (role, id, patch, opts) => {
+          updateCalls.push({ role, id, patch });
+          return origUpdate(role, id, patch, opts);
+        };
+
+        const coordinator = new AssignmentsCoordinator({
+          initialRows: [
+            {
+              id: 'ASN-0001',
+              title: 'Original Title',
+              client: 'Acme Corp',
+              service: 'GST Compliance',
+              due: '10/11/2026',
+              owner: 'Priya Desai',
+              status: 'In progress',
+              progress: 50,
+              tone: 'default',
+            },
+          ],
+          port: adapter,
+          initialRole: 'founder',
+        });
+
+        const res = await coordinator.handleUpdateAssignment({
+          ...coordinator.getState().assignments[0]!,
+          title: 'Renamed Title',
+          due: '20/11/2026',
+        });
+
+        expect(res.success).toBe(true);
+        expect(res.localOnly).toBeUndefined();
+        expect(updateCalls).toHaveLength(1);
+        expect(updateCalls[0]?.id).toBe('ASN-0001');
+        expect(updateCalls[0]?.patch.title).toBe('Renamed Title');
+        expect(coordinator.getState().assignments[0]!.title).toBe('Renamed Title');
+      });
+
+      it('safely sequences port.update before port.transition when both non-status and status changed', async () => {
+        const sequence: string[] = [];
+        const adapter = new DeterministicTestAssignmentsAdapter();
+        adapter.update = async (_role, _id, _patch) => {
+          sequence.push('update');
+          return {
+            id: 'ASN-0001',
+            title: 'Sequenced Title',
+            client: 'Acme Corp',
+            service: 'GST Compliance',
+            due: '10/11/2026',
+            owner: 'Priya Desai',
+            status: 'In progress',
+            progress: 80,
+            tone: 'warning',
+            expectedUpdatedAt: '2026-11-10T12:00:00.000Z',
+          };
+        };
+        adapter.setTransitionResponse('ASN-0001', 'submit', {
+          id: 'ASN-0001',
+          title: 'Sequenced Title',
+          client: 'Acme Corp',
+          service: 'GST Compliance',
+          due: '10/11/2026',
+          owner: 'Priya Desai',
+          status: 'Pending review',
+          progress: 80,
+          tone: 'warning',
+        });
+        const origTransition = adapter.transition.bind(adapter);
+        adapter.transition = async (role, id, action, opts) => {
+          sequence.push('transition');
+          expect(opts?.expectedUpdatedAt).toBe('2026-11-10T12:00:00.000Z');
+          return origTransition(role, id, action, opts);
+        };
+
+        const coordinator = new AssignmentsCoordinator({
+          initialRows: [
+            {
+              id: 'ASN-0001',
+              title: 'Original Title',
+              client: 'Acme Corp',
+              service: 'GST Compliance',
+              due: '10/11/2026',
+              owner: 'Priya Desai',
+              status: 'In progress',
+              progress: 50,
+              tone: 'default',
+            },
+          ],
+          port: adapter,
+          initialRole: 'founder',
+        });
+
+        const res = await coordinator.handleUpdateAssignment({
+          ...coordinator.getState().assignments[0]!,
+          title: 'Sequenced Title',
+          status: 'Pending review',
+        });
+
+        expect(res.success).toBe(true);
+        expect(sequence).toEqual(['update', 'transition']);
+        expect(coordinator.getState().assignments[0]!.title).toBe('Sequenced Title');
+        expect(coordinator.getState().assignments[0]!.status).toBe('Pending review');
+      });
+
+      it('updates active port via setPort without dropping existing data snapshot', async () => {
+        const adapter1 = new DeterministicTestAssignmentsAdapter();
+        const adapter2 = new DeterministicTestAssignmentsAdapter();
+        let port2Used = false;
+        adapter2.update = async (_role, id, patch) => {
+          port2Used = true;
+          return {
+            id,
+            title: patch.title ?? 'Updated',
+            client: 'Acme Corp',
+            service: 'GST Compliance',
+            due: '10/11/2026',
+            owner: 'Priya Desai',
+            status: 'In progress',
+            progress: 50,
+            tone: 'default',
+          };
+        };
+
+        const coordinator = new AssignmentsCoordinator({
+          initialRows: [
+            {
+              id: 'ASN-0001',
+              title: 'Port Test',
+              client: 'Acme Corp',
+              service: 'GST Compliance',
+              due: '10/11/2026',
+              owner: 'Priya Desai',
+              status: 'In progress',
+              progress: 50,
+              tone: 'default',
+            },
+          ],
+          port: adapter1,
+          initialRole: 'founder',
+        });
+
+        expect(coordinator.getState().assignments[0]!.title).toBe('Port Test');
+
+        coordinator.setPort(adapter2);
+
+        await coordinator.handleUpdateAssignment({
+          ...coordinator.getState().assignments[0]!,
+          title: 'Port 2 Title',
+        });
+
+        expect(port2Used).toBe(true);
       });
     });
   });

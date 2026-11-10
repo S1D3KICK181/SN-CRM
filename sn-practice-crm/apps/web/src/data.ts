@@ -32,7 +32,11 @@ export interface AssignmentRow {
   service: string;
   due: string;
   owner: string;
+  ownerId?: string;
   reviewer?: string;
+  reviewerId?: string;
+  reviewerIds?: readonly string[];
+  expectedUpdatedAt?: string;
   status: string;
   progress: number;
   tone: AssignmentTone;
@@ -496,9 +500,11 @@ export type ScheduleCadence = 'Monthly' | 'Quarterly' | 'Annual';
 
 export interface RecurringScheduleRecord {
   id: string;
+  code?: string;
   title: string;
   category: ScheduleCategory;
   clientId: string;
+  clientCode?: string;
   clientName: string;
   cadence: ScheduleCadence;
   generationDay: number;

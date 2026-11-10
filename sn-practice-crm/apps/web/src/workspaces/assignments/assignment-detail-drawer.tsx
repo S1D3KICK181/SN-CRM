@@ -4,18 +4,20 @@ import {
   Files,
   Lock,
   Pencil,
-  Plus,
   ReceiptIndianRupee,
   X,
 } from 'lucide-react';
 import type { CompanyRole } from '@sn/domain';
+import type { DialogStaffOption } from './create-assignment-dialog';
 import {
+  ROLE_LABELS,
   ROLE_PEOPLE,
   formatINR,
   type AssignmentMilestone,
   type AssignmentRow,
 } from '../../data';
 import { Field } from '../../ui/workspace-primitives';
+import { isValidUuid } from '../../api/metadata-safety';
 
 export function AssignmentDetailDrawer({
   assignment,
@@ -26,6 +28,7 @@ export function AssignmentDetailDrawer({
   onUpdateAssignment,
   onOpenInvoice,
   initialEditing = false,
+  teamMembers,
 }: {
   assignment: AssignmentRow;
   leadership: boolean;
@@ -35,8 +38,26 @@ export function AssignmentDetailDrawer({
   onUpdateAssignment: (updated: AssignmentRow) => void;
   onOpenInvoice?: (asn: AssignmentRow) => void;
   initialEditing?: boolean;
+  teamMembers?: readonly DialogStaffOption[];
 }) {
   const canEditAssignment = role === 'founder' || role === 'manager';
+  const displayCode = assignment.code && !isValidUuid(assignment.code)
+    ? assignment.code
+    : !isValidUuid(assignment.id)
+    ? assignment.id
+    : undefined;
+
+  const monogram = useMemo(() => {
+    const source = (assignment.client || assignment.title || 'AS').trim();
+    const parts = source.split(/\s+/).filter(Boolean);
+    const first = parts[0];
+    const second = parts[1];
+    if (first && second) {
+      return (first.charAt(0) + second.charAt(0)).toUpperCase();
+    }
+    return source.slice(0, 2).toUpperCase() || 'AS';
+  }, [assignment.client, assignment.title]);
+
   const currentPersonName = role ? ROLE_PEOPLE[role]?.name : '';
   const isAssignedCustodian = Boolean(
     currentPersonName &&
@@ -54,12 +75,6 @@ export function AssignmentDetailDrawer({
       { title: 'Partner final sign-off & dispatch', done: assignment.progress === 100 },
     ]
   );
-  const [newPaper, setNewPaper] = useState('');
-  const [workingPapers, setWorkingPapers] = useState<string[]>([
-    `${assignment.client.replace(/\s+/g, '_')}_Working_Papers.xlsx`,
-    `Statutory_Verification_Checklist_${assignment.id}.pdf`,
-  ]);
-
   const visibleMilestones = useMemo(() => {
     const indexed = milestones.map((milestone, sourceIndex) => ({
       milestone,
@@ -73,30 +88,60 @@ export function AssignmentDetailDrawer({
     return indexed;
   }, [milestones, assignment.bankStatementRequired]);
 
+  const isTerminal =
+    assignment.status.toLowerCase() === 'approved' ||
+    assignment.status.toLowerCase() === 'completed' ||
+    assignment.status.toLowerCase() === 'closed';
+
+  const staffList = teamMembers ?? [];
+  const eligibleStaffOwners = useMemo(() => {
+    return staffList.filter((m) => m.role !== 'trainee');
+  }, [staffList]);
+
   const [editTitle, setEditTitle] = useState(assignment.title);
   const [editService, setEditService] = useState(assignment.service);
-  const [editOwner, setEditOwner] = useState(assignment.owner);
-  const [editReviewer, setEditReviewer] = useState(assignment.reviewer || 'S. Narayanan');
+  const [editOwnerId, setEditOwnerId] = useState<string>(() => {
+    if (assignment.ownerId) return assignment.ownerId;
+    const match = eligibleStaffOwners.find(
+      (s) => s.name.toLowerCase() === assignment.owner.toLowerCase(),
+    );
+    return match?.id ?? eligibleStaffOwners[0]?.id ?? '';
+  });
+  const [editReviewerId, setEditReviewerId] = useState<string>(() => {
+    if (assignment.reviewerId) return assignment.reviewerId;
+    if (assignment.reviewerIds && assignment.reviewerIds.length > 0 && assignment.reviewerIds[0]) {
+      return assignment.reviewerIds[0];
+    }
+    const match = eligibleStaffOwners.find(
+      (s) => s.name.toLowerCase() === (assignment.reviewer || '').toLowerCase(),
+    );
+    return match?.id ?? eligibleStaffOwners[0]?.id ?? '';
+  });
   const [editDue, setEditDue] = useState(assignment.due);
   const [editStatus, setEditStatus] = useState(assignment.status);
   const [editScope, setEditScope] = useState(assignment.scope || '');
   const [editDeliveryNotes, setEditDeliveryNotes] = useState(assignment.deliveryNotes || '');
-  const [editFee, setEditFee] = useState<number>(assignment.fee || 25000);
-  const [editBankStatementReq, setEditBankStatementReq] = useState<boolean>(assignment.bankStatementRequired !== false);
 
   useEffect(() => {
     setEditTitle(assignment.title);
     setEditService(assignment.service);
-    setEditOwner(assignment.owner);
-    setEditReviewer(assignment.reviewer || 'S. Narayanan');
+    const currentOwner = eligibleStaffOwners.find(
+      (s) => s.id === assignment.ownerId || s.name.toLowerCase() === assignment.owner.toLowerCase(),
+    );
+    setEditOwnerId(currentOwner?.id ?? assignment.ownerId ?? eligibleStaffOwners[0]?.id ?? '');
+    const currentReviewer = eligibleStaffOwners.find(
+      (s) =>
+        s.id === assignment.reviewerId ||
+        (assignment.reviewerIds && assignment.reviewerIds.includes(s.id)) ||
+        s.name.toLowerCase() === (assignment.reviewer || '').toLowerCase(),
+    );
+    setEditReviewerId(currentReviewer?.id ?? assignment.reviewerId ?? eligibleStaffOwners[0]?.id ?? '');
     setEditDue(assignment.due);
     setEditStatus(assignment.status);
     setEditScope(assignment.scope || '');
     setEditDeliveryNotes(assignment.deliveryNotes || '');
-    setEditFee(assignment.fee || 25000);
-    setEditBankStatementReq(assignment.bankStatementRequired !== false);
     setIsEditing(initialEditing);
-  }, [assignment, initialEditing]);
+  }, [assignment, initialEditing, eligibleStaffOwners]);
 
   function toggleMilestone(index: number) {
     if (!isAssignedCustodian) return;
@@ -127,24 +172,28 @@ export function AssignmentDetailDrawer({
 
   function handleSaveEdit(e?: FormEvent) {
     if (e) e.preventDefault();
+    if (isTerminal) return;
+    const selectedOwner = eligibleStaffOwners.find((s) => s.id === editOwnerId);
+    const selectedReviewer = eligibleStaffOwners.find((s) => s.id === editReviewerId);
     const updated: AssignmentRow = {
       ...assignment,
       title: editTitle.trim() || assignment.title,
       service: editService,
-      owner: editOwner,
-      reviewer: editReviewer,
+      owner: selectedOwner ? selectedOwner.name : assignment.owner,
+      ownerId: selectedOwner ? selectedOwner.id : assignment.ownerId,
+      reviewer: selectedReviewer ? selectedReviewer.name : assignment.reviewer,
+      reviewerId: selectedReviewer ? selectedReviewer.id : assignment.reviewerId,
+      reviewerIds: selectedReviewer ? [selectedReviewer.id] : (assignment.reviewerIds ?? []),
       due: editDue.trim() || assignment.due,
       status: editStatus,
       scope: editScope.trim(),
       deliveryNotes: editDeliveryNotes.trim(),
-      fee: editFee,
-      bankStatementRequired: editBankStatementReq,
-      bankRecStatus: editBankStatementReq ? (assignment.bankRecStatus || 'Awaited') : 'Not applicable',
       tone: editStatus === 'Completed' ? 'success' : editStatus === 'Pending review' ? 'warning' : 'default',
     };
     onUpdateAssignment(updated);
     setIsEditing(false);
-    onToast(`Assignment ${assignment.id} details saved`);
+    const savedLabel = displayCode ? `Assignment ${displayCode}` : `Assignment "${assignment.title}"`;
+    onToast(`${savedLabel} details saved`);
   }
 
   return (
@@ -153,19 +202,22 @@ export function AssignmentDetailDrawer({
       <aside className="client-drawer" aria-label="Assignment Details">
         <div className="client-drawer-header">
           <div className="drawer-client-lead">
-            <span className="drawer-monogram">{assignment.id.substring(4)}</span>
-            <div>
+            <span className="drawer-monogram">{monogram}</span>
+            <div className="drawer-lead-copy">
+              {displayCode ? (
+                <span className="drawer-kicker">{displayCode} · {assignment.service}</span>
+              ) : null}
               <h2>{assignment.title}</h2>
-              <p>{assignment.client} · {assignment.service}</p>
+              <p>{assignment.client}{!displayCode ? ` · ${assignment.service}` : ''}</p>
             </div>
           </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <div className="drawer-header-actions">
             {canEditAssignment ? (
               <button
                 className="soft-button"
                 type="button"
                 onClick={() => setIsEditing(!isEditing)}
-                style={{ fontSize: 11, padding: '5px 12px', height: 'auto', display: 'inline-flex', alignItems: 'center', gap: 6 }}
+                style={{ fontSize: 12, padding: '5px 12px', height: 'auto', display: 'inline-flex', alignItems: 'center', gap: 6, flexShrink: 0 }}
               >
                 <Pencil size={12} /> {isEditing ? 'Cancel Edit' : 'Edit Assignment'}
               </button>
@@ -197,7 +249,7 @@ export function AssignmentDetailDrawer({
               type="button"
               onClick={() => setTab('papers')}
             >
-              Working Papers ({workingPapers.length})
+              Working Papers
             </button>
             <button
               className={`drawer-tab ${tab === 'billing' ? 'is-active' : ''}`}
@@ -213,11 +265,11 @@ export function AssignmentDetailDrawer({
           {isEditing ? (
             <form id="assignment-edit-form" onSubmit={handleSaveEdit} style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
               <div style={{ background: 'var(--canvas)', padding: '12px 14px', borderRadius: 'var(--radius-md)', border: '1px solid var(--border)' }}>
-                <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--brand)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-                  Edit Assignment · {assignment.id}
+                <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--brand)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                  Edit Assignment{displayCode ? ` · ${displayCode}` : ''}
                 </span>
                 <p style={{ margin: '4px 0 0', fontSize: 12, color: 'var(--ink-muted)' }}>
-                  Update scope, custody, reviewer, statutory due date, fee, and banking requirements.
+                  Update scope, custody, reviewer, statutory due date, and delivery notes.
                 </p>
               </div>
 
@@ -229,6 +281,7 @@ export function AssignmentDetailDrawer({
                       required
                       value={editTitle}
                       onChange={(e) => setEditTitle(e.target.value)}
+                      disabled={isTerminal}
                       placeholder="e.g. GSTR-1 &amp; GSTR-3B Monthly Return Filing"
                     />
                   </Field>
@@ -236,7 +289,7 @@ export function AssignmentDetailDrawer({
                     <input value={assignment.client} readOnly style={{ opacity: 0.8 }} />
                   </Field>
                   <Field label="Practice Service Line">
-                    <select value={editService} onChange={(e) => setEditService(e.target.value)}>
+                    <select value={editService} onChange={(e) => setEditService(e.target.value)} disabled={isTerminal}>
                       <option value="GST Compliance">GST Compliance</option>
                       <option value="Statutory Audit">Statutory Audit</option>
                       <option value="TDS Compliance">TDS Compliance</option>
@@ -250,24 +303,63 @@ export function AssignmentDetailDrawer({
 
               <div className="drawer-card" style={{ padding: 14 }}>
                 <h4 style={{ marginBottom: 10 }}>Ownership, Review &amp; Status</h4>
+                {isTerminal && (
+                  <div
+                    className="terminal-notice"
+                    style={{
+                      background: 'var(--canvas)',
+                      padding: '10px 12px',
+                      borderRadius: 'var(--radius-md)',
+                      border: '1px solid var(--border)',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 8,
+                      color: 'var(--ink-muted)',
+                      fontSize: 12,
+                      marginBottom: 12,
+                    }}
+                  >
+                    <Lock size={14} />
+                    <span>This assignment is approved/closed and remains an immutable audit artifact.</span>
+                  </div>
+                )}
                 <div className="form-grid">
                   <Field label="Assigned Staff (Owner / Custodian)">
-                    <select value={editOwner} onChange={(e) => setEditOwner(e.target.value)}>
-                      <option value="S. Narayanan">S. Narayanan · Founder</option>
-                      <option value="Ananya Rao">Ananya Rao · Manager</option>
-                      <option value="Priya Desai">Priya Desai · Senior Staff</option>
-                      <option value="Rohan Mehta">Rohan Mehta · Staff</option>
+                    <select
+                      value={editOwnerId}
+                      onChange={(e) => setEditOwnerId(e.target.value)}
+                      disabled={isTerminal || eligibleStaffOwners.length === 0}
+                    >
+                      {eligibleStaffOwners.length > 0 ? (
+                        eligibleStaffOwners.map((staff) => (
+                          <option key={staff.id} value={staff.id}>
+                            {staff.name} · {ROLE_LABELS[staff.role] ?? staff.role}
+                          </option>
+                        ))
+                      ) : (
+                        <option value="" disabled>No eligible staff available</option>
+                      )}
                     </select>
                   </Field>
                   <Field label="Sign-off Reviewer (Partner / Manager)">
-                    <select value={editReviewer} onChange={(e) => setEditReviewer(e.target.value)}>
-                      <option value="S. Narayanan">S. Narayanan (Founder)</option>
-                      <option value="Ananya Rao">Ananya Rao (Manager)</option>
-                      <option value="Priya Desai">Priya Desai (Senior Staff)</option>
+                    <select
+                      value={editReviewerId}
+                      onChange={(e) => setEditReviewerId(e.target.value)}
+                      disabled={isTerminal || eligibleStaffOwners.length === 0}
+                    >
+                      {eligibleStaffOwners.length > 0 ? (
+                        eligibleStaffOwners.map((staff) => (
+                          <option key={staff.id} value={staff.id}>
+                            {staff.name} ({ROLE_LABELS[staff.role] ?? staff.role})
+                          </option>
+                        ))
+                      ) : (
+                        <option value="" disabled>No eligible reviewers available</option>
+                      )}
                     </select>
                   </Field>
                   <Field label="Assignment Status">
-                    <select value={editStatus} onChange={(e) => setEditStatus(e.target.value)}>
+                    <select value={editStatus} onChange={(e) => setEditStatus(e.target.value)} disabled={isTerminal}>
                       <option value="In progress">In progress</option>
                       <option value="Pending review">Pending review</option>
                       <option value="Awaiting documents">Awaiting documents</option>
@@ -279,44 +371,21 @@ export function AssignmentDetailDrawer({
                       value={editDue}
                       onChange={(e) => setEditDue(e.target.value)}
                       placeholder="e.g. 11/11/2026 or Today"
+                      disabled={isTerminal}
                     />
                   </Field>
                 </div>
               </div>
 
               <div className="drawer-card" style={{ padding: 14 }}>
-                <h4 style={{ marginBottom: 6 }}>Banking &amp; Bank Statement Requirement</h4>
-                <p style={{ margin: '0 0 10px', fontSize: 12, color: 'var(--ink-muted)' }}>
-                  For cash-only or retail clients without bank operations, set to "No" so bank statement reconciliation is marked Not Applicable for this filing.
-                </p>
+                <h4 style={{ marginBottom: 10 }}>Delivery Instructions &amp; Notes</h4>
                 <div className="form-grid">
-                  <Field label="Bank Statement &amp; Reconciliation Required for this Filing?" full>
-                    <select
-                      value={editBankStatementReq ? 'yes' : 'no'}
-                      onChange={(e) => setEditBankStatementReq(e.target.value === 'yes')}
-                    >
-                      <option value="yes">Yes — Mandatory bank statement &amp; reconciliation</option>
-                      <option value="no">No — Not Applicable (Client has no bank / cash-only filing)</option>
-                    </select>
-                  </Field>
-                </div>
-              </div>
-
-              <div className="drawer-card" style={{ padding: 14 }}>
-                <h4 style={{ marginBottom: 10 }}>Commercials &amp; Notes</h4>
-                <div className="form-grid">
-                  <Field label="Agreed Professional Fee (₹)">
-                    <input
-                      type="number"
-                      value={editFee}
-                      onChange={(e) => setEditFee(Number(e.target.value))}
-                    />
-                  </Field>
                   <Field label="Delivery Instructions / Working Notes" full>
                     <textarea
-                      rows={2}
+                      rows={3}
                       value={editDeliveryNotes}
                       onChange={(e) => setEditDeliveryNotes(e.target.value)}
+                      disabled={isTerminal}
                       placeholder="Special instructions, portal credentials note, or client reminders"
                       style={{ width: '100%', padding: '8px 10px', borderRadius: 'var(--radius-control)', border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--ink)' }}
                     />
@@ -339,7 +408,7 @@ export function AssignmentDetailDrawer({
 
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: 'var(--surface-muted)', padding: '12px 16px', borderRadius: 10 }}>
                     <div>
-                      <span style={{ fontSize: 11, color: 'var(--ink-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600 }}>Delivery Progress</span>
+                      <span style={{ fontSize: 12, color: 'var(--ink-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600 }}>Delivery Progress</span>
                       <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--ink)' }}>
                         {Math.round((visibleMilestones.filter(({ milestone: m }) => m.done).length / (visibleMilestones.length || 1)) * 100)}%
                       </div>
@@ -381,7 +450,7 @@ export function AssignmentDetailDrawer({
                           <span style={{ fontSize: 13, fontWeight: m.done ? 500 : 600, textDecoration: m.done ? 'line-through' : 'none' }}>
                             {m.title}
                           </span>
-                          <small style={{ fontSize: 11, color: 'var(--ink-muted)' }}>
+                          <small style={{ fontSize: 12, color: 'var(--ink-muted)' }}>
                             {m.done ? 'Completed and verified' : `Step ${idx + 1} pending`}
                           </small>
                         </div>
@@ -431,69 +500,23 @@ export function AssignmentDetailDrawer({
                       {assignment.deliveryNotes || 'Standard delivery cycle.'}
                     </span>
                   </div>
+                  <div className="drawer-item" style={{ gridColumn: 'span 2', marginTop: 8, paddingTop: 12, borderTop: '1px solid var(--border)' }}>
+                    <span className="drawer-label">Related Settings</span>
+                    <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-muted)', lineHeight: 1.5 }}>
+                      Professional fees are managed in Billing. Document and bank-statement requirements are managed on the Client profile.
+                    </p>
+                  </div>
                 </div>
               ) : null}
 
               {tab === 'papers' ? (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-                  <p style={{ fontSize: 12, color: 'var(--ink-muted)', margin: 0 }}>
-                    Audit evidence files, working papers, and signed confirmations tied to {assignment.id}.
-                  </p>
-                  <div className="list-stack">
-                    {workingPapers.map((paper) => (
-                      <div
-                        key={paper}
-                        style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'space-between',
-                          padding: '10px 14px',
-                          background: 'var(--surface-muted)',
-                          borderRadius: 8,
-                          fontSize: 12,
-                        }}
-                      >
-                        <span style={{ display: 'flex', alignItems: 'center', gap: 8, fontWeight: 500 }}>
-                          <Files size={15} color="var(--brand)" />
-                          {paper}
-                        </span>
-                        <button
-                          className="text-button"
-                          type="button"
-                          onClick={() => onToast(`Downloaded ${paper}`)}
-                        >
-                          Download
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                  <div style={{ display: 'flex', gap: 8 }}>
-                    <input
-                      type="text"
-                      placeholder="New paper name or document link…"
-                      value={newPaper}
-                      onChange={(e) => setNewPaper(e.target.value)}
-                      style={{
-                        flex: 1,
-                        padding: '8px 12px',
-                        borderRadius: 8,
-                        border: '1px solid var(--border)',
-                        fontSize: 12,
-                      }}
-                    />
-                    <button
-                      className="soft-button"
-                      type="button"
-                      onClick={() => {
-                        if (newPaper.trim()) {
-                          setWorkingPapers((prev) => [...prev, newPaper.trim()]);
-                          setNewPaper('');
-                          onToast(`Added working paper reference`);
-                        }
-                      }}
-                    >
-                      <Plus size={14} /> Attach
-                    </button>
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '36px 16px', textAlign: 'center', gap: 10 }}>
+                  <Files size={28} color="var(--ink-muted)" style={{ opacity: 0.6 }} />
+                  <div>
+                    <p style={{ margin: 0, fontSize: 13, fontWeight: 600, color: 'var(--ink)' }}>No linked working papers</p>
+                    <p style={{ margin: '4px 0 0', fontSize: 12, color: 'var(--ink-muted)' }}>
+                      Working papers and statutory evidence files are managed through the client document repository.
+                    </p>
                   </div>
                 </div>
               ) : null}
@@ -503,7 +526,7 @@ export function AssignmentDetailDrawer({
                   <div className="drawer-item">
                     <span className="drawer-label">Agreed Professional Fee</span>
                     <span className="drawer-val" style={{ fontSize: 16, fontWeight: 700 }}>
-                      {formatINR(assignment.fee || 25000)}
+                      {assignment.fee ? formatINR(assignment.fee) : 'Managed in Billing'}
                     </span>
                   </div>
                   <div className="drawer-item">
@@ -558,6 +581,7 @@ export function AssignmentDetailDrawer({
                 className="primary-button"
                 type="submit"
                 form="assignment-edit-form"
+                disabled={isTerminal}
                 style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}
               >
                 <Check size={14} /> Save Changes

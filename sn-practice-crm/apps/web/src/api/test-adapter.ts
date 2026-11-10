@@ -1,10 +1,14 @@
 import type { CompanyRole } from '@sn/domain';
-import type { AssignmentRow } from '../data';
+import type { AssignmentRow, RecurringScheduleRecord } from '../data';
 import type {
   AssignmentContractTransition,
   AssignmentsPort,
   CreateAssignmentCommand,
+  CreateRecurringScheduleCommand,
+  GenerateDueAssignmentsResult,
   PortExecutionOptions,
+  UpdateAssignmentPatch,
+  UpdateRecurringSchedulePatch,
 } from './types';
 
 export class DeterministicTestAssignmentsAdapter implements AssignmentsPort {
@@ -19,6 +23,10 @@ export class DeterministicTestAssignmentsAdapter implements AssignmentsPort {
   private transitionResponses = new Map<string, AssignmentRow>();
   private transitionErrors = new Map<string, Error>();
   private transitionCallCount = 0;
+
+  private scheduleListResponses = new Map<CompanyRole, RecurringScheduleRecord[]>();
+  private updateResponses = new Map<string, AssignmentRow>();
+  private generateDueCount = 0;
 
   setListResponse(role: CompanyRole, rows: AssignmentRow[]): void {
     this.listResponses.set(role, rows);
@@ -106,11 +114,23 @@ export class DeterministicTestAssignmentsAdapter implements AssignmentsPort {
     };
   }
 
+  setScheduleListResponse(role: CompanyRole, schedules: RecurringScheduleRecord[]): void {
+    this.scheduleListResponses.set(role, schedules);
+  }
+
+  setUpdateResponse(id: string, row: AssignmentRow): void {
+    this.updateResponses.set(id, row);
+  }
+
+  setGenerateDueResult(count: number): void {
+    this.generateDueCount = count;
+  }
+
   async transition(
     role: CompanyRole,
     id: string,
     action: AssignmentContractTransition,
-    options?: PortExecutionOptions,
+    options?: PortExecutionOptions & { expectedUpdatedAt?: string },
   ): Promise<AssignmentRow> {
     this.transitionCallCount++;
 
@@ -158,6 +178,111 @@ export class DeterministicTestAssignmentsAdapter implements AssignmentsPort {
             : action === 'request_changes'
               ? 'danger'
               : 'default',
+    };
+  }
+
+  async update(
+    _role: CompanyRole,
+    id: string,
+    patch: UpdateAssignmentPatch,
+    options?: PortExecutionOptions,
+  ): Promise<AssignmentRow> {
+    if (options?.signal?.aborted) {
+      throw new Error('Aborted');
+    }
+    if (this.updateResponses.has(id)) {
+      return this.updateResponses.get(id)!;
+    }
+    return {
+      id,
+      title: patch.title ?? 'Updated Assignment',
+      client: 'Mock Client',
+      service: 'Statutory Compliance',
+      due: patch.dueAt ? '15/11/2026' : '11/11/2026',
+      owner: patch.ownerId ?? 'Priya Desai',
+      status: 'In progress',
+      progress: patch.progressPercent ?? 50,
+      tone: 'default',
+    };
+  }
+
+  async listSchedules(
+    role: CompanyRole,
+    options?: PortExecutionOptions,
+  ): Promise<RecurringScheduleRecord[]> {
+    if (options?.signal?.aborted) {
+      throw new Error('Aborted');
+    }
+    return this.scheduleListResponses.get(role) ?? [];
+  }
+
+  async createSchedule(
+    _role: CompanyRole,
+    command: CreateRecurringScheduleCommand,
+    options?: PortExecutionOptions,
+  ): Promise<RecurringScheduleRecord> {
+    if (options?.signal?.aborted) {
+      throw new Error('Aborted');
+    }
+    return {
+      id: 'sch_mock_test_id',
+      title: command.title,
+      category: 'GST',
+      clientId: command.clientId,
+      clientName: command.clientName ?? 'Mock Client',
+      cadence: command.cadence === 'monthly' ? 'Monthly' : 'Quarterly',
+      generationDay: 1,
+      statutoryDueDay: `${command.dueDay}th of month`,
+      defaultOwner: command.ownerNameOrId ?? 'Priya Desai',
+      nextRunDate: '01/12/2026',
+      nextDueDate: '11/12/2026',
+      status: 'Active',
+      bankRecStatus: 'Awaited',
+      currentStatus: 'Pending',
+      checklistTemplate: ['Mock step 1'],
+      history: [],
+    };
+  }
+
+  async updateSchedule(
+    _role: CompanyRole,
+    id: string,
+    _patch: UpdateRecurringSchedulePatch,
+    options?: PortExecutionOptions,
+  ): Promise<RecurringScheduleRecord> {
+    if (options?.signal?.aborted) {
+      throw new Error('Aborted');
+    }
+    return {
+      id,
+      title: 'Updated Schedule',
+      category: 'GST',
+      clientId: 'cli_mock',
+      clientName: 'Mock Client',
+      cadence: 'Monthly',
+      generationDay: 1,
+      statutoryDueDay: '11th of month',
+      defaultOwner: 'Priya Desai',
+      nextRunDate: '01/12/2026',
+      nextDueDate: '11/12/2026',
+      status: 'Active',
+      bankRecStatus: 'Awaited',
+      currentStatus: 'Pending',
+      checklistTemplate: ['Mock step 1'],
+      history: [],
+    };
+  }
+
+  async generateDueAssignments(
+    _role: CompanyRole,
+    options?: PortExecutionOptions,
+  ): Promise<GenerateDueAssignmentsResult> {
+    if (options?.signal?.aborted) {
+      throw new Error('Aborted');
+    }
+    return {
+      generatedCount: this.generateDueCount,
+      occurrences: [],
     };
   }
 }

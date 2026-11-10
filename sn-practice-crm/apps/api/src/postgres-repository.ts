@@ -4,6 +4,7 @@ import type {
   ClientStatus,
   CreateLedgerEntryInput,
   CreateRecurringScheduleInput,
+  GenerateDueAssignmentsResult,
   LedgerEntryDto,
   OfficeAccountsSummaryDto,
   RecurringScheduleDto,
@@ -26,6 +27,7 @@ import type {
   EmployeeRecord,
   RepositoryContext,
   ServiceReference,
+  UpdateAssignmentCommand,
   UpdateAssignmentReviewersCommand,
   UpdateAssignmentStatusCommand,
   UpdateWorkItemStatusCommand,
@@ -624,14 +626,6 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
   }
 
   async createAssignment(ctx: RepositoryContext, record: CreateAssignmentRecord): Promise<AssignmentDto> {
-    if (record.recurringScheduleId) {
-      throw new ApiError(
-        501,
-        'domain_not_persisted',
-        'Recurring schedule assignments are deferred until schedule persistence is enabled.',
-      );
-    }
-
     try {
       return await this.runner.withUserContext(ctx, async (tx) => {
         // Live write: omit is_demo column completely (PostgreSQL defaults is_demo = false)
@@ -648,7 +642,7 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
             ${record.periodStart ? record.periodStart : null}::date,
             ${record.periodEnd ? record.periodEnd : null}::date,
             ${record.dueAt}::timestamptz,
-            NULL,
+            ${record.recurringScheduleId ? record.recurringScheduleId : null}::uuid,
             ${ctx.actorId}::uuid
           );
         `;
@@ -705,6 +699,74 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
             'concurrency_conflict',
             'The resource was updated concurrently by another operation.',
           );
+        }
+
+        const updated = await this.fetchAssignmentDto(tx, command.id);
+        if (!updated) {
+          throw new ApiError(404, 'not_found', 'Resource was not found.');
+        }
+        return updated;
+      });
+    } catch (error) {
+      sanitizeDatabaseError(error);
+    }
+  }
+
+  async updateAssignment(
+    ctx: RepositoryContext,
+    command: UpdateAssignmentCommand,
+  ): Promise<AssignmentDto> {
+    try {
+      return await this.runner.withUserContext(ctx, async (tx) => {
+        const expectedUpdatedAt = command.expectedUpdatedAt ?? null;
+        const title = command.title ?? null;
+        const serviceId = command.serviceId ?? null;
+        const ownerId = command.ownerId ?? null;
+        const dueAt = command.dueAt ?? null;
+        const deliveryNotes = command.deliveryNotes !== undefined ? command.deliveryNotes : null;
+        const reviewNotes = command.reviewNotes !== undefined ? command.reviewNotes : null;
+        const progressPercent = command.progressPercent !== undefined ? command.progressPercent : null;
+
+        const updateRows = await tx`
+          UPDATE public.assignments
+          SET title = coalesce(${title}, title),
+              service_id = coalesce(${serviceId ? serviceId : null}::uuid, service_id),
+              owner_id = coalesce(${ownerId ? ownerId : null}::uuid, owner_id),
+              due_at = coalesce(${dueAt ? dueAt : null}::timestamptz, due_at),
+              delivery_notes = coalesce(${deliveryNotes}, delivery_notes),
+              review_notes = coalesce(${reviewNotes}, review_notes),
+              progress_percent = coalesce(${progressPercent}, progress_percent),
+              updated_at = now()
+          WHERE id = ${command.id}::uuid
+            AND (${expectedUpdatedAt}::timestamptz IS NULL OR date_trunc('milliseconds', updated_at) = date_trunc('milliseconds', ${expectedUpdatedAt}::timestamptz))
+          RETURNING id, updated_at;
+        `;
+
+        if (updateRows.length === 0) {
+          const checkRows = await tx`
+            SELECT updated_at FROM public.assignments WHERE id = ${command.id}::uuid;
+          `;
+          if (checkRows.length === 0) {
+            throw new ApiError(404, 'not_found', 'Resource was not found.');
+          }
+          throw new ApiError(
+            409,
+            'concurrency_conflict',
+            'The resource was updated concurrently by another operation.',
+          );
+        }
+
+        if (command.reviewerIds !== undefined) {
+          await tx`
+            DELETE FROM public.assignment_reviewers
+            WHERE assignment_id = ${command.id}::uuid;
+          `;
+          if (command.reviewerIds.length > 0) {
+            await tx`
+              INSERT INTO public.assignment_reviewers (assignment_id, reviewer_id, assigned_by)
+              SELECT ${command.id}::uuid, unnest(${command.reviewerIds}::uuid[]), ${ctx.actorId}::uuid;
+            `;
+          }
         }
 
         const updated = await this.fetchAssignmentDto(tx, command.id);
@@ -929,19 +991,152 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
 
   // --- Honest 501 Gating for Unmigrated Domains ---
 
+  private async fetchRecurringScheduleDto(
+    tx: SqlClient,
+    id: string,
+  ): Promise<RecurringScheduleDto | null> {
+    const rows = await tx`
+      SELECT
+        rs.id,
+        rs.code,
+        rs.client_id AS "clientId",
+        c.display_name AS "clientName",
+        rs.service_id AS "serviceId",
+        coalesce(sc.name, 'Statutory Service') AS "serviceName",
+        rs.title,
+        rs.cadence,
+        rs.default_owner_id AS "ownerId",
+        rs.next_occurrence_date AS "nextOccurrenceOn",
+        rs.due_offset_days AS "dueDay",
+        rs.is_active AS "active",
+        rs.created_by AS "createdById",
+        rs.created_at AS "createdAt",
+        rs.updated_at AS "updatedAt"
+      FROM public.recurring_schedules rs
+      JOIN public.clients c ON c.id = rs.client_id
+      LEFT JOIN public.service_catalog sc ON sc.id = rs.service_id
+      WHERE rs.id = ${id}::uuid;
+    `;
+    const row = rows[0];
+    if (!row) return null;
+
+    return {
+      id: String(row['id']),
+      code: String(row['code']),
+      clientId: String(row['clientId']),
+      clientName: String(row['clientName']),
+      serviceId: String(row['serviceId']),
+      service: String(row['serviceName']),
+      title: String(row['title']),
+      cadence: row['cadence'] as any,
+      ownerId: String(row['ownerId']),
+      reviewerIds: [],
+      nextOccurrenceOn: row['nextOccurrenceOn']
+        ? (row['nextOccurrenceOn'] as Date).toISOString().slice(0, 10)
+        : '',
+      dueDay: Number(row['dueDay']),
+      active: Boolean(row['active']),
+      createdById: String(row['createdById']),
+      createdAt: (row['createdAt'] as Date).toISOString(),
+      updatedAt: (row['updatedAt'] as Date).toISOString(),
+    };
+  }
+
   async getRecurringSchedule(ctx: RepositoryContext, id: string): Promise<RecurringScheduleDto | null> {
-    throw new ApiError(501, 'domain_not_persisted', 'Recurring schedules and ledger persistence are deferred to future slices.');
+    try {
+      return await this.runner.withUserContext(ctx, async (tx) => {
+        return this.fetchRecurringScheduleDto(tx, id);
+      });
+    } catch (error) {
+      sanitizeDatabaseError(error);
+    }
   }
 
   async listRecurringSchedules(ctx: RepositoryContext): Promise<RecurringScheduleDto[]> {
-    throw new ApiError(501, 'domain_not_persisted', 'Recurring schedules and ledger persistence are deferred to future slices.');
+    try {
+      return await this.runner.withUserContext(ctx, async (tx) => {
+        const rows = await tx`
+          SELECT
+            rs.id,
+            rs.code,
+            rs.client_id AS "clientId",
+            c.display_name AS "clientName",
+            rs.service_id AS "serviceId",
+            coalesce(sc.name, 'Statutory Service') AS "serviceName",
+            rs.title,
+            rs.cadence,
+            rs.default_owner_id AS "ownerId",
+            rs.next_occurrence_date AS "nextOccurrenceOn",
+            rs.due_offset_days AS "dueDay",
+            rs.is_active AS "active",
+            rs.created_by AS "createdById",
+            rs.created_at AS "createdAt",
+            rs.updated_at AS "updatedAt"
+          FROM public.recurring_schedules rs
+          JOIN public.clients c ON c.id = rs.client_id
+          LEFT JOIN public.service_catalog sc ON sc.id = rs.service_id
+          ORDER BY rs.next_occurrence_date ASC, rs.title ASC;
+        `;
+
+        return rows.map((row) => ({
+          id: String(row['id']),
+          code: String(row['code']),
+          clientId: String(row['clientId']),
+          clientName: String(row['clientName']),
+          serviceId: String(row['serviceId']),
+          service: String(row['serviceName']),
+          title: String(row['title']),
+          cadence: row['cadence'] as any,
+          ownerId: String(row['ownerId']),
+          reviewerIds: [],
+          nextOccurrenceOn: row['nextOccurrenceOn']
+            ? (row['nextOccurrenceOn'] as Date).toISOString().slice(0, 10)
+            : '',
+          dueDay: Number(row['dueDay']),
+          active: Boolean(row['active']),
+          createdById: String(row['createdById']),
+          createdAt: (row['createdAt'] as Date).toISOString(),
+          updatedAt: (row['updatedAt'] as Date).toISOString(),
+        }));
+      });
+    } catch (error) {
+      sanitizeDatabaseError(error);
+    }
   }
 
   async createRecurringSchedule(
     ctx: RepositoryContext,
     input: CreateRecurringScheduleInput & { id: string; createdById: string; code?: string; clientName: string; service: string },
   ): Promise<RecurringScheduleDto> {
-    throw new ApiError(501, 'domain_not_persisted', 'Recurring schedules and ledger persistence are deferred to future slices.');
+    const intervalMonths =
+      input.cadence === 'monthly' ? 1 : input.cadence === 'quarterly' ? 3 : 12;
+
+    try {
+      return await this.runner.withUserContext(ctx, async (tx) => {
+        await tx`
+          INSERT INTO public.recurring_schedules (
+            id, client_id, service_id, title, cadence, interval_months,
+            due_offset_days, start_date, next_occurrence_date,
+            default_owner_id, priority, is_active, created_by
+          ) VALUES (
+            ${input.id}::uuid, ${input.clientId}::uuid,
+            ${input.serviceId ? input.serviceId : null}::uuid,
+            ${input.title}, ${input.cadence}::public.recurrence_cadence,
+            ${intervalMonths}, ${input.dueDay}, ${input.nextOccurrenceOn}::date,
+            ${input.nextOccurrenceOn}::date, ${input.ownerId}::uuid,
+            'normal'::public.work_priority, true, ${ctx.actorId}::uuid
+          );
+        `;
+
+        const created = await this.fetchRecurringScheduleDto(tx, input.id);
+        if (!created) {
+          throw new ApiError(500, 'internal_error', 'Created recurring schedule could not be retrieved.');
+        }
+        return created;
+      });
+    } catch (error) {
+      sanitizeDatabaseError(error);
+    }
   }
 
   async updateRecurringSchedule(
@@ -949,7 +1144,56 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
     id: string,
     input: UpdateRecurringScheduleInput,
   ): Promise<RecurringScheduleDto> {
-    throw new ApiError(501, 'domain_not_persisted', 'Recurring schedules and ledger persistence are deferred to future slices.');
+    try {
+      return await this.runner.withUserContext(ctx, async (tx) => {
+        const rows = await tx`
+          UPDATE public.recurring_schedules
+          SET is_active = coalesce(${input.active !== undefined ? input.active : null}, is_active),
+              next_occurrence_date = coalesce(${input.nextOccurrenceOn ? input.nextOccurrenceOn : null}::date, next_occurrence_date),
+              updated_at = now()
+          WHERE id = ${id}::uuid
+          RETURNING id;
+        `;
+        if (rows.length === 0) {
+          throw new ApiError(404, 'not_found', 'Recurring schedule was not found.');
+        }
+
+        const updated = await this.fetchRecurringScheduleDto(tx, id);
+        if (!updated) {
+          throw new ApiError(404, 'not_found', 'Recurring schedule was not found.');
+        }
+        return updated;
+      });
+    } catch (error) {
+      sanitizeDatabaseError(error);
+    }
+  }
+
+  async materializeDueAssignments(
+    _ctx: RepositoryContext,
+    throughDate: string,
+  ): Promise<GenerateDueAssignmentsResult> {
+    try {
+      const rows = await this.sql<Array<{
+        schedule_id: string;
+        assignment_id: string;
+        occurrence_date: string;
+      }>>`
+        SELECT schedule_id, assignment_id, occurrence_date::text AS occurrence_date
+        FROM public.materialize_due_recurring_assignments(${throughDate}::date);
+      `;
+
+      return {
+        generatedCount: rows.length,
+        occurrences: rows.map((r) => ({
+          scheduleId: String(r.schedule_id),
+          assignmentId: String(r.assignment_id),
+          occurrenceDate: String(r.occurrence_date),
+        })),
+      };
+    } catch (error) {
+      sanitizeDatabaseError(error);
+    }
   }
 
   async getOfficeAccountsSummary(ctx: RepositoryContext): Promise<OfficeAccountsSummaryDto> {

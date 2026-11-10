@@ -31,7 +31,23 @@ export function parseIsoInstant(value: unknown): number {
 
 export const localDate = z
   .string()
-  .regex(/^\d{4}-\d{2}-\d{2}$/, 'Must be YYYY-MM-DD');
+  .regex(/^\d{4}-\d{2}-\d{2}$/, 'Must be YYYY-MM-DD')
+  .refine(
+    (value) => {
+      const parts = value.split('-');
+      const y = Number.parseInt(parts[0] ?? '0', 10);
+      const m = Number.parseInt(parts[1] ?? '0', 10);
+      const d = Number.parseInt(parts[2] ?? '0', 10);
+      if (m < 1 || m > 12 || d < 1 || d > 31) return false;
+      const date = new Date(Date.UTC(y, m - 1, d));
+      return (
+        date.getUTCFullYear() === y &&
+        date.getUTCMonth() === m - 1 &&
+        date.getUTCDate() === d
+      );
+    },
+    { message: 'Must be a valid calendar date in YYYY-MM-DD format.' },
+  );
 
 const PAN_REGEX = /^[A-Z]{5}[0-9]{4}[A-Z]$/;
 const GSTIN_REGEX = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/;
@@ -145,6 +161,25 @@ export const assignmentTransitionSchema = z
   })
   .strict();
 
+export const updateAssignmentSchema = z
+  .object({
+    title: title.optional(),
+    serviceId: entityUuid.optional(),
+    ownerId: entityUuid.optional(),
+    reviewerIds: z.array(entityUuid).max(5).optional(),
+    dueAt: isoInstantSchema.optional(),
+    fee: z.number().int().min(0).max(1_000_000_000).optional(),
+    deliveryNotes: z.string().trim().max(2000).nullable().optional(),
+    reviewNotes: z.string().trim().max(2000).nullable().optional(),
+    progressPercent: z.number().int().min(0).max(100).optional(),
+    bankStatementRequired: z.boolean().optional(),
+    expectedUpdatedAt: isoInstantSchema.optional(),
+  })
+  .strict()
+  .refine((data) => Object.keys(data).length > 0, {
+    message: 'At least one field is required.',
+  });
+
 export const createWorkItemSchema = z.discriminatedUnion('kind', [
   z
     .object({
@@ -211,6 +246,12 @@ export const updateRecurringScheduleSchema = z
   })
   .strict()
   .refine((value) => Object.keys(value).length > 0, 'At least one field is required.');
+
+export const generateDueAssignmentsSchema = z
+  .object({
+    throughDate: localDate.optional(),
+  })
+  .strict();
 
 export const reportingLineSchema = z
   .object({

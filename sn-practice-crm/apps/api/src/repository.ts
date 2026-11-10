@@ -4,6 +4,7 @@ import type {
   ClientDto,
   CreateLedgerEntryInput,
   CreateRecurringScheduleInput,
+  GenerateDueAssignmentsResult,
   LedgerEntryDto,
   OfficeAccountsSummaryDto,
   RecurringScheduleDto,
@@ -94,6 +95,23 @@ export interface UpdateAssignmentReviewersCommand {
   readonly assignedBy: string; // Actor UUID
 }
 
+export interface UpdateAssignmentCommand {
+  readonly id: string; // RFC 4122 UUID
+  readonly title?: string;
+  readonly serviceId?: string; // RFC 4122 UUID
+  readonly service?: string;
+  readonly ownerId?: string; // RFC 4122 UUID
+  readonly reviewerIds?: readonly string[]; // RFC 4122 UUIDs
+  readonly dueAt?: string; // ISO-8601 UTC
+  readonly fee?: number;
+  readonly deliveryNotes?: string | null;
+  readonly reviewNotes?: string | null;
+  readonly progressPercent?: number;
+  readonly bankStatementRequired?: boolean;
+  readonly expectedUpdatedAt?: string;
+  readonly actorId: string;
+}
+
 export interface CreateWorkItemRecord {
   readonly id: string; // RFC 4122 UUID (pre-generated)
   readonly kind: WorkItemKind;
@@ -155,6 +173,10 @@ export interface CrmRepository {
     ctx: RepositoryContext,
     command: UpdateAssignmentReviewersCommand,
   ): Promise<AssignmentDto>;
+  updateAssignment(
+    ctx: RepositoryContext,
+    command: UpdateAssignmentCommand,
+  ): Promise<AssignmentDto>;
 
   // Work Items
   getWorkItem(ctx: RepositoryContext, id: string): Promise<WorkItemDto | null>;
@@ -177,6 +199,10 @@ export interface CrmRepository {
     id: string,
     input: UpdateRecurringScheduleInput,
   ): Promise<RecurringScheduleDto>;
+  materializeDueAssignments(
+    ctx: RepositoryContext,
+    throughDate: string,
+  ): Promise<GenerateDueAssignmentsResult>;
 
   // Office Accounts & Ledger
   getOfficeAccountsSummary(ctx: RepositoryContext): Promise<OfficeAccountsSummaryDto>;

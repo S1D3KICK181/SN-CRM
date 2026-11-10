@@ -889,6 +889,14 @@ describe("CrmApplication authority and workflow rules", () => {
           callLog.push({ method: "updateAssignmentReviewers", actorId: ctx.actorId, targetId: command.id });
           return underlying.updateAssignmentReviewers(ctx, command);
         },
+        async updateAssignment(ctx: RepositoryContext, command: any): Promise<AssignmentDto> {
+          callLog.push({ method: "updateAssignment", actorId: ctx.actorId, targetId: command.id });
+          return underlying.updateAssignment(ctx, command);
+        },
+        async materializeDueAssignments(ctx: RepositoryContext, input: any): Promise<any> {
+          callLog.push({ method: "materializeDueAssignments", actorId: ctx.actorId });
+          return underlying.materializeDueAssignments(ctx, input);
+        },
         async getRecurringSchedule(ctx: RepositoryContext, id: string): Promise<RecurringScheduleDto | null> {
           callLog.push({ method: "getRecurringSchedule", actorId: ctx.actorId, targetId: id });
           return underlying.getRecurringSchedule(ctx, id);
@@ -1447,6 +1455,124 @@ describe("CrmApplication authority and workflow rules", () => {
       });
       expect(clientWithStaff.relationshipOwnerId).toBe(DEMO_ACTOR_IDS.staff);
       expect(clientWithStaff.relationshipOwnerName).toBe("Rohan Mehta");
+    });
+  });
+
+  describe("AS-01 Remediation: Terminal protection and Recurrence clamping", () => {
+    it("rejects any core mutation on approved or closed assignments with 409 invalid_state_transition", async () => {
+      const { application } = createFixture();
+      const founder = await application.requireActor(DEMO_ACTOR_IDS.founder);
+
+      // CANONICAL_ASSIGNMENT_1 starts in_progress: submit to ready_for_review, then complete to approved
+      await application.transitionAssignment(founder, CANONICAL_ASSIGNMENT_1, "submit");
+      const approved = await application.transitionAssignment(founder, CANONICAL_ASSIGNMENT_1, "complete");
+      expect(approved.status).toBe("approved");
+
+      // Attempting to mutate title
+      await expect(
+        application.updateAssignment(founder, CANONICAL_ASSIGNMENT_1, {
+          title: "New Title Attempt",
+        }),
+      ).rejects.toMatchObject({
+        status: 409,
+        code: "invalid_state_transition",
+        message: "An approved or closed Assignment is an immutable audit artifact.",
+      });
+
+      // Attempting to mutate serviceId
+      await expect(
+        application.updateAssignment(founder, CANONICAL_ASSIGNMENT_1, {
+          serviceId: CANONICAL_SERVICE_1,
+        }),
+      ).rejects.toMatchObject({
+        status: 409,
+        code: "invalid_state_transition",
+      });
+
+      // Attempting to mutate dueAt
+      await expect(
+        application.updateAssignment(founder, CANONICAL_ASSIGNMENT_1, {
+          dueAt: "2026-12-31T18:29:00.000Z",
+        }),
+      ).rejects.toMatchObject({
+        status: 409,
+        code: "invalid_state_transition",
+      });
+
+      // Attempting to mutate fee
+      await expect(
+        application.updateAssignment(founder, CANONICAL_ASSIGNMENT_1, {
+          fee: 50000,
+        }),
+      ).rejects.toMatchObject({
+        status: 409,
+        code: "invalid_state_transition",
+      });
+
+      // Attempting to mutate deliveryNotes
+      await expect(
+        application.updateAssignment(founder, CANONICAL_ASSIGNMENT_1, {
+          deliveryNotes: "New delivery notes",
+        }),
+      ).rejects.toMatchObject({
+        status: 409,
+        code: "invalid_state_transition",
+      });
+    });
+
+    it("clamps monthly and quarterly recurrence across month ends and leap years", async () => {
+      const { application } = createFixture();
+      const founder = await application.requireActor(DEMO_ACTOR_IDS.founder);
+      const senior = await application.requireActor(DEMO_ACTOR_IDS.senior);
+
+      // Create a schedule starting Oct 31, 2026
+      const scheduleOct31 = await application.createRecurringSchedule(founder, {
+        clientId: CANONICAL_CLIENT_1,
+        title: "Month-End Clamped Schedule",
+        serviceId: CANONICAL_SERVICE_1,
+        cadence: "monthly",
+        ownerId: senior.id,
+        nextOccurrenceOn: "2026-10-31",
+        dueDay: 11,
+      });
+
+      const result = await application.generateDueAssignments(founder, {
+        throughDate: "2026-12-05",
+      });
+
+      // Occurrence 1: 2026-10-31
+      // Occurrence 2: 2026-11-30 (clamped from 31 to 30!)
+      const occurrences = result.occurrences.filter((o) => o.scheduleId === scheduleOct31.id);
+      expect(occurrences).toHaveLength(2);
+      expect(occurrences[0]?.occurrenceDate).toBe("2026-10-31");
+      expect(occurrences[1]?.occurrenceDate).toBe("2026-11-30");
+
+      // Verify the generated assignment due date matches periodEnd + 11 days
+      const assignments = await application.listAssignments(founder);
+      const asn2 = assignments.find((a) => a.id === occurrences[1]?.assignmentId);
+      expect(asn2?.periodStart).toBe("2026-11-30");
+      // Next occurrence after 2026-11-30 is 2026-12-30, so periodEnd is 2026-12-29, dueDate is 2027-01-09
+      expect(asn2?.dueAt).toContain("T18:29:00.000Z");
+
+      // Leap year test: Schedule starting Jan 31, 2028 (leap year)
+      const leapSchedule = await application.createRecurringSchedule(founder, {
+        clientId: CANONICAL_CLIENT_1,
+        title: "Leap Year Schedule",
+        serviceId: CANONICAL_SERVICE_1,
+        cadence: "monthly",
+        ownerId: senior.id,
+        nextOccurrenceOn: "2028-01-31",
+        dueDay: 11,
+      });
+
+      const leapResult = await application.generateDueAssignments(founder, {
+        throughDate: "2028-03-01",
+      });
+
+      const leapOccurrences = leapResult.occurrences.filter((o) => o.scheduleId === leapSchedule.id);
+      expect(leapOccurrences).toHaveLength(2);
+      expect(leapOccurrences[0]?.occurrenceDate).toBe("2028-01-31");
+      expect(leapOccurrences[1]?.occurrenceDate).toBe("2028-02-29"); // Clamped to Feb 29 in leap year!
     });
   });
 });

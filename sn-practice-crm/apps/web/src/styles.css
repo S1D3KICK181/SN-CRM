@@ -2986,7 +2986,7 @@ tbody tr:hover {
 }
 
 .client-drawer-header {
-  padding: 22px 24px 16px;
+  padding: 18px 20px 14px;
   border-bottom: 1px solid var(--border);
   display: flex;
   align-items: flex-start;
@@ -2996,19 +2996,47 @@ tbody tr:hover {
 
 .drawer-client-lead {
   display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.drawer-lead-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.drawer-kicker {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--brand);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.drawer-header-actions {
+  display: flex;
   align-items: center;
-  gap: 14px;
+  gap: 8px;
+  flex-shrink: 0;
 }
 
 .drawer-monogram {
-  width: 48px;
-  height: 48px;
-  border-radius: 14px;
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
   background: var(--brand-soft);
   color: var(--brand);
   display: grid;
   place-items: center;
-  font-size: 16px;
+  font-size: 15px;
   font-weight: 800;
   letter-spacing: -0.02em;
   flex-shrink: 0;
@@ -3016,16 +3044,20 @@ tbody tr:hover {
 
 .drawer-client-lead h2 {
   margin: 0;
-  font-size: 17px;
+  font-size: 16px;
   font-weight: 700;
   color: var(--ink-strong);
-  line-height: 1.25;
+  line-height: 1.3;
+  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 
 .drawer-client-lead p {
-  margin: 3px 0 0;
-  font-size: 11px;
+  margin: 0;
+  font-size: 12px;
   color: var(--ink-muted);
+  word-break: break-word;
+  line-height: 1.3;
 }
 
 .drawer-close-btn {
@@ -3321,6 +3353,62 @@ tbody tr:hover {
   background: var(--surface);
   color: var(--brand);
   box-shadow: 0 2px 8px color-mix(in srgb, var(--ink-strong) 6%, transparent);
+}
+
+/* Cadence Tracker Horizon Component */
+.cadence-tracker {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  width: 160px;
+  height: 22px;
+  font-family: inherit;
+  user-select: none;
+}
+
+.cadence-node {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  transition: all 0.15s ease;
+}
+
+.cadence-node.is-done {
+  background-color: var(--success);
+  color: var(--surface);
+}
+
+.cadence-node.is-warning {
+  background-color: var(--warning);
+  color: var(--surface);
+}
+
+.cadence-node.is-exempt {
+  background-color: transparent;
+  color: var(--ink-muted);
+}
+
+.cadence-node.is-pending {
+  background-color: transparent;
+  border: 1.5px solid var(--border);
+  color: var(--ink-muted);
+}
+
+.cadence-connector {
+  flex: 1;
+  height: 2px;
+  min-width: 12px;
+  background-color: var(--border);
+  transition: background-color 0.15s ease;
+}
+
+.cadence-connector.is-active {
+  background-color: var(--success);
 }
 
 .category-tag {
@@ -3721,6 +3809,271 @@ tbody tr:hover {
 .checklist-interactive-row.is-completed .checklist-checkbox {
   background: #01b574;
   border-color: #01b574;
+}
+
+/* --- Horizon Density: Assignments Workspace (1440x900 Fold Optimization) --- */
+.assignments-workspace {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.assignments-workspace .work-mode-switcher {
+  padding-bottom: 5px;
+  margin-bottom: 0;
+  gap: 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.assignments-workspace .work-tab-btn {
+  padding: 4px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: 8px;
+}
+
+.assignments-workspace .staff-scope-bar {
+  padding: 5px 12px;
+  gap: 8px;
+  border-radius: 8px;
+}
+
+.assignments-workspace .staff-scope-info {
+  font-size: 13px;
+  gap: 8px;
+}
+
+.assignments-workspace .staff-scope-select {
+  padding: 3px 8px;
+  font-size: 12px;
+}
+
+.assignments-workspace .cadence-tally-strip {
+  gap: 4px;
+  margin: 0;
+}
+
+.assignments-workspace .cadence-pill {
+  padding: 2px 8px;
+  font-size: 12px;
+}
+
+.assignments-workspace .client-toolbar {
+  margin: 0;
+  gap: 8px;
+}
+
+.assignments-workspace .client-search-wrap {
+  min-height: 30px;
+}
+
+.assignments-workspace .client-search-input {
+  height: 30px;
+  padding: 3px 8px 3px 28px;
+  font-size: 12px;
+}
+
+.assignments-workspace .table-card {
+  margin: 0;
+}
+
+.assignments-workspace .table-card .card-header {
+  padding: 6px 14px 4px;
+}
+
+.assignments-workspace .table-card .card-header h3 {
+  font-size: 13px;
+  font-weight: 700;
+  margin: 0;
+}
+
+.assignments-workspace .table-card .card-header p {
+  font-size: 12px;
+  margin: 1px 0 0;
+}
+
+.assignments-workspace .table-scroll {
+  overflow-x: auto;
+}
+
+.assignments-workspace table thead th {
+  padding: 5px 12px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  line-height: 1.25;
+}
+
+.assignments-workspace table tbody td,
+.assignments-workspace .assignments-table tr td {
+  padding: 3px 12px;
+  font-size: 13px;
+  line-height: 1.25;
+  vertical-align: middle;
+}
+
+.assignments-workspace table tbody td .soft-button,
+.assignments-workspace .assignments-table td .soft-button {
+  min-height: 26px;
+  height: 26px;
+  padding: 0 10px;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.assignments-workspace .assignments-table td .row-button,
+.assignments-workspace .assignments-table td .icon-button {
+  width: 26px;
+  height: 26px;
+  min-height: 26px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.assignments-workspace .client-id-chip {
+  font-size: 12px;
+  line-height: 1.1;
+  padding: 1px 5px;
+}
+
+.assignments-workspace .category-tag {
+  font-size: 12px;
+  line-height: 1.1;
+  padding: 1px 5px;
+}
+
+.assignments-workspace .due-chip {
+  font-size: 12px;
+  line-height: 1.1;
+  padding: 1px 6px;
+}
+
+.assignments-workspace .cadence-tracker {
+  height: 20px;
+}
+
+.assignments-workspace table td .user-avatar {
+  width: 22px;
+  height: 22px;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.assignments-workspace .assignment-link {
+  display: block;
+  max-width: 270px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+}
+
+.assignments-workspace .assignment-link strong {
+  display: block;
+  font-size: 13px;
+  line-height: 1.25;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--ink-strong);
+}
+
+.assignments-workspace .assignment-link small {
+  display: block;
+  margin-top: 1px;
+  font-size: 12px;
+  line-height: 1.25;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--ink-muted);
+}
+
+/* --- Recurring Schedule Drawer: Status Controls & Checklist (Scoped) --- */
+.assignments-workspace .schedule-status-group,
+.assignments-workspace .bank-rec-status-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.assignments-workspace .schedule-status-btn {
+  font-size: 12px;
+  padding: 6px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--ink-secondary);
+  font-weight: 600;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  white-space: nowrap;
+  line-height: 1.25;
+  transition: all var(--transition-fast);
+}
+
+.assignments-workspace .schedule-status-btn:hover:not(:disabled) {
+  background: var(--surface-muted);
+  color: var(--ink-strong);
+  border-color: var(--border-strong);
+}
+
+.assignments-workspace .schedule-status-btn.is-active {
+  background: var(--brand);
+  color: var(--surface);
+  border-color: var(--brand);
+}
+
+.assignments-workspace .schedule-status-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+
+.assignments-workspace .schedule-checklist-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.assignments-workspace .schedule-checklist-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--canvas);
+  font-size: 13px;
+  color: var(--ink-secondary);
+  line-height: 1.4;
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
+
+.assignments-workspace .schedule-checklist-bullet {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ink-muted);
+  opacity: 0.6;
+  margin-top: 5px;
+  flex-shrink: 0;
+}
+
+.assignments-workspace .schedule-checklist-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: break-word;
+  word-break: break-word;
+  line-height: 1.4;
+  font-size: 13px;
 }
 
 @keyframes fade-in {
