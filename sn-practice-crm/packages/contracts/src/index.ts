@@ -61,13 +61,18 @@ export interface AssignmentDto {
   readonly service: string; // Denormalized display name
   readonly title: string;
   readonly ownerId: string; // RFC 4122 UUID references public.profiles(user_id)
+  readonly ownerName: string; // Denormalized display name
   readonly reviewerIds: readonly string[]; // RFC 4122 UUIDs references assignment_reviewers
+  readonly reviewerNames: readonly string[]; // Denormalized display names
   readonly status: AssignmentStatus;
   readonly dueAt: string; // ISO-8601 UTC
   readonly recurringScheduleId: string | null;
   readonly periodStart?: string | null;
   readonly periodEnd?: string | null;
   readonly priority?: 'low' | 'normal' | 'high' | 'urgent';
+  readonly progressPercent: number; // DB-backed field: 0..100
+  readonly deliveryNotes: string | null; // DB-backed field
+  readonly reviewNotes: string | null; // DB-backed field
   readonly createdById: string; // RFC 4122 UUID
   readonly createdAt: string; // ISO-8601 UTC
   readonly updatedAt: string; // ISO-8601 UTC
@@ -101,12 +106,18 @@ export interface UpdateAssignmentInput {
   readonly ownerId?: string;
   readonly reviewerIds?: readonly string[];
   readonly dueAt?: string; // ISO-8601 UTC
-  readonly fee?: number;
   readonly deliveryNotes?: string | null;
   readonly reviewNotes?: string | null;
   readonly progressPercent?: number;
-  readonly bankStatementRequired?: boolean;
-  readonly expectedUpdatedAt?: string;
+  readonly expectedUpdatedAt: string; // Required optimistic concurrency token
+}
+
+export interface AssignmentTransitionInput {
+  readonly action: AssignmentTransition;
+  readonly expectedUpdatedAt: string; // Required optimistic concurrency token
+  readonly deliveryNotes?: string;
+  readonly reviewNotes?: string;
+  readonly progressPercent?: number;
 }
 
 // --- Work Item Domain ---
@@ -209,13 +220,20 @@ export interface RecurringScheduleDto {
   readonly title: string;
   readonly cadence: 'monthly' | 'quarterly' | 'annual';
   readonly ownerId: string; // RFC 4122 UUID
+  readonly ownerName: string; // Denormalized display name
   readonly reviewerIds: readonly string[]; // RFC 4122 UUIDs
+  readonly reviewerNames: readonly string[]; // Denormalized display names
   readonly nextOccurrenceOn: string; // YYYY-MM-DD
   readonly dueDay: number;
   readonly active: boolean;
   readonly createdById: string; // RFC 4122 UUID
   readonly createdAt: string; // ISO-8601 UTC
   readonly updatedAt: string; // ISO-8601 UTC
+}
+
+export interface ServiceCatalogItemDto {
+  readonly id: string;
+  readonly name: string;
 }
 
 export interface CreateRecurringScheduleInput {

@@ -154,7 +154,7 @@ export const createAssignmentSchema = z
 export const assignmentTransitionSchema = z
   .object({
     action: z.enum(ASSIGNMENT_TRANSITIONS),
-    expectedUpdatedAt: isoInstantSchema.optional(),
+    expectedUpdatedAt: isoInstantSchema,
     deliveryNotes: z.string().trim().max(2000).optional(),
     reviewNotes: z.string().trim().max(2000).optional(),
     progressPercent: z.number().int().min(0).max(100).optional(),
@@ -168,16 +168,14 @@ export const updateAssignmentSchema = z
     ownerId: entityUuid.optional(),
     reviewerIds: z.array(entityUuid).max(5).optional(),
     dueAt: isoInstantSchema.optional(),
-    fee: z.number().int().min(0).max(1_000_000_000).optional(),
     deliveryNotes: z.string().trim().max(2000).nullable().optional(),
     reviewNotes: z.string().trim().max(2000).nullable().optional(),
     progressPercent: z.number().int().min(0).max(100).optional(),
-    bankStatementRequired: z.boolean().optional(),
-    expectedUpdatedAt: isoInstantSchema.optional(),
+    expectedUpdatedAt: isoInstantSchema,
   })
   .strict()
-  .refine((data) => Object.keys(data).length > 0, {
-    message: 'At least one field is required.',
+  .refine((data) => Object.keys(data).some((k) => k !== 'expectedUpdatedAt'), {
+    message: 'At least one field to update is required besides expectedUpdatedAt.',
   });
 
 export const createWorkItemSchema = z.discriminatedUnion('kind', [

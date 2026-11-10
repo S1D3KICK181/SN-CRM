@@ -4,6 +4,7 @@ import type {
   AssignmentDto,
   GenerateDueAssignmentsResult,
   RecurringScheduleDto,
+  ServiceCatalogItemDto,
 } from '@sn/contracts';
 import type { CompanyRole } from '@sn/domain';
 import type { AssignmentRow, RecurringScheduleRecord } from '../data';
@@ -51,6 +52,7 @@ export class HttpAssignmentsAdapter implements AssignmentsPort {
     this.authSource = options.authSource;
 
     this.list = this.list.bind(this);
+    this.listServices = this.listServices.bind(this);
     this.create = this.create.bind(this);
     this.update = this.update.bind(this);
     this.transition = this.transition.bind(this);
@@ -244,6 +246,16 @@ export class HttpAssignmentsAdapter implements AssignmentsPort {
     return result.data.map(mapDtoToAssignmentRow);
   }
 
+  async listServices(options?: PortExecutionOptions): Promise<readonly ServiceCatalogItemDto[]> {
+    const result = await this.execute<ServiceCatalogItemDto[]>(
+      'founder',
+      '/api/v1/services',
+      { method: 'GET' },
+      options,
+    );
+    return result.data;
+  }
+
   async create(
     role: CompanyRole,
     command: CreateAssignmentCommand,
@@ -307,11 +319,31 @@ export class HttpAssignmentsAdapter implements AssignmentsPort {
     role: CompanyRole,
     id: string,
     action: AssignmentContractTransition,
-    options?: PortExecutionOptions & { expectedUpdatedAt?: string },
+    options?: PortExecutionOptions & {
+      expectedUpdatedAt?: string;
+      deliveryNotes?: string;
+      reviewNotes?: string;
+      progressPercent?: number;
+    },
   ): Promise<AssignmentRow> {
-    const payload: { action: AssignmentContractTransition; expectedUpdatedAt?: string } = { action };
+    const payload: {
+      action: AssignmentContractTransition;
+      expectedUpdatedAt?: string;
+      deliveryNotes?: string;
+      reviewNotes?: string;
+      progressPercent?: number;
+    } = { action };
     if (options?.expectedUpdatedAt) {
       payload.expectedUpdatedAt = options.expectedUpdatedAt;
+    }
+    if (options?.deliveryNotes !== undefined) {
+      payload.deliveryNotes = options.deliveryNotes;
+    }
+    if (options?.reviewNotes !== undefined) {
+      payload.reviewNotes = options.reviewNotes;
+    }
+    if (options?.progressPercent !== undefined) {
+      payload.progressPercent = options.progressPercent;
     }
     const result = await this.execute<AssignmentDto>(
       role,

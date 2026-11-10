@@ -67,58 +67,67 @@ export function normalizeDisplayDateToIso(dateStr?: string): string {
 }
 
 export function mapDtoToAssignmentRow(dto: AssignmentDto): AssignmentRow {
-  const ownerName = DEMO_ACTOR_ID_TO_NAME[dto.ownerId] ?? dto.ownerId;
+  const ownerName = dto.ownerName || (DEMO_ACTOR_ID_TO_NAME[dto.ownerId] ?? dto.ownerId);
   const reviewerName =
-    dto.reviewerIds && dto.reviewerIds.length > 0
+    dto.reviewerNames && dto.reviewerNames.length > 0
+      ? dto.reviewerNames.join(', ')
+      : dto.reviewerIds && dto.reviewerIds.length > 0
       ? (DEMO_ACTOR_ID_TO_NAME[dto.reviewerIds[0]!] ?? dto.reviewerIds[0])
       : undefined;
 
   let displayStatus = 'Awaiting documents';
   let tone: AssignmentRow['tone'] = 'default';
-  let progress = 15;
+  let defaultProgress = 15;
 
   switch (dto.status) {
     case 'draft':
       displayStatus = 'Draft';
       tone = 'default';
-      progress = 0;
+      defaultProgress = 0;
       break;
     case 'assigned':
       displayStatus = 'Awaiting documents';
       tone = 'default';
-      progress = 15;
+      defaultProgress = 15;
       break;
     case 'in_progress':
       displayStatus = 'In progress';
       tone = 'default';
-      progress = 50;
+      defaultProgress = 50;
       break;
     case 'ready_for_review':
       displayStatus = 'Pending review';
       tone = 'warning';
-      progress = 80;
+      defaultProgress = 80;
       break;
     case 'changes_requested':
       displayStatus = 'Changes requested';
       tone = 'danger';
-      progress = 60;
+      defaultProgress = 60;
       break;
     case 'approved':
       displayStatus = 'Approved';
       tone = 'success';
-      progress = 100;
+      defaultProgress = 100;
       break;
     case 'closed':
       displayStatus = 'Completed';
       tone = 'success';
-      progress = 100;
+      defaultProgress = 100;
       break;
     case 'cancelled':
       displayStatus = 'Cancelled';
       tone = 'default';
-      progress = 0;
+      defaultProgress = 0;
       break;
   }
+
+  const progress =
+    dto.status === 'approved' || dto.status === 'closed'
+      ? 100
+      : dto.progressPercent !== undefined && dto.progressPercent !== null
+        ? dto.progressPercent
+        : defaultProgress;
 
   const milestones: AssignmentMilestone[] = [
     {
@@ -146,21 +155,24 @@ export function mapDtoToAssignmentRow(dto: AssignmentDto): AssignmentRow {
     client: dto.clientName,
     clientId: dto.clientId,
     service: dto.service,
+    serviceId: dto.serviceId,
     due: formatIsoToDisplayDate(dto.dueAt),
     owner: ownerName,
     ownerId: dto.ownerId,
     reviewer: reviewerName,
     reviewerId: dto.reviewerIds && dto.reviewerIds.length > 0 ? dto.reviewerIds[0] : undefined,
     reviewerIds: dto.reviewerIds ? [...dto.reviewerIds] : undefined,
+    reviewerNames: dto.reviewerNames ? [...dto.reviewerNames] : undefined,
     expectedUpdatedAt: dto.updatedAt,
     status: displayStatus,
     progress,
     tone,
     scope: 'Standard statutory compliance fieldwork and verification.',
     milestones,
-    deliveryNotes: (dto as unknown as { deliveryNotes?: string | null }).deliveryNotes ?? undefined,
-    billed: dto.status === 'approved' || dto.status === 'closed',
-    bankRecStatus: dto.status === 'approved' || dto.status === 'closed' ? 'Completed' : 'Awaited',
+    deliveryNotes: dto.deliveryNotes ?? undefined,
+    reviewNotes: dto.reviewNotes ?? undefined,
+    billed: false,
+    bankRecStatus: 'Not recorded',
   };
 }
 
@@ -177,14 +189,25 @@ export function mapCommandToCreateInput(command: CreateAssignmentCommand): Creat
   const rawReviewer = command.reviewerNameOrId ?? command.reviewer;
   const reviewerId = rawReviewer
     ? (NAME_TO_DEMO_ACTOR_ID[rawReviewer] ?? rawReviewer)
-    : '00000000-0000-4000-a000-000000000002';
+    : undefined;
 
   const dueAt = parseDisplayDateToIso(command.dueDate ?? command.due);
+
+  if (command.serviceId) {
+    return {
+      clientId,
+      title: command.title.trim(),
+      serviceId: command.serviceId,
+      ownerId,
+      reviewerIds: reviewerId ? [reviewerId] : undefined,
+      dueAt,
+    };
+  }
 
   return {
     clientId,
     title: command.title.trim(),
-    service: command.service.trim(),
+    service: (command.service ?? 'Statutory Compliance').trim(),
     ownerId,
     reviewerIds: reviewerId ? [reviewerId] : undefined,
     dueAt,
@@ -271,7 +294,7 @@ export function mapDtoToRecurringScheduleRecord(dto: RecurringScheduleDto): Recu
       ? 'Quarterly'
       : 'Annual';
 
-  const defaultOwner = DEMO_ACTOR_ID_TO_NAME[dto.ownerId] ?? dto.ownerId;
+  const defaultOwner = dto.ownerName || (DEMO_ACTOR_ID_TO_NAME[dto.ownerId] ?? dto.ownerId);
 
   return {
     id: dto.id,
@@ -282,7 +305,7 @@ export function mapDtoToRecurringScheduleRecord(dto: RecurringScheduleDto): Recu
     clientName: dto.clientName,
     cadence: cadenceDisplay,
     generationDay: 1,
-    statutoryDueDay: `${dto.dueDay}th of month`,
+    statutoryDueDay: `${dto.dueDay} days after period end`,
     defaultOwner,
     nextRunDate: dto.nextOccurrenceOn ? formatIsoToDisplayDate(dto.nextOccurrenceOn) : '—',
     nextDueDate: dto.nextOccurrenceOn ? formatIsoToDisplayDate(dto.nextOccurrenceOn) : '—',
@@ -304,30 +327,38 @@ export function mapAssignmentRowToUpdatePatch(
   existing?: AssignmentRow,
 ): import('./types').UpdateAssignmentPatch {
   let title: string | undefined;
+  let serviceId: string | undefined;
   let dueAt: string | undefined;
   let deliveryNotes: string | null | undefined;
+  let reviewNotes: string | null | undefined;
+  let progressPercent: number | undefined;
   let ownerId: string | undefined;
   let reviewerIds: string[] | undefined;
 
   if (!existing || updated.title !== existing.title) {
     title = updated.title.trim();
   }
+  if (!existing || updated.serviceId !== existing.serviceId) {
+    serviceId = updated.serviceId;
+  }
   if (!existing || updated.due !== existing.due) {
     dueAt = parseDisplayDateToIso(updated.due);
   }
-  if (
-    !existing ||
-    updated.deliveryNotes !== existing.deliveryNotes ||
-    updated.scope !== existing.scope
-  ) {
-    deliveryNotes = (updated.deliveryNotes || updated.scope || '').trim() || null;
+  if (!existing || updated.deliveryNotes !== existing.deliveryNotes) {
+    deliveryNotes = updated.deliveryNotes !== undefined ? (updated.deliveryNotes?.trim() || null) : undefined;
+  }
+  if (!existing || updated.reviewNotes !== existing.reviewNotes) {
+    reviewNotes = updated.reviewNotes !== undefined ? (updated.reviewNotes?.trim() || null) : undefined;
+  }
+  if (!existing || updated.progress !== existing.progress) {
+    progressPercent = updated.progress;
   }
   if (!existing || updated.owner !== existing.owner) {
     const rawOwner = updated.owner;
     ownerId = NAME_TO_DEMO_ACTOR_ID[rawOwner] ?? rawOwner;
   }
   if (!existing || updated.reviewer !== existing.reviewer) {
-    if (updated.reviewer) {
+    if (updated.reviewer && updated.reviewer !== 'Not designated') {
       const reviewerId = NAME_TO_DEMO_ACTOR_ID[updated.reviewer] ?? updated.reviewer;
       reviewerIds = [reviewerId];
     } else {
@@ -335,12 +366,18 @@ export function mapAssignmentRowToUpdatePatch(
     }
   }
 
+  const expectedUpdatedAt = updated.expectedUpdatedAt ?? existing?.expectedUpdatedAt ?? new Date().toISOString();
+
   return {
     title,
+    serviceId,
     dueAt,
     deliveryNotes,
+    reviewNotes,
+    progressPercent,
     ownerId,
     reviewerIds,
+    expectedUpdatedAt,
   };
 }
 

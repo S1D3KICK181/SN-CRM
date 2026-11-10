@@ -1,5 +1,5 @@
-import type { GenerateDueAssignmentsResult } from '@sn/contracts';
-export type { GenerateDueAssignmentsResult };
+import type { GenerateDueAssignmentsResult, ServiceCatalogItemDto } from '@sn/contracts';
+export type { GenerateDueAssignmentsResult, ServiceCatalogItemDto };
 import type { CompanyRole } from '@sn/domain';
 import type { AssignmentRow, RecurringScheduleRecord } from '../data';
 
@@ -74,8 +74,9 @@ export interface CreateAssignmentCommand {
   clientId?: string;
   clientName?: string;
   client?: string;
+  serviceId?: string;
+  service?: string;
   title: string;
-  service: string;
   ownerNameOrId?: string;
   owner?: string;
   reviewerNameOrId?: string;
@@ -83,8 +84,6 @@ export interface CreateAssignmentCommand {
   dueDate?: string;
   due?: string;
   scope?: string;
-  fee?: number;
-  bankStatementRequired?: boolean;
   status?: string;
   progress?: number;
   tone?: 'default' | 'danger' | 'warning' | 'success';
@@ -99,7 +98,7 @@ export interface UpdateAssignmentPatch {
   readonly deliveryNotes?: string | null;
   readonly reviewNotes?: string | null;
   readonly progressPercent?: number;
-  readonly expectedUpdatedAt?: string;
+  readonly expectedUpdatedAt: string;
 }
 
 export interface CreateRecurringScheduleCommand {
@@ -131,6 +130,7 @@ export type AssignmentContractTransition = 'start' | 'submit' | 'complete' | 're
  */
 export interface AssignmentsPort {
   list(role: CompanyRole, options?: PortExecutionOptions): Promise<AssignmentRow[]>;
+  listServices(options?: PortExecutionOptions): Promise<readonly ServiceCatalogItemDto[]>;
   create(
     role: CompanyRole,
     command: CreateAssignmentCommand,

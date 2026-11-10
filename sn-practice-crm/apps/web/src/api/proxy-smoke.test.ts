@@ -122,15 +122,21 @@ describe('Vite Proxy & Live API Smoke', () => {
     expect(created.status).toBe('Awaiting documents');
 
     // 2. Start assignment as senior staff (Ananya Rao owns it)
-    const started = await adapter.transition('senior_staff', created.id, 'start');
+    const started = await adapter.transition('senior_staff', created.id, 'start', {
+      expectedUpdatedAt: created.expectedUpdatedAt,
+    });
     expect(started.status).toBe('In progress');
 
     // 3. Submit assignment for review as senior staff
-    const submitted = await adapter.transition('senior_staff', created.id, 'submit');
+    const submitted = await adapter.transition('senior_staff', created.id, 'submit', {
+      expectedUpdatedAt: started.expectedUpdatedAt,
+    });
     expect(submitted.status).toBe('Pending review');
 
     // 4. Complete assignment as founder
-    const completed = await adapter.transition('founder', created.id, 'complete');
+    const completed = await adapter.transition('founder', created.id, 'complete', {
+      expectedUpdatedAt: submitted.expectedUpdatedAt,
+    });
     expect(completed.status).toBe('Approved');
     expect(completed.progress).toBe(100);
   });

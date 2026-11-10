@@ -11,6 +11,16 @@ const runningServers: Server[] = [];
 
 const CANONICAL_ASSIGNMENT_1 = '30000000-0000-4000-a000-000000000001';
 const CANONICAL_CLIENT_1 = '10000000-0000-4000-a000-000000000001';
+const CANONICAL_SERVICE_1 = '50000000-0000-4000-a000-000000000001';
+
+async function getAssignmentUpdatedAt(baseUrl: string, assignmentId: string): Promise<string> {
+  const res = await fetch(`${baseUrl}/api/v1/assignments`, {
+    headers: { 'x-demo-user-id': DEMO_ACTOR_IDS.founder },
+  });
+  const data = (await res.json()).data;
+  const match = data.find((a: any) => a.id === assignmentId);
+  return match?.updatedAt ?? '2026-10-29T09:15:00.000Z';
+}
 
 async function startServer(options?: { allowDevActorHeader?: boolean }): Promise<string> {
   let id = 0;
@@ -241,23 +251,26 @@ describe('HTTP API', () => {
       const baseUrl = await startServer({ allowDevActorHeader: true });
 
       // CANONICAL_ASSIGNMENT_1: submit as manager -> complete as founder
-      await fetch(`${baseUrl}/api/v1/assignments/${CANONICAL_ASSIGNMENT_1}/transitions`, {
+      const u0 = await getAssignmentUpdatedAt(baseUrl, CANONICAL_ASSIGNMENT_1);
+      const subRes = await fetch(`${baseUrl}/api/v1/assignments/${CANONICAL_ASSIGNMENT_1}/transitions`, {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
           'x-demo-user-id': DEMO_ACTOR_IDS.manager,
         },
-        body: JSON.stringify({ action: 'submit' }),
+        body: JSON.stringify({ action: 'submit', expectedUpdatedAt: u0 }),
       });
+      const u1 = (await subRes.json()).data.updatedAt;
 
-      await fetch(`${baseUrl}/api/v1/assignments/${CANONICAL_ASSIGNMENT_1}/transitions`, {
+      const compRes = await fetch(`${baseUrl}/api/v1/assignments/${CANONICAL_ASSIGNMENT_1}/transitions`, {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
           'x-demo-user-id': DEMO_ACTOR_IDS.founder,
         },
-        body: JSON.stringify({ action: 'complete' }),
+        body: JSON.stringify({ action: 'complete', expectedUpdatedAt: u1 }),
       });
+      const u2 = (await compRes.json()).data.updatedAt;
 
       // Try to reopen completed assignment
       const reopenRes = await fetch(`${baseUrl}/api/v1/assignments/${CANONICAL_ASSIGNMENT_1}/transitions`, {
@@ -266,7 +279,7 @@ describe('HTTP API', () => {
           'content-type': 'application/json',
           'x-demo-user-id': DEMO_ACTOR_IDS.founder,
         },
-        body: JSON.stringify({ action: 'reopen' }),
+        body: JSON.stringify({ action: 'reopen', expectedUpdatedAt: u2 }),
       });
 
       expect(reopenRes.status).toBe(409);
@@ -283,14 +296,16 @@ describe('HTTP API', () => {
       const baseUrl = await startServer({ allowDevActorHeader: true });
 
       // CANONICAL_ASSIGNMENT_1 starts in_progress -> submit
-      await fetch(`${baseUrl}/api/v1/assignments/${CANONICAL_ASSIGNMENT_1}/transitions`, {
+      const u0 = await getAssignmentUpdatedAt(baseUrl, CANONICAL_ASSIGNMENT_1);
+      const subRes = await fetch(`${baseUrl}/api/v1/assignments/${CANONICAL_ASSIGNMENT_1}/transitions`, {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
           'x-demo-user-id': DEMO_ACTOR_IDS.manager,
         },
-        body: JSON.stringify({ action: 'submit' }),
+        body: JSON.stringify({ action: 'submit', expectedUpdatedAt: u0 }),
       });
+      const u1 = (await subRes.json()).data.updatedAt;
 
       // Reopen prior to approval
       const reopenRes = await fetch(`${baseUrl}/api/v1/assignments/${CANONICAL_ASSIGNMENT_1}/transitions`, {
@@ -299,7 +314,7 @@ describe('HTTP API', () => {
           'content-type': 'application/json',
           'x-demo-user-id': DEMO_ACTOR_IDS.founder,
         },
-        body: JSON.stringify({ action: 'reopen' }),
+        body: JSON.stringify({ action: 'reopen', expectedUpdatedAt: u1 }),
       });
 
       expect(reopenRes.status).toBe(200);
@@ -1257,6 +1272,7 @@ describe('HTTP API', () => {
   describe('AS-01: Assignments PATCH and Idempotent Due Generation', () => {
     it('allows Founder/Manager to update assignment title, owner, and reviewers', async () => {
       const baseUrl = await startServer();
+      const u0 = await getAssignmentUpdatedAt(baseUrl, CANONICAL_ASSIGNMENT_1);
       const res = await fetch(`${baseUrl}/api/v1/assignments/${CANONICAL_ASSIGNMENT_1}`, {
         method: 'PATCH',
         headers: {
@@ -1267,6 +1283,7 @@ describe('HTTP API', () => {
           title: 'Updated GSTR-1 Review Engagement',
           ownerId: DEMO_ACTOR_IDS.senior,
           reviewerIds: [DEMO_ACTOR_IDS.manager],
+          expectedUpdatedAt: u0,
         }),
       });
       expect(res.status).toBe(200);
@@ -1278,6 +1295,7 @@ describe('HTTP API', () => {
 
     it('rejects non-leadership attempts to reassign owner or reviewers with 403', async () => {
       const baseUrl = await startServer();
+      const u0 = await getAssignmentUpdatedAt(baseUrl, CANONICAL_ASSIGNMENT_1);
       const res = await fetch(`${baseUrl}/api/v1/assignments/${CANONICAL_ASSIGNMENT_1}`, {
         method: 'PATCH',
         headers: {
@@ -1286,6 +1304,7 @@ describe('HTTP API', () => {
         },
         body: JSON.stringify({
           ownerId: DEMO_ACTOR_IDS.staff,
+          expectedUpdatedAt: u0,
         }),
       });
       expect(res.status).toBe(403);
@@ -1295,6 +1314,7 @@ describe('HTTP API', () => {
 
     it('rejects assigning a Trainee as assignment owner with 422 trainee_cannot_own_assignment', async () => {
       const baseUrl = await startServer();
+      const u0 = await getAssignmentUpdatedAt(baseUrl, CANONICAL_ASSIGNMENT_1);
       const res = await fetch(`${baseUrl}/api/v1/assignments/${CANONICAL_ASSIGNMENT_1}`, {
         method: 'PATCH',
         headers: {
@@ -1303,6 +1323,7 @@ describe('HTTP API', () => {
         },
         body: JSON.stringify({
           ownerId: DEMO_ACTOR_IDS.trainee,
+          expectedUpdatedAt: u0,
         }),
       });
       expect(res.status).toBe(422);
@@ -1312,31 +1333,30 @@ describe('HTTP API', () => {
 
     it('rejects editing owner on an approved assignment with 409 conflict', async () => {
       const baseUrl = await startServer();
-      // First, progress and approve the assignment
-      // assigned -> in_progress
-      await fetch(`${baseUrl}/api/v1/assignments/${CANONICAL_ASSIGNMENT_1}/transitions`, {
-        method: 'POST',
-        headers: { 'x-demo-user-id': DEMO_ACTOR_IDS.founder, 'content-type': 'application/json' },
-        body: JSON.stringify({ action: 'start' }),
-      });
+      // First, progress and approve the assignment (CANONICAL_ASSIGNMENT_1 starts in_progress)
+      const u0 = await getAssignmentUpdatedAt(baseUrl, CANONICAL_ASSIGNMENT_1);
+
       // in_progress -> ready_for_review
-      await fetch(`${baseUrl}/api/v1/assignments/${CANONICAL_ASSIGNMENT_1}/transitions`, {
+      const subRes = await fetch(`${baseUrl}/api/v1/assignments/${CANONICAL_ASSIGNMENT_1}/transitions`, {
         method: 'POST',
         headers: { 'x-demo-user-id': DEMO_ACTOR_IDS.founder, 'content-type': 'application/json' },
-        body: JSON.stringify({ action: 'submit' }),
+        body: JSON.stringify({ action: 'submit', expectedUpdatedAt: u0 }),
       });
+      const u1 = (await subRes.json()).data.updatedAt;
+
       // ready_for_review -> approved
-      await fetch(`${baseUrl}/api/v1/assignments/${CANONICAL_ASSIGNMENT_1}/transitions`, {
+      const compRes = await fetch(`${baseUrl}/api/v1/assignments/${CANONICAL_ASSIGNMENT_1}/transitions`, {
         method: 'POST',
         headers: { 'x-demo-user-id': DEMO_ACTOR_IDS.founder, 'content-type': 'application/json' },
-        body: JSON.stringify({ action: 'complete' }),
+        body: JSON.stringify({ action: 'complete', expectedUpdatedAt: u1 }),
       });
+      const u2 = (await compRes.json()).data.updatedAt;
 
       // Now attempt to update owner
       const res = await fetch(`${baseUrl}/api/v1/assignments/${CANONICAL_ASSIGNMENT_1}`, {
         method: 'PATCH',
         headers: { 'x-demo-user-id': DEMO_ACTOR_IDS.founder, 'content-type': 'application/json' },
-        body: JSON.stringify({ ownerId: DEMO_ACTOR_IDS.staff }),
+        body: JSON.stringify({ ownerId: DEMO_ACTOR_IDS.staff, expectedUpdatedAt: u2 }),
       });
       expect(res.status).toBe(409);
       const body = await res.json();
@@ -1367,6 +1387,7 @@ describe('HTTP API', () => {
         headers: { 'x-demo-user-id': DEMO_ACTOR_IDS.founder, 'content-type': 'application/json' },
         body: JSON.stringify({
           clientId: CANONICAL_CLIENT_1,
+          serviceId: CANONICAL_SERVICE_1,
           title: 'Recurring GST Filing',
           cadence: 'monthly',
           ownerId: DEMO_ACTOR_IDS.senior,
@@ -1421,6 +1442,7 @@ describe('HTTP API', () => {
           headers: { 'x-demo-user-id': DEMO_ACTOR_IDS.founder, 'content-type': 'application/json' },
           body: JSON.stringify({
             clientId: CANONICAL_CLIENT_1,
+            serviceId: CANONICAL_SERVICE_1,
             title: 'Invalid Date Schedule',
             cadence: 'monthly',
             ownerId: DEMO_ACTOR_IDS.senior,
@@ -1437,29 +1459,29 @@ describe('HTTP API', () => {
     it('rejects core mutations on approved/closed assignments with 409 invalid_state_transition', async () => {
       const baseUrl = await startServer();
 
-      // Progress CANONICAL_ASSIGNMENT_1 to approved
-      await fetch(`${baseUrl}/api/v1/assignments/${CANONICAL_ASSIGNMENT_1}/transitions`, {
+      // Progress CANONICAL_ASSIGNMENT_1 to approved (starts in_progress)
+      const u0 = await getAssignmentUpdatedAt(baseUrl, CANONICAL_ASSIGNMENT_1);
+
+      const subRes = await fetch(`${baseUrl}/api/v1/assignments/${CANONICAL_ASSIGNMENT_1}/transitions`, {
         method: 'POST',
         headers: { 'x-demo-user-id': DEMO_ACTOR_IDS.founder, 'content-type': 'application/json' },
-        body: JSON.stringify({ action: 'start' }),
+        body: JSON.stringify({ action: 'submit', expectedUpdatedAt: u0 }),
       });
-      await fetch(`${baseUrl}/api/v1/assignments/${CANONICAL_ASSIGNMENT_1}/transitions`, {
-        method: 'POST',
-        headers: { 'x-demo-user-id': DEMO_ACTOR_IDS.founder, 'content-type': 'application/json' },
-        body: JSON.stringify({ action: 'submit' }),
-      });
+      const u1 = (await subRes.json()).data.updatedAt;
+
       const approveRes = await fetch(`${baseUrl}/api/v1/assignments/${CANONICAL_ASSIGNMENT_1}/transitions`, {
         method: 'POST',
         headers: { 'x-demo-user-id': DEMO_ACTOR_IDS.founder, 'content-type': 'application/json' },
-        body: JSON.stringify({ action: 'complete' }),
+        body: JSON.stringify({ action: 'complete', expectedUpdatedAt: u1 }),
       });
       expect(approveRes.status).toBe(200);
+      const u2 = (await approveRes.json()).data.updatedAt;
 
       // Now attempt PATCH with core changes
       const patchRes = await fetch(`${baseUrl}/api/v1/assignments/${CANONICAL_ASSIGNMENT_1}`, {
         method: 'PATCH',
         headers: { 'x-demo-user-id': DEMO_ACTOR_IDS.founder, 'content-type': 'application/json' },
-        body: JSON.stringify({ title: 'New Locked Title' }),
+        body: JSON.stringify({ title: 'New Locked Title', expectedUpdatedAt: u2 }),
       });
       expect(patchRes.status).toBe(409);
       const patchBody = await patchRes.json();

@@ -36,8 +36,13 @@ const SAMPLE_DTO: AssignmentDto = {
   service: 'GST Compliance',
   title: 'GSTR-1 & 3B Compliance · Oct 2026',
   ownerId: '00000000-0000-4000-a000-000000000003',
+  ownerName: 'Ananya Rao',
   reviewerIds: ['00000000-0000-4000-a000-000000000002'],
+  reviewerNames: ['Priya Desai'],
   status: 'in_progress',
+  progressPercent: 40,
+  deliveryNotes: null,
+  reviewNotes: null,
   dueAt: '2026-11-11T12:30:00.000Z',
   recurringScheduleId: '20000000-0000-4000-a000-000000000001',
   createdById: '00000000-0000-4000-a000-000000000001',
@@ -93,7 +98,7 @@ describe('HttpAssignmentsAdapter', () => {
     expect(row.owner).toBe('Ananya Rao');
     expect(row.reviewer).toBe('Priya Desai');
     expect(row.status).toBe('In progress');
-    expect(row.progress).toBe(50);
+    expect(row.progress).toBe(40);
     expect(row.tone).toBe('default');
     expect(row.due).toBe('11/11/2026');
   });
@@ -305,6 +310,7 @@ describe('HttpAssignmentsAdapter', () => {
         ...SAMPLE_DTO,
         id: '30000000-0000-4000-a000-000000000099',
         status: 'assigned',
+        progressPercent: undefined as any,
       };
       const row = mapDtoToAssignmentRow(openDto);
       expect(row.status).toBe('Awaiting documents');

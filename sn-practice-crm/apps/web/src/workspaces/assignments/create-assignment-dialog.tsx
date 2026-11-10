@@ -8,6 +8,7 @@ import React, {
 } from 'react';
 import { AlertCircle, CalendarClock, Layers, Plus, X } from 'lucide-react';
 import type { CompanyRole } from '@sn/domain';
+import type { ServiceCatalogItemDto } from '@sn/contracts';
 import type {
   CreateAssignmentCommand,
   CreateRecurringScheduleCommand,
@@ -29,6 +30,7 @@ export interface CreateAssignmentDialogProps {
   readonly role: CompanyRole;
   readonly clients?: readonly DialogClientOption[];
   readonly teamMembers?: readonly DialogStaffOption[];
+  readonly services?: readonly ServiceCatalogItemDto[];
   readonly onClose: () => void;
   readonly onCreateAssignment: (command: CreateAssignmentCommand) => Promise<boolean>;
   readonly onCreateSchedule?: (command: CreateRecurringScheduleCommand) => Promise<boolean>;
@@ -49,6 +51,7 @@ export function CreateAssignmentDialog({
   role,
   clients = [],
   teamMembers = [],
+  services = [],
   onClose,
   onCreateAssignment,
   onCreateSchedule,
@@ -59,9 +62,17 @@ export function CreateAssignmentDialog({
   const [submitting, setSubmitting] = useState(false);
   const [dialogError, setDialogError] = useState<string | null>(null);
 
+  const availableServices = useMemo(() => {
+    if (services && services.length > 0) {
+      return services;
+    }
+    return SERVICES.map((name, idx) => ({ id: `50000000-0000-4000-a000-00000000000${idx + 1}`, name }));
+  }, [services]);
+
   // Form Fields
   const [clientId, setClientId] = useState('');
   const [title, setTitle] = useState('');
+  const [selectedServiceId, setSelectedServiceId] = useState('');
   const [service, setService] = useState('GST Compliance');
   const [ownerId, setOwnerId] = useState('');
   const [reviewerId, setReviewerId] = useState('');
@@ -95,7 +106,8 @@ export function CreateAssignmentDialog({
       setTab('assignment');
       setClientId(clients[0]?.id ?? '');
       setTitle('');
-      setService('GST Compliance');
+      setSelectedServiceId(availableServices[0]?.id ?? '');
+      setService(availableServices[0]?.name ?? 'GST Compliance');
       setOwnerId(eligibleOwners[1]?.id ?? eligibleOwners[0]?.id ?? '');
       setReviewerId(eligibleReviewers[0]?.id ?? '');
 
@@ -196,13 +208,19 @@ export function CreateAssignmentDialog({
 
     try {
       const selectedClient = clients.find((c) => c.id === clientId);
+      const serviceMatch = availableServices.find(
+        (s) => s.id === selectedServiceId || s.name === service
+      );
+      const serviceId = serviceMatch?.id;
+      const serviceName = serviceMatch?.name ?? service;
 
       if (tab === 'assignment') {
         const success = await onCreateAssignment({
           clientId,
           clientName: selectedClient?.name,
           title: title.trim(),
-          service,
+          serviceId,
+          service: serviceName,
           ownerNameOrId: ownerId,
           reviewerNameOrId: reviewerId || undefined,
           dueDate: dueDate || undefined,
@@ -223,7 +241,8 @@ export function CreateAssignmentDialog({
           clientId,
           clientName: selectedClient?.name,
           title: title.trim(),
-          service,
+          serviceId,
+          service: serviceName,
           cadence,
           ownerId,
           dueDay: Number(dueDay) || 11,
@@ -401,13 +420,18 @@ export function CreateAssignmentDialog({
               </label>
               <select
                 id="assign-service"
-                value={service}
-                onChange={(e) => setService(e.target.value)}
+                value={selectedServiceId}
+                onChange={(e) => {
+                  const sId = e.target.value;
+                  setSelectedServiceId(sId);
+                  const match = availableServices.find((s) => s.id === sId);
+                  if (match) setService(match.name);
+                }}
                 disabled={submitting}
               >
-                {SERVICES.map((s) => (
-                  <option key={s} value={s}>
-                    {s}
+                {availableServices.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.name}
                   </option>
                 ))}
               </select>

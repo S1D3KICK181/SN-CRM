@@ -30,12 +30,14 @@ export interface AssignmentRow {
   client: string;
   clientId?: string;
   service: string;
+  serviceId?: string;
   due: string;
   owner: string;
   ownerId?: string;
   reviewer?: string;
   reviewerId?: string;
   reviewerIds?: readonly string[];
+  reviewerNames?: readonly string[];
   expectedUpdatedAt?: string;
   status: string;
   progress: number;
@@ -43,11 +45,12 @@ export interface AssignmentRow {
   scope?: string;
   milestones?: AssignmentMilestone[];
   deliveryNotes?: string;
+  reviewNotes?: string;
   fee?: number;
   billed?: boolean;
   invoiceId?: string;
   bankStatementRequired?: boolean;
-  bankRecStatus?: 'Completed' | 'In progress' | 'Awaited' | 'Not applicable';
+  bankRecStatus?: 'Completed' | 'In progress' | 'Awaited' | 'Not applicable' | 'Not recorded';
 }
 
 export const ASSIGNMENTS: AssignmentRow[] = [

@@ -64,12 +64,20 @@ export function deriveCadenceMilestones(props: CadenceTrackerProps): MilestoneSt
   } else if (rawBankRec.toLowerCase() === 'completed' || rawBankRec.toLowerCase() === 'reconciled') {
     bankDone = true;
     bankStatusText = 'Reconciled';
+  } else if (rawBankRec === 'Not recorded') {
+    bankDone = false;
+    bankWarning = false;
+    bankStatusText = 'Not recorded';
+  } else if (rawBankRec.toLowerCase() === 'in progress') {
+    bankDone = false;
+    bankWarning = false;
+    bankStatusText = 'In progress';
   } else {
     bankWarning = true;
     bankStatusText = rawBankRec;
   }
 
-  // 2. Client Docs Milestone (default to Pending; explicit downstream evidence proves Received)
+  // 2. Client Docs Milestone
   let docsDone = false;
   let docsWarning = false;
   let docsStatusText = 'Pending';
@@ -92,7 +100,6 @@ export function deriveCadenceMilestones(props: CadenceTrackerProps): MilestoneSt
     rawStatus === 'pending review' ||
     rawStatus === 'pending_review' ||
     rawStatus === 'approved' ||
-    rawStatus === 'completed' ||
     rawStatus === 'closed' ||
     hasArn
   ) {
@@ -104,7 +111,7 @@ export function deriveCadenceMilestones(props: CadenceTrackerProps): MilestoneSt
     docsStatusText = 'Pending';
   }
 
-  // 3. Computation & Review Milestone (solely derived from workflow review/ready/filed states)
+  // 3. Computation & Review Milestone
   let compDone = false;
   let compStatusText = 'Pending';
 
@@ -114,7 +121,6 @@ export function deriveCadenceMilestones(props: CadenceTrackerProps): MilestoneSt
     rawStatus === 'pending review' ||
     rawStatus === 'pending_review' ||
     rawStatus === 'approved' ||
-    rawStatus === 'completed' ||
     rawStatus === 'closed' ||
     currentStatus === 'ready to file' ||
     currentStatus === 'filed' ||
@@ -127,16 +133,28 @@ export function deriveCadenceMilestones(props: CadenceTrackerProps): MilestoneSt
     compStatusText = 'In progress';
   }
 
-  // 4. Portal Filing Milestone (solely derived from approved/filed/closed or valid ARN)
+  // 4. Portal Filing Milestone (Approved is not Filed without explicit ARN or filed status)
   let filingDone = false;
   let filingStatusText = 'Pending';
 
-  if (isCompletedOrApproved) {
+  if (hasArn || currentStatus === 'filed') {
     filingDone = true;
     filingStatusText = 'Filed';
-  } else if (currentStatus === 'ready to file' || rawStatus === 'ready for review' || rawStatus === 'ready_for_review' || rawStatus === 'pending review' || rawStatus === 'pending_review') {
+  } else if (
+    currentStatus === 'ready to file' ||
+    rawStatus === 'ready for review' ||
+    rawStatus === 'ready_for_review' ||
+    rawStatus === 'pending review' ||
+    rawStatus === 'pending_review'
+  ) {
     filingDone = false;
     filingStatusText = 'Ready';
+  } else if (rawStatus === 'approved' || rawStatus === 'closed') {
+    filingDone = false;
+    filingStatusText = 'Approved (Unfiled)';
+  } else {
+    filingDone = false;
+    filingStatusText = 'Pending';
   }
 
   return [

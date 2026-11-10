@@ -1464,14 +1464,21 @@ describe("CrmApplication authority and workflow rules", () => {
       const founder = await application.requireActor(DEMO_ACTOR_IDS.founder);
 
       // CANONICAL_ASSIGNMENT_1 starts in_progress: submit to ready_for_review, then complete to approved
-      await application.transitionAssignment(founder, CANONICAL_ASSIGNMENT_1, "submit");
-      const approved = await application.transitionAssignment(founder, CANONICAL_ASSIGNMENT_1, "complete");
+      const initial = await application.listAssignments(founder);
+      const as1 = initial.find((a) => a.id === CANONICAL_ASSIGNMENT_1)!;
+      const ready = await application.transitionAssignment(founder, CANONICAL_ASSIGNMENT_1, "submit", {
+        expectedUpdatedAt: as1.updatedAt,
+      });
+      const approved = await application.transitionAssignment(founder, CANONICAL_ASSIGNMENT_1, "complete", {
+        expectedUpdatedAt: ready.updatedAt,
+      });
       expect(approved.status).toBe("approved");
 
       // Attempting to mutate title
       await expect(
         application.updateAssignment(founder, CANONICAL_ASSIGNMENT_1, {
           title: "New Title Attempt",
+          expectedUpdatedAt: approved.updatedAt,
         }),
       ).rejects.toMatchObject({
         status: 409,
@@ -1483,6 +1490,7 @@ describe("CrmApplication authority and workflow rules", () => {
       await expect(
         application.updateAssignment(founder, CANONICAL_ASSIGNMENT_1, {
           serviceId: CANONICAL_SERVICE_1,
+          expectedUpdatedAt: approved.updatedAt,
         }),
       ).rejects.toMatchObject({
         status: 409,
@@ -1493,16 +1501,7 @@ describe("CrmApplication authority and workflow rules", () => {
       await expect(
         application.updateAssignment(founder, CANONICAL_ASSIGNMENT_1, {
           dueAt: "2026-12-31T18:29:00.000Z",
-        }),
-      ).rejects.toMatchObject({
-        status: 409,
-        code: "invalid_state_transition",
-      });
-
-      // Attempting to mutate fee
-      await expect(
-        application.updateAssignment(founder, CANONICAL_ASSIGNMENT_1, {
-          fee: 50000,
+          expectedUpdatedAt: approved.updatedAt,
         }),
       ).rejects.toMatchObject({
         status: 409,
@@ -1513,6 +1512,7 @@ describe("CrmApplication authority and workflow rules", () => {
       await expect(
         application.updateAssignment(founder, CANONICAL_ASSIGNMENT_1, {
           deliveryNotes: "New delivery notes",
+          expectedUpdatedAt: approved.updatedAt,
         }),
       ).rejects.toMatchObject({
         status: 409,

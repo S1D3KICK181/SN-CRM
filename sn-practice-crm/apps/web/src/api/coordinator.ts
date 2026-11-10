@@ -36,7 +36,7 @@ export interface ClientFieldCascadePayload {
 }
 
 export interface AssignmentsCoordinatorOptions {
-  initialRows: AssignmentRow[];
+  initialRows?: AssignmentRow[];
   initialSchedules?: RecurringScheduleRecord[];
   port: AssignmentsPort;
   initialRole?: CompanyRole;
@@ -70,7 +70,7 @@ export class AssignmentsCoordinator {
   private readonly listeners = new Set<() => void>();
 
   constructor(options: AssignmentsCoordinatorOptions) {
-    this.assignments = [...options.initialRows];
+    this.assignments = options.initialRows ? [...options.initialRows] : [];
     this.schedules = options.initialSchedules ? [...options.initialSchedules] : [];
     this.port = options.port;
     this.currentRole = options.initialRole ?? 'founder';
@@ -286,8 +286,18 @@ export class AssignmentsCoordinator {
         return;
       }
 
+      const isAuthError =
+        opError.code === 'unauthorized' ||
+        opError.code === 'forbidden' ||
+        opError.status === 401 ||
+        opError.status === 403;
+      if (isAuthError) {
+        this.assignments = [];
+        this.schedules = [];
+        this.hasLiveSnapshot = false;
+      }
+
       this.error = opError;
-      // Preserve previous snapshot, never clear data or claim false fallback
       this.notify();
       this.onError?.(opError);
       this.onToast?.(`Live assignment sync failed: ${opError.message}`);
@@ -428,15 +438,21 @@ export class AssignmentsCoordinator {
 
     // Build patch for non-status fields
     let title: string | undefined;
+    let serviceId: string | undefined;
     let ownerId: string | undefined;
     let reviewerIds: string[] | undefined;
     let dueAt: string | undefined;
     let deliveryNotes: string | null | undefined;
+    let reviewNotes: string | null | undefined;
     let progressPercent: number | undefined;
     let hasNonStatusChanges = false;
 
     if (updated.title && updated.title !== existing.title) {
       title = updated.title.trim();
+      hasNonStatusChanges = true;
+    }
+    if (updated.serviceId && updated.serviceId !== existing.serviceId) {
+      serviceId = updated.serviceId;
       hasNonStatusChanges = true;
     }
     if (updated.ownerId && updated.ownerId !== existing.ownerId) {
@@ -452,8 +468,12 @@ export class AssignmentsCoordinator {
     } else if (updated.reviewerId && updated.reviewerId !== existing.reviewerId) {
       reviewerIds = [updated.reviewerId];
       hasNonStatusChanges = true;
-    } else if (updated.reviewer !== undefined && updated.reviewer !== existing.reviewer && NAME_TO_DEMO_ACTOR_ID[updated.reviewer]) {
-      reviewerIds = [NAME_TO_DEMO_ACTOR_ID[updated.reviewer]!];
+    } else if (updated.reviewer !== undefined && updated.reviewer !== existing.reviewer) {
+      if (updated.reviewer && updated.reviewer !== 'Not designated' && NAME_TO_DEMO_ACTOR_ID[updated.reviewer]) {
+        reviewerIds = [NAME_TO_DEMO_ACTOR_ID[updated.reviewer]!];
+      } else {
+        reviewerIds = [];
+      }
       hasNonStatusChanges = true;
     }
     if (updated.due && updated.due !== existing.due) {
@@ -464,19 +484,27 @@ export class AssignmentsCoordinator {
       deliveryNotes = updated.deliveryNotes;
       hasNonStatusChanges = true;
     }
+    if (updated.reviewNotes !== undefined && updated.reviewNotes !== existing.reviewNotes) {
+      reviewNotes = updated.reviewNotes;
+      hasNonStatusChanges = true;
+    }
     if (updated.progress !== undefined && updated.progress !== existing.progress) {
       progressPercent = updated.progress;
       hasNonStatusChanges = true;
     }
 
+    const expectedUpdatedAt = existing.expectedUpdatedAt ?? new Date().toISOString();
+
     const patch: import('./types').UpdateAssignmentPatch = {
       ...(title !== undefined ? { title } : {}),
+      ...(serviceId !== undefined ? { serviceId } : {}),
       ...(ownerId !== undefined ? { ownerId } : {}),
       ...(reviewerIds !== undefined ? { reviewerIds } : {}),
       ...(dueAt !== undefined ? { dueAt } : {}),
       ...(deliveryNotes !== undefined ? { deliveryNotes } : {}),
+      ...(reviewNotes !== undefined ? { reviewNotes } : {}),
       ...(progressPercent !== undefined ? { progressPercent } : {}),
-      ...(existing.expectedUpdatedAt ? { expectedUpdatedAt: existing.expectedUpdatedAt } : {}),
+      expectedUpdatedAt,
     };
 
     // Pure local edit (e.g. checkbox state without server-persisted changes)

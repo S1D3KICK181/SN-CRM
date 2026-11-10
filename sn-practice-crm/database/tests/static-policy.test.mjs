@@ -5,6 +5,7 @@ import test from 'node:test';
 const migration0001Path = new URL('../../supabase/migrations/20261031060700_practice_core.sql', import.meta.url);
 const migration0002Path = new URL('../../supabase/migrations/20261103105200_work_item_reminder.sql', import.meta.url);
 const migration0003Path = new URL('../../supabase/migrations/20261103120000_add_demo_support.sql', import.meta.url);
+const migration0004Path = new URL('../../supabase/migrations/20261110163000_as01_hardening.sql', import.meta.url);
 
 function readMigration(path, label) {
   if (!existsSync(path)) {
@@ -92,6 +93,7 @@ test('all security-definer functions pin their search path', () => {
     readMigration(migration0001Path, 'Migration 0001'),
     readMigration(migration0002Path, 'Migration 0002'),
     readMigration(migration0003Path, 'Migration 0003'),
+    readMigration(migration0004Path, 'Migration 0004'),
   ];
 
   for (const content of files) {
@@ -437,4 +439,37 @@ test('migration 0003 remove_demo_data enforces founder gate, exact teardown orde
   // Revoke / grant
   assert.match(sql0003, /revoke\s+all\s+on\s+function\s+public\.remove_demo_data\(\)\s+from\s+public,\s*anon;/i);
   assert.match(sql0003, /grant\s+execute\s+on\s+function\s+public\.remove_demo_data\(\)\s+to\s+authenticated;/i);
+});
+
+test('migration 0004 defines recurring_schedule_reviewers with RLS and triggers', () => {
+  const sql0004 = readMigration(migration0004Path, 'Migration 0004');
+  expectSql(sql0004, /create table if not exists public\.recurring_schedule_reviewers/i, 'Table declaration');
+  expectSql(sql0004, /alter table public\.recurring_schedule_reviewers enable row level security;/i, 'RLS enabled');
+  expectSql(sql0004, /create policy recurring_schedule_reviewers_select on public\.recurring_schedule_reviewers/i, 'Select policy');
+  expectSql(sql0004, /create policy recurring_schedule_reviewers_insert on public\.recurring_schedule_reviewers/i, 'Insert policy');
+  expectSql(sql0004, /create policy recurring_schedule_reviewers_delete on public\.recurring_schedule_reviewers/i, 'Delete policy');
+  expectSql(sql0004, /create trigger guard_recurring_schedule_reviewer_write/i, 'Guard trigger');
+  expectSql(sql0004, /create trigger audit_recurring_schedule_reviewers/i, 'Audit trigger');
+  expectSql(sql0004, /create trigger prevent_demo_flag_tampering/i, 'Tampering trigger');
+});
+
+test('migration 0004 enforces terminal immutability on approved assignments and reviewers', () => {
+  const sql0004 = readMigration(migration0004Path, 'Migration 0004');
+  const assignmentGuard = functionBlock(sql0004, 'guard_assignment_write');
+  const reviewerGuard = functionBlock(sql0004, 'guard_assignment_reviewer_write');
+  assert.match(assignmentGuard, /Approved, closed, and cancelled Assignments are immutable/i);
+  assert.match(reviewerGuard, /Cannot modify reviewers on an approved, closed, or cancelled Assignment/i);
+});
+
+test('migration 0004 copies schedule reviewers to assignments during recurrence materialization', () => {
+  const sql0004 = readMigration(migration0004Path, 'Migration 0004');
+  const matFunc = functionBlock(sql0004, 'materialize_due_recurring_assignments');
+  assert.match(matFunc, /insert into public\.assignment_reviewers/i);
+  assert.match(matFunc, /from public\.recurring_schedule_reviewers rsr/i);
+});
+
+test('migration 0004 cleans recurring_schedule_reviewers in remove_demo_data', () => {
+  const sql0004 = readMigration(migration0004Path, 'Migration 0004');
+  const removeRpc = functionBlock(sql0004, 'remove_demo_data');
+  assert.match(removeRpc, /delete from public\.recurring_schedule_reviewers where is_demo = true;/i);
 });

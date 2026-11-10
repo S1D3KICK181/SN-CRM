@@ -1,4 +1,5 @@
 import type { CompanyRole } from '@sn/domain';
+import type { ServiceCatalogItemDto } from '@sn/contracts';
 import type { AssignmentRow, RecurringScheduleRecord } from '../data';
 import type {
   AssignmentContractTransition,
@@ -12,6 +13,14 @@ import type {
 } from './types';
 
 export class DeterministicTestAssignmentsAdapter implements AssignmentsPort {
+  private servicesResponse: readonly ServiceCatalogItemDto[] = [
+    { id: '50000000-0000-4000-a000-000000000001', name: 'GST Compliance' },
+    { id: '50000000-0000-4000-a000-000000000002', name: 'Internal Audit' },
+    { id: '50000000-0000-4000-a000-000000000003', name: 'Tax Compliance (TDS)' },
+    { id: '50000000-0000-4000-a000-000000000004', name: 'Bookkeeping & Accounts' },
+    { id: '50000000-0000-4000-a000-000000000005', name: 'Statutory Audit' },
+    { id: '50000000-0000-4000-a000-000000000006', name: 'Direct Tax Advisory' },
+  ];
   private listResponses = new Map<CompanyRole, AssignmentRow[]>();
   private listErrors = new Map<CompanyRole, Error>();
   private deferredLists = new Map<CompanyRole, Promise<AssignmentRow[]>>();
@@ -30,6 +39,14 @@ export class DeterministicTestAssignmentsAdapter implements AssignmentsPort {
 
   setListResponse(role: CompanyRole, rows: AssignmentRow[]): void {
     this.listResponses.set(role, rows);
+  }
+
+  setServicesResponse(services: readonly ServiceCatalogItemDto[]): void {
+    this.servicesResponse = services;
+  }
+
+  async listServices(_options?: PortExecutionOptions): Promise<readonly ServiceCatalogItemDto[]> {
+    return this.servicesResponse;
   }
 
   setListError(role: CompanyRole, error: Error): void {
@@ -105,7 +122,7 @@ export class DeterministicTestAssignmentsAdapter implements AssignmentsPort {
       id: command.id ?? '30000000-0000-4000-a000-000000000099',
       title: command.title,
       client: command.clientName ?? command.client ?? 'Mock Client',
-      service: command.service,
+      service: command.service ?? 'GST Compliance',
       due: command.dueDate ?? command.due ?? '11/11/2026',
       owner: command.ownerNameOrId ?? command.owner ?? 'Priya Desai',
       status: 'Awaiting documents',

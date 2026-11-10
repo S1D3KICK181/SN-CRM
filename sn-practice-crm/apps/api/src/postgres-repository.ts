@@ -495,8 +495,12 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
         c.display_name AS "clientName",
         a.service_id AS "serviceId", s.name AS "serviceName",
         a.title, a.owner_id AS "ownerId",
+        coalesce(p.full_name, 'Unassigned') AS "ownerName",
         a.status, a.priority, a.period_start AS "periodStart", a.period_end AS "periodEnd",
         a.due_at AS "dueAt", a.recurring_schedule_id AS "recurringScheduleId",
+        a.progress_percent AS "progressPercent",
+        a.delivery_notes AS "deliveryNotes",
+        a.review_notes AS "reviewNotes",
         a.started_at AS "startedAt", a.submitted_at AS "submittedAt",
         a.approved_at AS "approvedAt", a.approved_by AS "approvedById",
         a.closed_at AS "closedAt", a.closed_by AS "closedById",
@@ -504,16 +508,18 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
       FROM public.assignments a
       JOIN public.clients c ON c.id = a.client_id
       JOIN public.service_catalog s ON s.id = a.service_id
+      LEFT JOIN public.profiles p ON p.user_id = a.owner_id
       WHERE a.id = ${id}::uuid;
     `;
     const row = rows[0];
     if (!row) return null;
 
     const reviewerRows = await tx`
-      SELECT reviewer_id AS "reviewerId"
-      FROM public.assignment_reviewers
-      WHERE assignment_id = ${id}::uuid
-      ORDER BY assigned_at ASC;
+      SELECT ar.reviewer_id AS "reviewerId", coalesce(p.full_name, 'Unknown') AS "reviewerName"
+      FROM public.assignment_reviewers ar
+      LEFT JOIN public.profiles p ON p.user_id = ar.reviewer_id
+      WHERE ar.assignment_id = ${id}::uuid
+      ORDER BY ar.assigned_at ASC;
     `;
 
     return {
@@ -525,13 +531,18 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
       service: String(row['serviceName']),
       title: String(row['title']),
       ownerId: String(row['ownerId']),
+      ownerName: String(row['ownerName']),
       reviewerIds: reviewerRows.map((r) => String(r['reviewerId'])),
+      reviewerNames: reviewerRows.map((r) => String(r['reviewerName'])),
       status: row['status'] as any,
       priority: row['priority'] as any,
       periodStart: row['periodStart'] ? (row['periodStart'] as Date).toISOString().slice(0, 10) : null,
       periodEnd: row['periodEnd'] ? (row['periodEnd'] as Date).toISOString().slice(0, 10) : null,
       dueAt: (row['dueAt'] as Date).toISOString(),
       recurringScheduleId: row['recurringScheduleId'] ? String(row['recurringScheduleId']) : null,
+      progressPercent: row['progressPercent'] !== null && row['progressPercent'] !== undefined ? Number(row['progressPercent']) : 0,
+      deliveryNotes: row['deliveryNotes'] ? String(row['deliveryNotes']) : null,
+      reviewNotes: row['reviewNotes'] ? String(row['reviewNotes']) : null,
       startedAt: row['startedAt'] ? (row['startedAt'] as Date).toISOString() : null,
       submittedAt: row['submittedAt'] ? (row['submittedAt'] as Date).toISOString() : null,
       approvedAt: row['approvedAt'] ? (row['approvedAt'] as Date).toISOString() : null,
@@ -563,8 +574,12 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
             c.display_name AS "clientName",
             a.service_id AS "serviceId", s.name AS "serviceName",
             a.title, a.owner_id AS "ownerId",
+            coalesce(p.full_name, 'Unassigned') AS "ownerName",
             a.status, a.priority, a.period_start AS "periodStart", a.period_end AS "periodEnd",
             a.due_at AS "dueAt", a.recurring_schedule_id AS "recurringScheduleId",
+            a.progress_percent AS "progressPercent",
+            a.delivery_notes AS "deliveryNotes",
+            a.review_notes AS "reviewNotes",
             a.started_at AS "startedAt", a.submitted_at AS "submittedAt",
             a.approved_at AS "approvedAt", a.approved_by AS "approvedById",
             a.closed_at AS "closedAt", a.closed_by AS "closedById",
@@ -572,6 +587,7 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
           FROM public.assignments a
           JOIN public.clients c ON c.id = a.client_id
           JOIN public.service_catalog s ON s.id = a.service_id
+          LEFT JOIN public.profiles p ON p.user_id = a.owner_id
           ORDER BY a.created_at DESC;
         `;
 
@@ -579,18 +595,27 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
         const assignmentIds = rows.map((r) => r['id']);
 
         const reviewerRows = await tx`
-          SELECT assignment_id AS "assignmentId", reviewer_id AS "reviewerId"
-          FROM public.assignment_reviewers
-          WHERE assignment_id = ANY(${assignmentIds}::uuid[])
-          ORDER BY assigned_at ASC;
+          SELECT
+            ar.assignment_id AS "assignmentId",
+            ar.reviewer_id AS "reviewerId",
+            coalesce(p.full_name, 'Unknown') AS "reviewerName"
+          FROM public.assignment_reviewers ar
+          LEFT JOIN public.profiles p ON p.user_id = ar.reviewer_id
+          WHERE ar.assignment_id = ANY(${assignmentIds}::uuid[])
+          ORDER BY ar.assigned_at ASC;
         `;
 
         const reviewersByAssignment = new Map<string, string[]>();
+        const reviewerNamesByAssignment = new Map<string, string[]>();
         for (const rev of reviewerRows) {
           const aid = String(rev['assignmentId']);
           const list = reviewersByAssignment.get(aid) ?? [];
           list.push(String(rev['reviewerId']));
           reviewersByAssignment.set(aid, list);
+
+          const nameList = reviewerNamesByAssignment.get(aid) ?? [];
+          nameList.push(String(rev['reviewerName']));
+          reviewerNamesByAssignment.set(aid, nameList);
         }
 
         return rows.map((row) => ({
@@ -602,13 +627,18 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
           service: String(row['serviceName']),
           title: String(row['title']),
           ownerId: String(row['ownerId']),
+          ownerName: String(row['ownerName']),
           reviewerIds: reviewersByAssignment.get(String(row['id'])) ?? [],
+          reviewerNames: reviewerNamesByAssignment.get(String(row['id'])) ?? [],
           status: row['status'] as any,
           priority: row['priority'] as any,
           periodStart: row['periodStart'] ? (row['periodStart'] as Date).toISOString().slice(0, 10) : null,
           periodEnd: row['periodEnd'] ? (row['periodEnd'] as Date).toISOString().slice(0, 10) : null,
           dueAt: (row['dueAt'] as Date).toISOString(),
           recurringScheduleId: row['recurringScheduleId'] ? String(row['recurringScheduleId']) : null,
+          progressPercent: row['progressPercent'] !== null && row['progressPercent'] !== undefined ? Number(row['progressPercent']) : 0,
+          deliveryNotes: row['deliveryNotes'] ? String(row['deliveryNotes']) : null,
+          reviewNotes: row['reviewNotes'] ? String(row['reviewNotes']) : null,
           startedAt: row['startedAt'] ? (row['startedAt'] as Date).toISOString() : null,
           submittedAt: row['submittedAt'] ? (row['submittedAt'] as Date).toISOString() : null,
           approvedAt: row['approvedAt'] ? (row['approvedAt'] as Date).toISOString() : null,
@@ -671,19 +701,31 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
   ): Promise<AssignmentDto> {
     try {
       return await this.runner.withUserContext(ctx, async (tx) => {
-        const expectedUpdatedAt = command.expectedUpdatedAt ?? null;
-        const deliveryNotes = command.deliveryNotes ?? null;
-        const reviewNotes = command.reviewNotes ?? null;
-        const progressPercent = command.progressPercent !== undefined ? command.progressPercent : null;
+        if (!command.expectedUpdatedAt) {
+          throw new ApiError(409, 'concurrency_conflict', 'expectedUpdatedAt is required for optimistic concurrency verification.');
+        }
+
+        const hasDeliveryNotes = command.deliveryNotes !== undefined;
+        const hasReviewNotes = command.reviewNotes !== undefined;
+        const hasProgressPercent = command.progressPercent !== undefined;
+
+        const deliveryNotesVal = command.deliveryNotes ?? null;
+        const reviewNotesVal = command.reviewNotes ?? null;
+        const progressPercentVal = command.progressPercent ?? null;
+        const isTerminalApproved = command.status === 'approved' || command.status === 'closed';
 
         const updateRows = await tx`
           UPDATE public.assignments
           SET status = ${command.status}::public.assignment_status,
-              delivery_notes = coalesce(${deliveryNotes}, delivery_notes),
-              review_notes = coalesce(${reviewNotes}, review_notes),
-              progress_percent = coalesce(${progressPercent}, progress_percent)
+              delivery_notes = CASE WHEN ${hasDeliveryNotes} THEN ${deliveryNotesVal} ELSE delivery_notes END,
+              review_notes = CASE WHEN ${hasReviewNotes} THEN ${reviewNotesVal} ELSE review_notes END,
+              progress_percent = CASE
+                WHEN ${hasProgressPercent} THEN ${progressPercentVal}
+                WHEN ${isTerminalApproved} THEN 100
+                ELSE progress_percent
+              END
           WHERE id = ${command.id}::uuid
-            AND (${expectedUpdatedAt}::timestamptz IS NULL OR date_trunc('milliseconds', updated_at) = date_trunc('milliseconds', ${expectedUpdatedAt}::timestamptz))
+            AND date_trunc('milliseconds', updated_at) = date_trunc('milliseconds', ${command.expectedUpdatedAt}::timestamptz)
           RETURNING id, updated_at;
         `;
 
@@ -718,27 +760,38 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
   ): Promise<AssignmentDto> {
     try {
       return await this.runner.withUserContext(ctx, async (tx) => {
-        const expectedUpdatedAt = command.expectedUpdatedAt ?? null;
-        const title = command.title ?? null;
-        const serviceId = command.serviceId ?? null;
-        const ownerId = command.ownerId ?? null;
-        const dueAt = command.dueAt ?? null;
-        const deliveryNotes = command.deliveryNotes !== undefined ? command.deliveryNotes : null;
-        const reviewNotes = command.reviewNotes !== undefined ? command.reviewNotes : null;
-        const progressPercent = command.progressPercent !== undefined ? command.progressPercent : null;
+        if (!command.expectedUpdatedAt) {
+          throw new ApiError(409, 'concurrency_conflict', 'expectedUpdatedAt is required for optimistic concurrency verification.');
+        }
+
+        const hasTitle = command.title !== undefined;
+        const hasServiceId = command.serviceId !== undefined;
+        const hasOwnerId = command.ownerId !== undefined;
+        const hasDueAt = command.dueAt !== undefined;
+        const hasDeliveryNotes = command.deliveryNotes !== undefined;
+        const hasReviewNotes = command.reviewNotes !== undefined;
+        const hasProgressPercent = command.progressPercent !== undefined;
+
+        const titleVal = command.title ?? null;
+        const serviceIdVal = command.serviceId ?? null;
+        const ownerIdVal = command.ownerId ?? null;
+        const dueAtVal = command.dueAt ?? null;
+        const deliveryNotesVal = command.deliveryNotes ?? null;
+        const reviewNotesVal = command.reviewNotes ?? null;
+        const progressPercentVal = command.progressPercent ?? null;
 
         const updateRows = await tx`
           UPDATE public.assignments
-          SET title = coalesce(${title}, title),
-              service_id = coalesce(${serviceId ? serviceId : null}::uuid, service_id),
-              owner_id = coalesce(${ownerId ? ownerId : null}::uuid, owner_id),
-              due_at = coalesce(${dueAt ? dueAt : null}::timestamptz, due_at),
-              delivery_notes = coalesce(${deliveryNotes}, delivery_notes),
-              review_notes = coalesce(${reviewNotes}, review_notes),
-              progress_percent = coalesce(${progressPercent}, progress_percent),
+          SET title = CASE WHEN ${hasTitle} THEN ${titleVal} ELSE title END,
+              service_id = CASE WHEN ${hasServiceId} THEN ${serviceIdVal}::uuid ELSE service_id END,
+              owner_id = CASE WHEN ${hasOwnerId} THEN ${ownerIdVal}::uuid ELSE owner_id END,
+              due_at = CASE WHEN ${hasDueAt} THEN ${dueAtVal}::timestamptz ELSE due_at END,
+              delivery_notes = CASE WHEN ${hasDeliveryNotes} THEN ${deliveryNotesVal} ELSE delivery_notes END,
+              review_notes = CASE WHEN ${hasReviewNotes} THEN ${reviewNotesVal} ELSE review_notes END,
+              progress_percent = CASE WHEN ${hasProgressPercent} THEN ${progressPercentVal} ELSE progress_percent END,
               updated_at = now()
           WHERE id = ${command.id}::uuid
-            AND (${expectedUpdatedAt}::timestamptz IS NULL OR date_trunc('milliseconds', updated_at) = date_trunc('milliseconds', ${expectedUpdatedAt}::timestamptz))
+            AND date_trunc('milliseconds', updated_at) = date_trunc('milliseconds', ${command.expectedUpdatedAt}::timestamptz)
           RETURNING id, updated_at;
         `;
 
@@ -1006,6 +1059,7 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
         rs.title,
         rs.cadence,
         rs.default_owner_id AS "ownerId",
+        coalesce(p.full_name, 'Unassigned') AS "ownerName",
         rs.next_occurrence_date AS "nextOccurrenceOn",
         rs.due_offset_days AS "dueDay",
         rs.is_active AS "active",
@@ -1015,10 +1069,19 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
       FROM public.recurring_schedules rs
       JOIN public.clients c ON c.id = rs.client_id
       LEFT JOIN public.service_catalog sc ON sc.id = rs.service_id
+      LEFT JOIN public.profiles p ON p.user_id = rs.default_owner_id
       WHERE rs.id = ${id}::uuid;
     `;
     const row = rows[0];
     if (!row) return null;
+
+    const reviewerRows = await tx`
+      SELECT rsr.reviewer_id AS "reviewerId", coalesce(p.full_name, 'Unknown') AS "reviewerName"
+      FROM public.recurring_schedule_reviewers rsr
+      LEFT JOIN public.profiles p ON p.user_id = rsr.reviewer_id
+      WHERE rsr.recurring_schedule_id = ${id}::uuid
+      ORDER BY rsr.assigned_at ASC;
+    `;
 
     return {
       id: String(row['id']),
@@ -1030,7 +1093,9 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
       title: String(row['title']),
       cadence: row['cadence'] as any,
       ownerId: String(row['ownerId']),
-      reviewerIds: [],
+      ownerName: String(row['ownerName']),
+      reviewerIds: reviewerRows.map((r) => String(r['reviewerId'])),
+      reviewerNames: reviewerRows.map((r) => String(r['reviewerName'])),
       nextOccurrenceOn: row['nextOccurrenceOn']
         ? (row['nextOccurrenceOn'] as Date).toISOString().slice(0, 10)
         : '',
@@ -1066,6 +1131,7 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
             rs.title,
             rs.cadence,
             rs.default_owner_id AS "ownerId",
+            coalesce(p.full_name, 'Unassigned') AS "ownerName",
             rs.next_occurrence_date AS "nextOccurrenceOn",
             rs.due_offset_days AS "dueDay",
             rs.is_active AS "active",
@@ -1075,8 +1141,36 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
           FROM public.recurring_schedules rs
           JOIN public.clients c ON c.id = rs.client_id
           LEFT JOIN public.service_catalog sc ON sc.id = rs.service_id
+          LEFT JOIN public.profiles p ON p.user_id = rs.default_owner_id
           ORDER BY rs.next_occurrence_date ASC, rs.title ASC;
         `;
+
+        if (rows.length === 0) return [];
+        const scheduleIds = rows.map((r) => r['id']);
+
+        const reviewerRows = await tx`
+          SELECT
+            rsr.recurring_schedule_id AS "scheduleId",
+            rsr.reviewer_id AS "reviewerId",
+            coalesce(p.full_name, 'Unknown') AS "reviewerName"
+          FROM public.recurring_schedule_reviewers rsr
+          LEFT JOIN public.profiles p ON p.user_id = rsr.reviewer_id
+          WHERE rsr.recurring_schedule_id = ANY(${scheduleIds}::uuid[])
+          ORDER BY rsr.assigned_at ASC;
+        `;
+
+        const reviewersBySchedule = new Map<string, string[]>();
+        const reviewerNamesBySchedule = new Map<string, string[]>();
+        for (const rev of reviewerRows) {
+          const sid = String(rev['scheduleId']);
+          const list = reviewersBySchedule.get(sid) ?? [];
+          list.push(String(rev['reviewerId']));
+          reviewersBySchedule.set(sid, list);
+
+          const nameList = reviewerNamesBySchedule.get(sid) ?? [];
+          nameList.push(String(rev['reviewerName']));
+          reviewerNamesBySchedule.set(sid, nameList);
+        }
 
         return rows.map((row) => ({
           id: String(row['id']),
@@ -1088,7 +1182,9 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
           title: String(row['title']),
           cadence: row['cadence'] as any,
           ownerId: String(row['ownerId']),
-          reviewerIds: [],
+          ownerName: String(row['ownerName']),
+          reviewerIds: reviewersBySchedule.get(String(row['id'])) ?? [],
+          reviewerNames: reviewerNamesBySchedule.get(String(row['id'])) ?? [],
           nextOccurrenceOn: row['nextOccurrenceOn']
             ? (row['nextOccurrenceOn'] as Date).toISOString().slice(0, 10)
             : '',
@@ -1127,6 +1223,13 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
             'normal'::public.work_priority, true, ${ctx.actorId}::uuid
           );
         `;
+
+        if (input.reviewerIds && input.reviewerIds.length > 0) {
+          await tx`
+            INSERT INTO public.recurring_schedule_reviewers (recurring_schedule_id, reviewer_id, assigned_by)
+            SELECT ${input.id}::uuid, unnest(${input.reviewerIds}::uuid[]), ${ctx.actorId}::uuid;
+          `;
+        }
 
         const created = await this.fetchRecurringScheduleDto(tx, input.id);
         if (!created) {

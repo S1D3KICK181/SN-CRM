@@ -83,7 +83,7 @@ export interface CreateAssignmentRecord {
 export interface UpdateAssignmentStatusCommand {
   readonly id: string; // RFC 4122 UUID
   readonly status: AssignmentStatus;
-  readonly expectedUpdatedAt?: string; // Optimistic concurrency verification
+  readonly expectedUpdatedAt: string; // Optimistic concurrency verification (mandatory)
   readonly deliveryNotes?: string | null;
   readonly reviewNotes?: string | null;
   readonly progressPercent?: number;
@@ -103,12 +103,10 @@ export interface UpdateAssignmentCommand {
   readonly ownerId?: string; // RFC 4122 UUID
   readonly reviewerIds?: readonly string[]; // RFC 4122 UUIDs
   readonly dueAt?: string; // ISO-8601 UTC
-  readonly fee?: number;
   readonly deliveryNotes?: string | null;
   readonly reviewNotes?: string | null;
   readonly progressPercent?: number;
-  readonly bankStatementRequired?: boolean;
-  readonly expectedUpdatedAt?: string;
+  readonly expectedUpdatedAt: string; // Optimistic concurrency verification (mandatory)
   readonly actorId: string;
 }
 

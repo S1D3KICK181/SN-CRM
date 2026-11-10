@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import React from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { AssignmentDetailDrawer } from './assignment-detail-drawer';
 import type { AssignmentRow } from '../../data';
 
@@ -59,7 +59,7 @@ describe('AssignmentDetailDrawer component', () => {
     expect(screen.getAllByText(/Rohan Mehta/).length).toBeGreaterThanOrEqual(1);
   });
 
-  it('updates owner and reviewer using valid UUIDs and triggers onUpdateAssignment', () => {
+  it('updates owner and reviewer using valid UUIDs and triggers onUpdateAssignment', async () => {
     const handleUpdate = vi.fn();
     const handleToast = vi.fn();
 
@@ -83,11 +83,14 @@ describe('AssignmentDetailDrawer component', () => {
     const saveButton = screen.getByRole('button', { name: /Save Changes/i });
     fireEvent.click(saveButton);
 
-    expect(handleUpdate).toHaveBeenCalledTimes(1);
+    await waitFor(() => {
+      expect(handleUpdate).toHaveBeenCalledTimes(1);
+      expect(handleToast).toHaveBeenCalledWith('Assignment ASN-0001 details saved');
+    });
+
     const updated = handleUpdate.mock.calls[0]![0] as AssignmentRow;
     expect(updated.owner).toBe('Rohan Mehta');
     expect(updated.ownerId).toBe('00000000-0000-4000-a000-000000000004');
-    expect(handleToast).toHaveBeenCalledWith('Assignment ASN-0001 details saved');
   });
 
   it('renders terminal notice banner and disables form controls when status is approved or closed', () => {

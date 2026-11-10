@@ -371,6 +371,7 @@ describe('PostgresCrmRepository Integration Suite', () => {
         repo.updateAssignmentStatus(ctx, {
           id: 'ffffffff-ffff-4fff-bfff-ffffffffffff',
           status: 'in_progress',
+          expectedUpdatedAt: '2026-01-01T00:00:00.000Z',
         }),
       ).rejects.toMatchObject({
         status: 404,
@@ -383,14 +384,6 @@ describe('PostgresCrmRepository Integration Suite', () => {
     const repo = new PostgresCrmRepository(pool);
     const ctx = { actorId: FOUNDER_ID };
 
-    await expect(repo.getRecurringSchedule(ctx, '00000000-0000-4000-a000-000000000001')).rejects.toMatchObject({
-      status: 501,
-      code: 'domain_not_persisted',
-    });
-    await expect(repo.listRecurringSchedules(ctx)).rejects.toMatchObject({
-      status: 501,
-      code: 'domain_not_persisted',
-    });
     await expect(repo.getOfficeAccountsSummary(ctx)).rejects.toMatchObject({
       status: 501,
       code: 'domain_not_persisted',

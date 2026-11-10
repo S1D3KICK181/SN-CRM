@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { ServiceCatalogItemDto } from '@sn/contracts';
 import type { CompanyRole } from '@sn/domain';
-import { ASSIGNMENTS, RECURRING_SCHEDULES, type AssignmentRow, type RecurringScheduleRecord } from '../data';
+import type { AssignmentRow, RecurringScheduleRecord } from '../data';
 import { useOptionalSessionActor } from '../shell/session-context';
 import {
   AssignmentsCoordinator,
@@ -33,8 +34,8 @@ export function useAssignments(role: CompanyRole, options: UseAssignmentsOptions
   const {
     onToast,
     onError,
-    initialRows = ASSIGNMENTS,
-    initialSchedules = RECURRING_SCHEDULES,
+    initialRows = [],
+    initialSchedules = [],
   } = options;
 
   const sessionActor = useOptionalSessionActor();
@@ -99,6 +100,23 @@ export function useAssignments(role: CompanyRole, options: UseAssignmentsOptions
 
   const coordinator = coordinatorRef.current;
   const [state, setState] = useState<CoordinatorState>(() => coordinator.getState());
+  const [services, setServices] = useState<readonly ServiceCatalogItemDto[]>([]);
+
+  useEffect(() => {
+    let active = true;
+    if (typeof port.listServices === 'function') {
+      port.listServices()
+        .then((items) => {
+          if (active) setServices(items);
+        })
+        .catch(() => {
+          // ignore or fallback
+        });
+    }
+    return () => {
+      active = false;
+    };
+  }, [port]);
 
   useEffect(() => {
     isMountedRef.current = true;
@@ -236,6 +254,7 @@ export function useAssignments(role: CompanyRole, options: UseAssignmentsOptions
   return {
     assignments: isRoleStale ? [] : state.assignments,
     schedules: isRoleStale ? [] : state.schedules,
+    services,
     loading: isRoleStale ? true : state.loading,
     isGeneratingDue: state.isGeneratingDue ?? false,
     error: isRoleStale ? null : state.error,

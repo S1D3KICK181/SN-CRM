@@ -491,6 +491,8 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
   async createAssignment(_ctx: RepositoryContext, record: CreateAssignmentRecord): Promise<AssignmentDto> {
     this.assignmentCounter += 1;
     const code = `AS-${String(this.assignmentCounter).padStart(6, '0')}`;
+    const ownerName = this.employees.get(record.ownerId)?.name ?? 'Unassigned';
+    const reviewerNames = record.reviewerIds.map((id) => this.employees.get(id)?.name ?? 'Unknown');
     const assignment: AssignmentDto = {
       id: record.id,
       code,
@@ -500,13 +502,18 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
       service: record.service,
       title: record.title,
       ownerId: record.ownerId,
+      ownerName,
       reviewerIds: [...record.reviewerIds],
+      reviewerNames,
       status: record.status,
       dueAt: record.dueAt,
       recurringScheduleId: record.recurringScheduleId ?? null,
       periodStart: record.periodStart ?? null,
       periodEnd: record.periodEnd ?? null,
       priority: record.priority ?? 'normal',
+      progressPercent: 0,
+      deliveryNotes: null,
+      reviewNotes: null,
       createdById: record.createdById,
       createdAt: record.createdAt,
       updatedAt: record.updatedAt,
@@ -523,12 +530,20 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
     if (!existing) {
       throw new ApiError(404, 'assignment_not_found', 'Assignment was not found.');
     }
-    if (command.expectedUpdatedAt !== undefined && command.expectedUpdatedAt !== existing.updatedAt) {
+    if (!command.expectedUpdatedAt || command.expectedUpdatedAt !== existing.updatedAt) {
       throw new ApiError(409, 'concurrency_conflict', 'The resource was updated concurrently by another operation.');
     }
     const updated: AssignmentDto = {
       ...existing,
       status: command.status,
+      deliveryNotes: command.deliveryNotes !== undefined ? command.deliveryNotes : existing.deliveryNotes,
+      reviewNotes: command.reviewNotes !== undefined ? command.reviewNotes : existing.reviewNotes,
+      progressPercent:
+        command.progressPercent !== undefined
+          ? command.progressPercent
+          : command.status === 'approved' || command.status === 'closed'
+            ? 100
+            : existing.progressPercent,
       updatedAt: new Date().toISOString(),
     };
     this.assignments.set(updated.id, copy(updated));
@@ -543,9 +558,11 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
     if (!existing) {
       throw new ApiError(404, 'assignment_not_found', 'Assignment was not found.');
     }
+    const reviewerNames = command.reviewerIds.map((id) => this.employees.get(id)?.name ?? 'Unknown');
     const updated: AssignmentDto = {
       ...existing,
       reviewerIds: [...command.reviewerIds],
+      reviewerNames,
       updatedAt: new Date().toISOString(),
     };
     this.assignments.set(updated.id, copy(updated));
@@ -560,17 +577,26 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
     if (!existing) {
       throw new ApiError(404, 'assignment_not_found', 'Assignment was not found.');
     }
-    if (command.expectedUpdatedAt !== undefined && command.expectedUpdatedAt !== existing.updatedAt) {
+    if (!command.expectedUpdatedAt || command.expectedUpdatedAt !== existing.updatedAt) {
       throw new ApiError(409, 'concurrency_conflict', 'The resource was updated concurrently by another operation.');
     }
+    const nextOwnerId = command.ownerId !== undefined ? command.ownerId : existing.ownerId;
+    const nextOwnerName = this.employees.get(nextOwnerId)?.name ?? existing.ownerName;
+    const nextReviewerIds = command.reviewerIds !== undefined ? [...command.reviewerIds] : existing.reviewerIds;
+    const nextReviewerNames = nextReviewerIds.map((id) => this.employees.get(id)?.name ?? 'Unknown');
     const updated: AssignmentDto = {
       ...existing,
       title: command.title !== undefined ? command.title : existing.title,
       serviceId: command.serviceId !== undefined ? command.serviceId : existing.serviceId,
       service: command.service !== undefined ? command.service : existing.service,
-      ownerId: command.ownerId !== undefined ? command.ownerId : existing.ownerId,
-      reviewerIds: command.reviewerIds !== undefined ? [...command.reviewerIds] : existing.reviewerIds,
+      ownerId: nextOwnerId,
+      ownerName: nextOwnerName,
+      reviewerIds: nextReviewerIds,
+      reviewerNames: nextReviewerNames,
       dueAt: command.dueAt !== undefined ? command.dueAt : existing.dueAt,
+      deliveryNotes: command.deliveryNotes !== undefined ? command.deliveryNotes : existing.deliveryNotes,
+      reviewNotes: command.reviewNotes !== undefined ? command.reviewNotes : existing.reviewNotes,
+      progressPercent: command.progressPercent !== undefined ? command.progressPercent : existing.progressPercent,
       updatedAt: new Date().toISOString(),
     };
     this.assignments.set(updated.id, copy(updated));
@@ -656,6 +682,9 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
     this.scheduleCounter += 1;
     const code = input.code ?? `RS-${String(this.scheduleCounter).padStart(6, '0')}`;
     const now = new Date().toISOString();
+    const ownerName = this.employees.get(input.ownerId)?.name ?? 'Unassigned';
+    const reviewerIds = input.reviewerIds ? [...input.reviewerIds] : [];
+    const reviewerNames = reviewerIds.map((rid) => this.employees.get(rid)?.name ?? 'Unknown');
     const schedule: RecurringScheduleDto = {
       id: input.id,
       code,
@@ -666,7 +695,9 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
       title: input.title,
       cadence: input.cadence,
       ownerId: input.ownerId,
-      reviewerIds: [],
+      ownerName,
+      reviewerIds,
+      reviewerNames,
       nextOccurrenceOn: input.nextOccurrenceOn,
       dueDay: input.dueDay,
       active: true,
@@ -725,8 +756,13 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
             service: schedule.service,
             title: schedule.title,
             ownerId: schedule.ownerId,
-            reviewerIds: [],
+            ownerName: schedule.ownerName ?? 'Unassigned',
+            reviewerIds: [...schedule.reviewerIds],
+            reviewerNames: [...schedule.reviewerNames],
             status: 'assigned',
+            progressPercent: 0,
+            deliveryNotes: null,
+            reviewNotes: null,
             dueAt: recurrenceDates.dueAt,
             recurringScheduleId: schedule.id,
             periodStart: occurrence,

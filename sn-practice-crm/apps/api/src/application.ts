@@ -15,6 +15,7 @@ import type {
   OfficeAccountsSummaryDto,
   RecurringScheduleDto,
   ReportingLineDto,
+  ServiceCatalogItemDto,
   SessionActor,
   UpdateAssignmentInput,
   UpdateRecurringScheduleInput,
@@ -164,6 +165,11 @@ export class CrmApplication {
     };
 
     return await this.repository.createClient(ctx, record);
+  }
+
+  async listServices(actor: SessionActor): Promise<readonly ServiceCatalogItemDto[]> {
+    const ctx: RepositoryContext = { actorId: actor.id };
+    return await this.repository.listServiceReferences(ctx);
   }
 
   async listAssignments(actor: SessionActor): Promise<AssignmentDto[]> {
@@ -319,10 +325,12 @@ export class CrmApplication {
         invalidTransition(`Unsupported transition action: ${transition}`);
     }
 
+    const expectedUpdatedAt = options?.expectedUpdatedAt ?? assignment.updatedAt;
+
     return await this.repository.updateAssignmentStatus(ctx, {
       id: assignment.id,
       status: nextStatus,
-      expectedUpdatedAt: options?.expectedUpdatedAt,
+      expectedUpdatedAt,
       deliveryNotes: options?.deliveryNotes,
       reviewNotes: options?.reviewNotes,
       progressPercent: options?.progressPercent,
@@ -342,8 +350,7 @@ export class CrmApplication {
       input.serviceId !== undefined ||
       input.ownerId !== undefined ||
       input.reviewerIds !== undefined ||
-      input.dueAt !== undefined ||
-      input.fee !== undefined;
+      input.dueAt !== undefined;
 
     if (isModifyingLeadershipFields) {
       if (!isLeadership(actor.role)) {
@@ -359,11 +366,9 @@ export class CrmApplication {
         input.ownerId !== undefined ||
         input.reviewerIds !== undefined ||
         input.dueAt !== undefined ||
-        input.fee !== undefined ||
         input.deliveryNotes !== undefined ||
         input.reviewNotes !== undefined ||
-        input.progressPercent !== undefined ||
-        input.bankStatementRequired !== undefined;
+        input.progressPercent !== undefined;
 
       if (hasCoreMutation) {
         throw new ApiError(
@@ -372,6 +377,14 @@ export class CrmApplication {
           'An approved or closed Assignment is an immutable audit artifact.',
         );
       }
+    }
+
+    if (!input.expectedUpdatedAt) {
+      throw new ApiError(
+        409,
+        'concurrency_conflict',
+        'expectedUpdatedAt is required for optimistic concurrency verification.',
+      );
     }
 
     // If updating delivery notes or progress percent as non-leadership, must be owner or reviewer
@@ -420,11 +433,9 @@ export class CrmApplication {
       ownerId: targetOwnerId,
       reviewerIds: targetReviewerIds,
       dueAt: input.dueAt,
-      fee: input.fee,
       deliveryNotes: input.deliveryNotes,
       reviewNotes: input.reviewNotes,
       progressPercent: input.progressPercent,
-      bankStatementRequired: input.bankStatementRequired,
       expectedUpdatedAt: input.expectedUpdatedAt,
       actorId: actor.id,
     };
@@ -461,8 +472,11 @@ export class CrmApplication {
     } else if (input.service) {
       serviceRef = await this.repository.getServiceReferenceByName(ctx, input.service);
     }
-    const serviceId = serviceRef?.id ?? input.serviceId ?? '50000000-0000-4000-a000-000000000001';
-    const service = serviceRef?.name ?? input.service ?? 'General Compliance';
+    if (!serviceRef) {
+      throw new ApiError(422, 'referenced_entity_not_found', 'Referenced service does not exist in catalog.');
+    }
+    const serviceId = serviceRef.id;
+    const service = serviceRef.name;
 
     const owner = await this.getActiveEmployee(ctx, input.ownerId);
     requireAuthority({ action: 'assignment.assign', actor: asActor(actor), target: owner });
@@ -758,8 +772,14 @@ export class CrmApplication {
   private async validateReviewerIds(ctx: RepositoryContext, ids: readonly string[]): Promise<string[]> {
     const reviewerIds = unique(ids);
     const reviewers = await Promise.all(reviewerIds.map((id) => this.getActiveEmployee(ctx, id)));
-    if (reviewers.some((reviewer) => reviewer.role === 'trainee')) {
-      throw new ApiError(422, 'invalid_assignment_reviewer', 'A Trainee cannot be assigned as an assignment reviewer.');
+    const eligibleRoles = new Set(['founder', 'manager', 'senior_staff']);
+    const ineligible = reviewers.find((r) => !eligibleRoles.has(r.role));
+    if (ineligible) {
+      throw new ApiError(
+        422,
+        'invalid_assignment_reviewer',
+        'Only Founder, Manager, or Senior Staff may be assigned as reviewers.',
+      );
     }
     return reviewerIds;
   }

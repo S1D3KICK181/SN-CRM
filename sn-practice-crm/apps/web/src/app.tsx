@@ -169,6 +169,7 @@ function AuthenticatedApp({
   const {
     assignments,
     schedules,
+    services,
     loading: assignmentsLoading,
     error: assignmentsError,
     refresh: refreshAssignments,
@@ -294,15 +295,14 @@ function AuthenticatedApp({
     }
   }
 
-  function handleUpdateAssignment(updated: AssignmentRow) {
-    void (async () => {
-      try {
-        const saved = await updateAssignmentLive(updated);
-        setSelectedAssignmentForDrawer((current) => resolveDrawerSave(current, saved, updated.id));
-      } catch {
-        // Prevent unhandled rejection escaping event handlers
-      }
-    })();
+  async function handleUpdateAssignment(updated: AssignmentRow): Promise<AssignmentRow | undefined> {
+    try {
+      const saved = await updateAssignmentLive(updated);
+      setSelectedAssignmentForDrawer((current) => resolveDrawerSave(current, saved, updated.id));
+      return saved;
+    } catch {
+      return undefined;
+    }
   }
 
   function handleOpenInvoiceForAssignment(asn: AssignmentRow) {
@@ -580,6 +580,7 @@ function AuthenticatedApp({
               onUpdateAssignment={handleUpdateAssignment}
               onOpenInvoice={handleOpenInvoiceForAssignment}
               teamMembers={staffOptions}
+              services={services}
             />
           ) : null}
           <CreateAssignmentDialog
@@ -587,6 +588,7 @@ function AuthenticatedApp({
             role={role}
             clients={clientOptions}
             teamMembers={staffOptions}
+            services={services}
             onClose={() => setDialog(null)}
             onCreateAssignment={async (cmd) => {
               const res = await createAssignmentLive(cmd);

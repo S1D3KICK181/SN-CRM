@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertCircle,
   BriefcaseBusiness,
@@ -515,7 +515,6 @@ function ScheduleDetailDrawer({
   onToast: (msg: string) => void;
   onUpdateSchedule: (updated: RecurringScheduleRecord) => void;
 }) {
-  const currentPersonName = role ? ROLE_PEOPLE[role]?.name : '';
   const displayClientCode = schedule.clientCode && !isValidUuid(schedule.clientCode)
     ? schedule.clientCode
     : !isValidUuid(schedule.clientId)
@@ -528,16 +527,32 @@ function ScheduleDetailDrawer({
     ? schedule.id
     : undefined;
 
+  const [tab, setTab] = useState<'checklist' | 'overview' | 'history'>('checklist');
+  const [isActive, setIsActive] = useState(schedule.status === 'Active');
+  const [nextRunDate, setNextRunDate] = useState(() => {
+    return schedule.nextRunDate || '';
+  });
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const currentPersonName = role ? ROLE_PEOPLE[role]?.name : '';
   const isAssignedCustodian = Boolean(
     currentPersonName &&
     (schedule.defaultOwner.toLowerCase().includes(currentPersonName.toLowerCase()) ||
      currentPersonName.toLowerCase().includes(schedule.defaultOwner.toLowerCase()))
   );
-  const [tab, setTab] = useState<'checklist' | 'overview' | 'history'>('checklist');
-  const [bankRecStatus, setBankRecStatus] = useState(schedule.bankRecStatus || 'Awaited');
-  const [currentStatus, setCurrentStatus] = useState(schedule.currentStatus || 'Pending');
 
-  const hasBank = schedule.bankRecStatus !== 'Not applicable' && bankRecStatus !== 'Not applicable';
+  function handleSave() {
+    if (!isAssignedCustodian) return;
+    const updated: RecurringScheduleRecord = {
+      ...schedule,
+      bankRecStatus: schedule.bankRecStatus,
+      currentStatus: schedule.currentStatus,
+    };
+    onUpdateSchedule(updated);
+    onClose();
+  }
+
+  const hasBank = schedule.bankRecStatus !== 'Not applicable';
 
   const workflowChecklist = useMemo(() => {
     if (hasBank) return schedule.checklistTemplate;
@@ -546,21 +561,87 @@ function ScheduleDetailDrawer({
     );
   }, [schedule.checklistTemplate, hasBank]);
 
-  function handleSave() {
-    if (!isAssignedCustodian) return;
-    const updated: RecurringScheduleRecord = {
-      ...schedule,
-      bankRecStatus,
-      currentStatus,
+  // Modal Dialog Focus Trap and Keyboard Listener
+  const drawerRef = useRef<HTMLElement>(null);
+
+  useEffect(() => {
+    const previousActive = document.activeElement as HTMLElement | null;
+
+    const timer = window.setTimeout(() => {
+      if (drawerRef.current) {
+        const focusable = drawerRef.current.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+        );
+        if (focusable.length > 0) {
+          focusable[0]?.focus();
+        }
+      }
+    }, 40);
+
+    function handleGlobalKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape') {
+        if (!isSubmitting) {
+          e.preventDefault();
+          onClose();
+        }
+        return;
+      }
+
+      if (e.key === 'Tab' && drawerRef.current) {
+        const focusables = drawerRef.current.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+        );
+        if (focusables.length === 0) return;
+        const first = focusables[0];
+        const last = focusables[focusables.length - 1];
+
+        if (e.shiftKey && document.activeElement === first) {
+          e.preventDefault();
+          last?.focus();
+        } else if (!e.shiftKey && document.activeElement === last) {
+          e.preventDefault();
+          first?.focus();
+        }
+      }
+    }
+
+    window.addEventListener('keydown', handleGlobalKeyDown);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener('keydown', handleGlobalKeyDown);
+      previousActive?.focus?.();
     };
-    onUpdateSchedule(updated);
-    onClose();
+  }, [onClose, isSubmitting]);
+
+  async function handleSaveLeadership() {
+    if (!leadership || isSubmitting) return;
+    setIsSubmitting(true);
+    try {
+      const updated: RecurringScheduleRecord = {
+        ...schedule,
+        status: isActive ? 'Active' : 'Paused',
+        nextRunDate: nextRunDate || schedule.nextRunDate,
+      };
+      await onUpdateSchedule(updated);
+      onToast(`Schedule settings saved (${isActive ? 'Active' : 'Paused'})`);
+      onClose();
+    } catch {
+      onToast('Failed to update schedule settings.');
+    } finally {
+      setIsSubmitting(false);
+    }
   }
 
   return (
     <>
-      <div className="drawer-backdrop" onClick={onClose} />
-      <aside className="client-drawer" aria-label="Recurring schedule details">
+      <div className="drawer-backdrop" onClick={!isSubmitting ? onClose : undefined} />
+      <aside
+        ref={drawerRef}
+        className="client-drawer"
+        role="dialog"
+        aria-modal="true"
+        aria-label={`Recurring schedule details for ${schedule.title}`}
+      >
         <div className="client-drawer-header">
           <div className="drawer-client-lead">
             <span className="drawer-monogram">{schedule.category.substring(0, 2).toUpperCase()}</span>
@@ -569,7 +650,7 @@ function ScheduleDetailDrawer({
               <p>{schedule.clientName} · {schedule.cadence} Cycle</p>
             </div>
           </div>
-          <button className="drawer-close-btn" type="button" onClick={onClose} aria-label="Close drawer">
+          <button className="drawer-close-btn" type="button" onClick={onClose} disabled={isSubmitting} aria-label="Close drawer">
             <X aria-hidden="true" />
           </button>
         </div>
@@ -587,7 +668,7 @@ function ScheduleDetailDrawer({
             type="button"
             onClick={() => setTab('overview')}
           >
-            Overview
+            Overview &amp; Settings
           </button>
           <button
             className={`drawer-tab ${tab === 'history' ? 'is-active' : ''}`}
@@ -602,18 +683,30 @@ function ScheduleDetailDrawer({
           {tab === 'checklist' ? (
             <div className="checklist-step-box">
               {!isAssignedCustodian ? (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'var(--canvas)', border: '1px solid var(--border)', padding: '10px 14px', borderRadius: 8, fontSize: 12, color: 'var(--ink-secondary)', marginBottom: 14 }}>
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 8,
+                    background: 'var(--canvas)',
+                    border: '1px solid var(--border)',
+                    padding: '10px 14px',
+                    borderRadius: 8,
+                    fontSize: 12,
+                    color: 'var(--ink-secondary)',
+                    marginBottom: 12,
+                  }}
+                >
                   <Lock size={14} color="var(--ink-muted)" />
                   <span>
-                    Checklist steps, bank reconciliation, and filing progress can only be updated by the assigned custodian (<strong>{schedule.defaultOwner}</strong>).
+                    Checklist steps, bank reconciliation, and filing progress can only be updated by the assigned custodian ({schedule.defaultOwner}).
                   </span>
                 </div>
               ) : null}
-
               <p style={{ fontSize: 12, color: 'var(--ink-muted)', margin: '0 0 10px' }}>
                 {!hasBank
-                  ? 'Banking excluded: Client operates without bank accounts (cash-only). Bank statement collection and reconciliation are not part of this return workflow.'
-                  : 'Workflow checklist reference for recurring compliance execution:'}
+                  ? 'Banking excluded: Client operates without bank accounts (cash-only). Bank statement collection and reconciliation are excluded from this return workflow.'
+                  : 'Statutory workflow checklist template executed on each occurrence:'}
               </p>
               <div className="schedule-checklist-list">
                 {workflowChecklist.map((step, idx) => (
@@ -624,89 +717,72 @@ function ScheduleDetailDrawer({
                 ))}
               </div>
 
-              {/* Status Controls */}
-              <div style={{ marginTop: 20, paddingTop: 16, borderTop: '1px solid var(--border)', display: 'flex', flexDirection: 'column', gap: 14 }}>
-                {hasBank ? (
-                  <div>
-                    <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--ink-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-                      Bank Reconciliation Status
-                    </span>
-                    <div className="bank-rec-status-group">
-                      {(['Completed', 'In progress', 'Awaited'] as const).map((st) => (
-                        <button
-                          key={st}
-                          type="button"
-                          disabled={!isAssignedCustodian}
-                          onClick={() => isAssignedCustodian && setBankRecStatus(st)}
-                          className={`schedule-status-btn ${bankRecStatus === st ? 'is-active' : ''}`}
-                        >
-                          {st === 'Completed' && (
-                            <>
-                              <Check size={12} aria-hidden="true" />
-                              <span>Reconciled</span>
-                            </>
-                          )}
-                          {st === 'In progress' && (
-                            <>
-                              <Clock size={12} aria-hidden="true" />
-                              <span>In Progress</span>
-                            </>
-                          )}
-                          {st === 'Awaited' && (
-                            <>
-                              <AlertCircle size={12} aria-hidden="true" />
-                              <span>Statement Awaited</span>
-                            </>
-                          )}
-                        </button>
-                      ))}
-                    </div>
+              {!hasBank ? (
+                <div style={{ marginTop: 16, background: 'var(--canvas)', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', padding: '12px 14px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 600, color: 'var(--ink)' }}>
+                    <Building2 size={13} color="var(--ink-muted)" />
+                    <span>Banking Excluded from Workflow</span>
                   </div>
-                ) : (
-                  <div style={{ background: 'var(--canvas)', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', padding: '12px 14px' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 600, color: 'var(--ink)' }}>
-                      <Building2 size={13} color="var(--ink-muted)" />
-                      <span>Banking Excluded from GST Workflow</span>
-                    </div>
-                    <p style={{ margin: '4px 0 0', fontSize: 12, color: 'var(--ink-muted)' }}>
-                      Client operates without bank accounts (cash-only). Bank statement collection and reconciliation are not required or tracked for this return filing.
-                    </p>
-                  </div>
-                )}
-
-                <div>
-                  <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--ink-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-                    Filing Progress Status
-                  </span>
-                  <div className="schedule-status-group">
-                    {(hasBank
-                      ? ['Pending', 'Docs Awaited', 'Bank Statement Received', 'Ready to File', 'Filed'] as const
-                      : ['Pending', 'Docs Awaited', 'Ready to File', 'Filed'] as const
-                    ).map((fs) => (
-                      <button
-                        key={fs}
-                        type="button"
-                        disabled={!isAssignedCustodian}
-                        onClick={() => isAssignedCustodian && setCurrentStatus(fs)}
-                        className={`schedule-status-btn ${currentStatus === fs ? 'is-active' : ''}`}
-                      >
-                        {fs}
-                      </button>
-                    ))}
-                  </div>
+                  <p style={{ margin: '4px 0 0', fontSize: 12, color: 'var(--ink-muted)' }}>
+                    Client operates without bank accounts. Bank statement collection and reconciliation are not required or tracked.
+                  </p>
                 </div>
-              </div>
+              ) : null}
             </div>
           ) : null}
 
           {tab === 'overview' ? (
             <>
               {schedule.exceptionReason ? (
-                <div className="drawer-card" style={{ borderColor: 'var(--danger)', background: 'var(--danger-soft)' }}>
+                <div className="drawer-card" style={{ borderColor: 'var(--danger)', background: 'var(--danger-soft)', marginBottom: 12 }}>
                   <h4 style={{ color: 'var(--danger)' }}>Compliance Exception</h4>
                   <p style={{ margin: 0, fontSize: 12, color: 'var(--danger)', fontWeight: 600 }}>
                     {schedule.exceptionReason}
                   </p>
+                </div>
+              ) : null}
+
+              {leadership ? (
+                <div className="drawer-card" style={{ padding: 14, marginBottom: 14 }}>
+                  <h4 style={{ marginBottom: 10 }}>Schedule Management</h4>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                      <div>
+                        <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--ink)' }}>Generation Status</span>
+                        <p style={{ margin: '2px 0 0', fontSize: 12, color: 'var(--ink-muted)' }}>
+                          {isActive ? 'Active — generates assignments on schedule' : 'Paused — automatic generation suspended'}
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        className={isActive ? 'soft-button' : 'primary-button'}
+                        onClick={() => setIsActive(!isActive)}
+                        style={{ fontSize: 12, padding: '5px 12px' }}
+                      >
+                        {isActive ? 'Pause Schedule' : 'Activate Schedule'}
+                      </button>
+                    </div>
+
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                      <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink-secondary)' }}>
+                        Next Automated Run Date
+                      </label>
+                      <input
+                        type="text"
+                        value={nextRunDate}
+                        onChange={(e) => setNextRunDate(e.target.value)}
+                        placeholder="DD/MM/YYYY or YYYY-MM-DD"
+                        style={{
+                          padding: '6px 10px',
+                          borderRadius: 'var(--radius-control)',
+                          border: '1px solid var(--border)',
+                          fontSize: 13,
+                          background: 'var(--surface)',
+                          color: 'var(--ink)',
+                        }}
+                      />
+                    </div>
+                  </div>
                 </div>
               ) : null}
 
@@ -728,7 +804,7 @@ function ScheduleDetailDrawer({
                   <span className="drawer-val">Day {schedule.generationDay} of cycle</span>
                 </div>
                 <div className="drawer-item">
-                  <span className="drawer-label">Statutory Due Date</span>
+                  <span className="drawer-label">Statutory Due Window</span>
                   <span className="drawer-val">{schedule.statutoryDueDay}</span>
                 </div>
                 <div className="drawer-item">
@@ -781,21 +857,23 @@ function ScheduleDetailDrawer({
         </div>
 
         <div className="drawer-footer">
-          {isAssignedCustodian ? (
+          {leadership ? (
             <button
               className="primary-button"
               type="button"
-              onClick={handleSave}
+              onClick={handleSaveLeadership}
+              disabled={isSubmitting}
             >
-              <CheckCircle2 size={14} /> Save progress &amp; update status
+              <CheckCircle2 size={14} /> {isSubmitting ? 'Saving...' : 'Save Schedule Settings'}
             </button>
-          ) : (
+          ) : null}
+          {!isAssignedCustodian ? (
             <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--ink-muted)', background: 'var(--surface-muted)', padding: '6px 12px', borderRadius: 'var(--radius-md)', border: '1px solid var(--border)' }}>
               <Lock size={13} />
               <span>Workflow &amp; filing progress locked to assigned custodian ({schedule.defaultOwner})</span>
             </div>
-          )}
-          <button className="soft-button" type="button" onClick={onClose}>
+          ) : null}
+          <button className="soft-button" type="button" onClick={onClose} disabled={isSubmitting}>
             Close
           </button>
         </div>

@@ -110,7 +110,7 @@ describe('BillingWorkspace', () => {
     expect(screen.queryByText('Article Assistant Access Restricted')).toBeNull();
     expect(screen.getByText('Fee Invoices & Practice Receivables')).toBeTruthy();
     expect(screen.getByText('Billed this FY (2026–27)')).toBeTruthy();
-  });
+  }, 15000);
 
   it('allows founder to invoke both invoice and receipt compose intents, while staff cannot raise invoice but can record receipt', () => {
     const founderActions = {

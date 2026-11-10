@@ -309,7 +309,7 @@ describe('AS-01 Release Blockers Remediation', () => {
       fireEvent.click(screen.getByText('Monthly GSTR-1 Return Schedule'));
 
       // Check Overview tab
-      const overviewTab = screen.getByRole('button', { name: /^Overview$/i });
+      const overviewTab = screen.getByRole('button', { name: /Overview/i });
       fireEvent.click(overviewTab);
 
       // Client legal entity shows clean name without raw UUID
@@ -402,12 +402,11 @@ describe('AS-01 Release Blockers Remediation', () => {
       // Open schedule drawer
       fireEvent.click(screen.getByText('Monthly GSTR-1 Return Schedule'));
 
-      // Verify all filing progress status buttons are rendered
-      expect(screen.getByRole('button', { name: /^Pending$/i })).toBeDefined();
-      expect(screen.getByRole('button', { name: /^Docs Awaited$/i })).toBeDefined();
-      expect(screen.getByRole('button', { name: /^Bank Statement Received$/i })).toBeDefined();
-      expect(screen.getByRole('button', { name: /^Ready to File$/i })).toBeDefined();
-      expect(screen.getByRole('button', { name: /^Filed$/i })).toBeDefined();
+      // Verify unpersisted fake status buttons are purged
+      expect(screen.queryByRole('button', { name: /^Docs Awaited$/i })).toBeNull();
+      expect(screen.queryByRole('button', { name: /^Bank Statement Received$/i })).toBeNull();
+      expect(screen.queryByRole('button', { name: /^Ready to File$/i })).toBeNull();
+      expect(screen.queryByRole('button', { name: /^Filed$/i })).toBeNull();
 
       // Verify checklist items
       expect(

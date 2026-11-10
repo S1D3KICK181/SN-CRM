@@ -347,6 +347,11 @@ export function createApiServer(application: CrmApplication, options: ApiServerO
         return;
       }
 
+      if (request.method === 'GET' && pathname === '/api/v1/services') {
+        sendData(response, context, allowedOrigins, 200, await application.listServices(actor));
+        return;
+      }
+
       if (request.method === 'GET' && pathname === '/api/v1/clients') {
         sendData(response, context, allowedOrigins, 200, await application.listClients(actor));
         return;

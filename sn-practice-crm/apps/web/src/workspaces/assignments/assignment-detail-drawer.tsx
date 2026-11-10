@@ -1,13 +1,20 @@
-import { useEffect, useMemo, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import {
+  AlertCircle,
+  Building2,
   Check,
+  CheckCircle2,
+  Clock,
   Files,
   Lock,
   Pencil,
   ReceiptIndianRupee,
+  RotateCcw,
+  Send,
   X,
 } from 'lucide-react';
 import type { CompanyRole } from '@sn/domain';
+import type { ServiceCatalogItemDto } from '@sn/contracts';
 import type { DialogStaffOption } from './create-assignment-dialog';
 import {
   ROLE_LABELS,
@@ -29,6 +36,7 @@ export function AssignmentDetailDrawer({
   onOpenInvoice,
   initialEditing = false,
   teamMembers,
+  services,
 }: {
   assignment: AssignmentRow;
   leadership: boolean;
@@ -39,13 +47,15 @@ export function AssignmentDetailDrawer({
   onOpenInvoice?: (asn: AssignmentRow) => void;
   initialEditing?: boolean;
   teamMembers?: readonly DialogStaffOption[];
+  services?: readonly ServiceCatalogItemDto[];
 }) {
   const canEditAssignment = role === 'founder' || role === 'manager';
-  const displayCode = assignment.code && !isValidUuid(assignment.code)
-    ? assignment.code
-    : !isValidUuid(assignment.id)
-    ? assignment.id
-    : undefined;
+  const displayCode =
+    assignment.code && !isValidUuid(assignment.code)
+      ? assignment.code
+      : !isValidUuid(assignment.id)
+      ? assignment.id
+      : undefined;
 
   const monogram = useMemo(() => {
     const source = (assignment.client || assignment.title || 'AS').trim();
@@ -61,12 +71,15 @@ export function AssignmentDetailDrawer({
   const currentPersonName = role ? ROLE_PEOPLE[role]?.name : '';
   const isAssignedCustodian = Boolean(
     currentPersonName &&
-    (assignment.owner.toLowerCase().includes(currentPersonName.toLowerCase()) ||
-     currentPersonName.toLowerCase().includes(assignment.owner.toLowerCase()))
+      (assignment.owner.toLowerCase().includes(currentPersonName.toLowerCase()) ||
+        currentPersonName.toLowerCase().includes(assignment.owner.toLowerCase()))
   );
+
   const [isEditing, setIsEditing] = useState(initialEditing);
   const [tab, setTab] = useState<'checklist' | 'overview' | 'papers' | 'billing'>('checklist');
-  const [status, setStatus] = useState(assignment.status);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
   const [milestones, setMilestones] = useState<AssignmentMilestone[]>(
     assignment.milestones || [
       { title: 'Initial document scrutiny and intake', done: true },
@@ -75,6 +88,7 @@ export function AssignmentDetailDrawer({
       { title: 'Partner final sign-off & dispatch', done: assignment.progress === 100 },
     ]
   );
+
   const visibleMilestones = useMemo(() => {
     const indexed = milestones.map((milestone, sourceIndex) => ({
       milestone,
@@ -82,28 +96,38 @@ export function AssignmentDetailDrawer({
     }));
     if (assignment.bankStatementRequired === false) {
       return indexed.filter(
-        ({ milestone: m }) => !m.title.toLowerCase().includes('bank statement') && !m.title.toLowerCase().includes('bank reconciliation')
+        ({ milestone: m }) =>
+          !m.title.toLowerCase().includes('bank statement') &&
+          !m.title.toLowerCase().includes('bank reconciliation')
       );
     }
     return indexed;
   }, [milestones, assignment.bankStatementRequired]);
 
+  const normalizedStatus = (assignment.status || '').toLowerCase().trim();
   const isTerminal =
-    assignment.status.toLowerCase() === 'approved' ||
-    assignment.status.toLowerCase() === 'completed' ||
-    assignment.status.toLowerCase() === 'closed';
+    normalizedStatus === 'approved' ||
+    normalizedStatus === 'completed' ||
+    normalizedStatus === 'closed' ||
+    normalizedStatus === 'cancelled';
 
   const staffList = teamMembers ?? [];
   const eligibleStaffOwners = useMemo(() => {
     return staffList.filter((m) => m.role !== 'trainee');
   }, [staffList]);
 
+  const eligibleReviewers = useMemo(() => {
+    return staffList.filter((m) => ['founder', 'manager', 'senior_staff'].includes(m.role));
+  }, [staffList]);
+
+  // Edit form state
   const [editTitle, setEditTitle] = useState(assignment.title);
+  const [editServiceId, setEditServiceId] = useState(assignment.serviceId || '');
   const [editService, setEditService] = useState(assignment.service);
   const [editOwnerId, setEditOwnerId] = useState<string>(() => {
     if (assignment.ownerId) return assignment.ownerId;
     const match = eligibleStaffOwners.find(
-      (s) => s.name.toLowerCase() === assignment.owner.toLowerCase(),
+      (s) => s.name.toLowerCase() === assignment.owner.toLowerCase()
     );
     return match?.id ?? eligibleStaffOwners[0]?.id ?? '';
   });
@@ -112,103 +136,205 @@ export function AssignmentDetailDrawer({
     if (assignment.reviewerIds && assignment.reviewerIds.length > 0 && assignment.reviewerIds[0]) {
       return assignment.reviewerIds[0];
     }
-    const match = eligibleStaffOwners.find(
-      (s) => s.name.toLowerCase() === (assignment.reviewer || '').toLowerCase(),
+    const match = eligibleReviewers.find(
+      (s) => s.name.toLowerCase() === (assignment.reviewer || '').toLowerCase()
     );
-    return match?.id ?? eligibleStaffOwners[0]?.id ?? '';
+    return match?.id ?? '';
   });
   const [editDue, setEditDue] = useState(assignment.due);
-  const [editStatus, setEditStatus] = useState(assignment.status);
   const [editScope, setEditScope] = useState(assignment.scope || '');
   const [editDeliveryNotes, setEditDeliveryNotes] = useState(assignment.deliveryNotes || '');
 
   useEffect(() => {
     setEditTitle(assignment.title);
+    setEditServiceId(assignment.serviceId || '');
     setEditService(assignment.service);
     const currentOwner = eligibleStaffOwners.find(
-      (s) => s.id === assignment.ownerId || s.name.toLowerCase() === assignment.owner.toLowerCase(),
+      (s) => s.id === assignment.ownerId || s.name.toLowerCase() === assignment.owner.toLowerCase()
     );
     setEditOwnerId(currentOwner?.id ?? assignment.ownerId ?? eligibleStaffOwners[0]?.id ?? '');
-    const currentReviewer = eligibleStaffOwners.find(
+    const currentReviewer = eligibleReviewers.find(
       (s) =>
         s.id === assignment.reviewerId ||
         (assignment.reviewerIds && assignment.reviewerIds.includes(s.id)) ||
-        s.name.toLowerCase() === (assignment.reviewer || '').toLowerCase(),
+        s.name.toLowerCase() === (assignment.reviewer || '').toLowerCase()
     );
-    setEditReviewerId(currentReviewer?.id ?? assignment.reviewerId ?? eligibleStaffOwners[0]?.id ?? '');
+    setEditReviewerId(currentReviewer?.id ?? assignment.reviewerId ?? '');
     setEditDue(assignment.due);
-    setEditStatus(assignment.status);
     setEditScope(assignment.scope || '');
     setEditDeliveryNotes(assignment.deliveryNotes || '');
     setIsEditing(initialEditing);
-  }, [assignment, initialEditing, eligibleStaffOwners]);
+  }, [assignment, initialEditing, eligibleStaffOwners, eligibleReviewers]);
+
+  // Modal Dialog Focus Trap and Keyboard Listener
+  const drawerRef = useRef<HTMLElement>(null);
+
+  useEffect(() => {
+    const previousActive = document.activeElement as HTMLElement | null;
+
+    const timer = window.setTimeout(() => {
+      if (drawerRef.current) {
+        const focusable = drawerRef.current.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+        );
+        if (focusable.length > 0) {
+          focusable[0]?.focus();
+        }
+      }
+    }, 40);
+
+    function handleGlobalKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape') {
+        if (!isSubmitting) {
+          e.preventDefault();
+          onClose();
+        }
+        return;
+      }
+
+      if (e.key === 'Tab' && drawerRef.current) {
+        const focusables = drawerRef.current.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+        );
+        if (focusables.length === 0) return;
+        const first = focusables[0];
+        const last = focusables[focusables.length - 1];
+
+        if (e.shiftKey && document.activeElement === first) {
+          e.preventDefault();
+          last?.focus();
+        } else if (!e.shiftKey && document.activeElement === last) {
+          e.preventDefault();
+          first?.focus();
+        }
+      }
+    }
+
+    window.addEventListener('keydown', handleGlobalKeyDown);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener('keydown', handleGlobalKeyDown);
+      previousActive?.focus?.();
+    };
+  }, [onClose, isSubmitting]);
 
   function toggleMilestone(index: number) {
-    if (!isAssignedCustodian) return;
+    if (!isAssignedCustodian || isTerminal) return;
     setMilestones((prev) => {
       const next = prev.map((m, i) => (i === index ? { ...m, done: !m.done } : m));
       const doneCount = next.filter((m) => m.done).length;
       const nextProgress = Math.round((doneCount / next.length) * 100);
-      const nextStatus = nextProgress === 100 ? 'Completed' : nextProgress >= 80 ? 'Pending review' : 'In progress';
-      setStatus(nextStatus);
       return next;
     });
   }
 
-  function handleSave() {
-    if (!isAssignedCustodian) return;
+  // Fieldwork progress save: updates progress percentage and milestones only (does NOT alter status)
+  async function handleSaveProgress() {
+    if (!isAssignedCustodian || isTerminal || isSubmitting) return;
     const doneCount = milestones.filter((m) => m.done).length;
     const progress = Math.round((doneCount / milestones.length) * 100);
-    const updated: AssignmentRow = {
-      ...assignment,
-      status,
-      progress,
-      milestones,
-      tone: status === 'Completed' ? 'success' : status === 'Pending review' ? 'warning' : 'default',
-    };
-    onUpdateAssignment(updated);
-    onClose();
+
+    setIsSubmitting(true);
+    setErrorMessage(null);
+    try {
+      const updated: AssignmentRow = {
+        ...assignment,
+        progress,
+        milestones,
+      };
+      await onUpdateAssignment(updated);
+      onToast(`Fieldwork progress saved (${progress}%)`);
+      onClose();
+    } catch (err: unknown) {
+      setErrorMessage(err instanceof Error ? err.message : 'Failed to save progress.');
+    } finally {
+      setIsSubmitting(false);
+    }
   }
 
-  function handleSaveEdit(e?: FormEvent) {
+  // Lifecycle transition handler (explicit transition action)
+  async function handleTransition(targetStatus: string, label: string) {
+    if (isSubmitting) return;
+    setIsSubmitting(true);
+    setErrorMessage(null);
+    try {
+      const updated: AssignmentRow = {
+        ...assignment,
+        status: targetStatus,
+      };
+      await onUpdateAssignment(updated);
+      onToast(`${label} successful`);
+      onClose();
+    } catch (err: unknown) {
+      setErrorMessage(err instanceof Error ? err.message : `Failed to ${label.toLowerCase()}.`);
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
+  // Configuration edit save (Title, Service, Owner, Reviewer, Due Date, Delivery Notes)
+  async function handleSaveEdit(e?: FormEvent) {
     if (e) e.preventDefault();
-    if (isTerminal) return;
-    const selectedOwner = eligibleStaffOwners.find((s) => s.id === editOwnerId);
-    const selectedReviewer = eligibleStaffOwners.find((s) => s.id === editReviewerId);
-    const updated: AssignmentRow = {
-      ...assignment,
-      title: editTitle.trim() || assignment.title,
-      service: editService,
-      owner: selectedOwner ? selectedOwner.name : assignment.owner,
-      ownerId: selectedOwner ? selectedOwner.id : assignment.ownerId,
-      reviewer: selectedReviewer ? selectedReviewer.name : assignment.reviewer,
-      reviewerId: selectedReviewer ? selectedReviewer.id : assignment.reviewerId,
-      reviewerIds: selectedReviewer ? [selectedReviewer.id] : (assignment.reviewerIds ?? []),
-      due: editDue.trim() || assignment.due,
-      status: editStatus,
-      scope: editScope.trim(),
-      deliveryNotes: editDeliveryNotes.trim(),
-      tone: editStatus === 'Completed' ? 'success' : editStatus === 'Pending review' ? 'warning' : 'default',
-    };
-    onUpdateAssignment(updated);
-    setIsEditing(false);
-    const savedLabel = displayCode ? `Assignment ${displayCode}` : `Assignment "${assignment.title}"`;
-    onToast(`${savedLabel} details saved`);
+    if (isTerminal || isSubmitting) return;
+    setIsSubmitting(true);
+    setErrorMessage(null);
+
+    try {
+      const selectedOwner = eligibleStaffOwners.find((s) => s.id === editOwnerId);
+      const selectedReviewer = eligibleReviewers.find((s) => s.id === editReviewerId);
+      const selectedService = services?.find((s) => s.id === editServiceId);
+
+      const updated: AssignmentRow = {
+        ...assignment,
+        title: editTitle.trim() || assignment.title,
+        serviceId: selectedService?.id ?? assignment.serviceId,
+        service: selectedService?.name ?? editService,
+        owner: selectedOwner ? selectedOwner.name : assignment.owner,
+        ownerId: selectedOwner ? selectedOwner.id : assignment.ownerId,
+        reviewer: selectedReviewer ? selectedReviewer.name : 'Not designated',
+        reviewerId: selectedReviewer ? selectedReviewer.id : undefined,
+        reviewerIds: selectedReviewer ? [selectedReviewer.id] : [],
+        reviewerNames: selectedReviewer ? [selectedReviewer.name] : [],
+        due: editDue.trim() || assignment.due,
+        scope: editScope.trim(),
+        deliveryNotes: editDeliveryNotes.trim() || undefined,
+      };
+
+      await onUpdateAssignment(updated);
+      setIsEditing(false);
+      const savedLabel = displayCode ? `Assignment ${displayCode}` : `Assignment "${assignment.title}"`;
+      onToast(`${savedLabel} details saved`);
+    } catch (err: unknown) {
+      setErrorMessage(err instanceof Error ? err.message : 'Failed to save assignment changes.');
+    } finally {
+      setIsSubmitting(false);
+    }
   }
 
   return (
     <>
-      <div className="drawer-backdrop" onClick={onClose} />
-      <aside className="client-drawer" aria-label="Assignment Details">
+      <div className="drawer-backdrop" onClick={!isSubmitting ? onClose : undefined} />
+      <aside
+        ref={drawerRef}
+        className="client-drawer"
+        role="dialog"
+        aria-modal="true"
+        aria-label={`Assignment details for ${assignment.title}`}
+      >
         <div className="client-drawer-header">
           <div className="drawer-client-lead">
             <span className="drawer-monogram">{monogram}</span>
             <div className="drawer-lead-copy">
               {displayCode ? (
-                <span className="drawer-kicker">{displayCode} · {assignment.service}</span>
+                <span className="drawer-kicker">
+                  {displayCode} · {assignment.service}
+                </span>
               ) : null}
               <h2>{assignment.title}</h2>
-              <p>{assignment.client}{!displayCode ? ` · ${assignment.service}` : ''}</p>
+              <p>
+                {assignment.client}
+                {!displayCode ? ` · ${assignment.service}` : ''}
+              </p>
             </div>
           </div>
           <div className="drawer-header-actions">
@@ -216,17 +342,56 @@ export function AssignmentDetailDrawer({
               <button
                 className="soft-button"
                 type="button"
-                onClick={() => setIsEditing(!isEditing)}
-                style={{ fontSize: 12, padding: '5px 12px', height: 'auto', display: 'inline-flex', alignItems: 'center', gap: 6, flexShrink: 0 }}
+                onClick={() => {
+                  setErrorMessage(null);
+                  setIsEditing(!isEditing);
+                }}
+                disabled={isSubmitting}
+                style={{
+                  fontSize: 12,
+                  padding: '5px 12px',
+                  height: 'auto',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  flexShrink: 0,
+                }}
               >
                 <Pencil size={12} /> {isEditing ? 'Cancel Edit' : 'Edit Assignment'}
               </button>
             ) : null}
-            <button className="drawer-close-btn" type="button" onClick={onClose} aria-label="Close drawer">
+            <button
+              className="drawer-close-btn"
+              type="button"
+              onClick={onClose}
+              disabled={isSubmitting}
+              aria-label="Close drawer"
+            >
               <X aria-hidden="true" />
             </button>
           </div>
         </div>
+
+        {errorMessage ? (
+          <div
+            role="alert"
+            style={{
+              margin: '12px 24px 0',
+              padding: '10px 14px',
+              background: 'var(--canvas)',
+              border: '1px solid var(--signal)',
+              borderRadius: 'var(--radius-md)',
+              color: 'var(--signal)',
+              fontSize: 12,
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+            }}
+          >
+            <AlertCircle size={15} style={{ flexShrink: 0 }} />
+            <span>{errorMessage}</span>
+          </div>
+        ) : null}
 
         {!isEditing ? (
           <nav className="drawer-tabs">
@@ -235,7 +400,9 @@ export function AssignmentDetailDrawer({
               type="button"
               onClick={() => setTab('checklist')}
             >
-              Milestones &amp; Checklist ({visibleMilestones.filter(({ milestone: m }) => m.done).length}/{visibleMilestones.length})
+              Milestones &amp; Checklist (
+              {visibleMilestones.filter(({ milestone: m }) => m.done).length}/
+              {visibleMilestones.length})
             </button>
             <button
               className={`drawer-tab ${tab === 'overview' ? 'is-active' : ''}`}
@@ -263,13 +430,49 @@ export function AssignmentDetailDrawer({
 
         <div className="drawer-content" style={{ padding: '20px 24px' }}>
           {isEditing ? (
-            <form id="assignment-edit-form" onSubmit={handleSaveEdit} style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-              <div style={{ background: 'var(--canvas)', padding: '12px 14px', borderRadius: 'var(--radius-md)', border: '1px solid var(--border)' }}>
-                <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--brand)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-                  Edit Assignment{displayCode ? ` · ${displayCode}` : ''}
+            <form
+              id="assignment-edit-form"
+              onSubmit={handleSaveEdit}
+              style={{ display: 'flex', flexDirection: 'column', gap: 16 }}
+            >
+              {isTerminal && (
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 8,
+                    background: 'var(--surface-muted)',
+                    padding: '8px 12px',
+                    borderRadius: 'var(--radius-md)',
+                    color: 'var(--ink-muted)',
+                    fontSize: 12,
+                  }}
+                >
+                  <Lock size={14} />
+                  <span>This assignment is approved/closed and remains an immutable audit artifact.</span>
+                </div>
+              )}
+              <div
+                style={{
+                  background: 'var(--canvas)',
+                  padding: '12px 14px',
+                  borderRadius: 'var(--radius-md)',
+                  border: '1px solid var(--border)',
+                }}
+              >
+                <span
+                  style={{
+                    fontSize: 12,
+                    fontWeight: 700,
+                    color: 'var(--brand)',
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.04em',
+                  }}
+                >
+                  Edit Configuration{displayCode ? ` · ${displayCode}` : ''}
                 </span>
                 <p style={{ margin: '4px 0 0', fontSize: 12, color: 'var(--ink-muted)' }}>
-                  Update scope, custody, reviewer, statutory due date, and delivery notes.
+                  Update title, service catalog assignment, custody, reviewer, and statutory due date. Lifecycle status transitions are managed separately.
                 </p>
               </div>
 
@@ -281,7 +484,7 @@ export function AssignmentDetailDrawer({
                       required
                       value={editTitle}
                       onChange={(e) => setEditTitle(e.target.value)}
-                      disabled={isTerminal}
+                      disabled={isTerminal || isSubmitting}
                       placeholder="e.g. GSTR-1 &amp; GSTR-3B Monthly Return Filing"
                     />
                   </Field>
@@ -289,81 +492,70 @@ export function AssignmentDetailDrawer({
                     <input value={assignment.client} readOnly style={{ opacity: 0.8 }} />
                   </Field>
                   <Field label="Practice Service Line">
-                    <select value={editService} onChange={(e) => setEditService(e.target.value)} disabled={isTerminal}>
-                      <option value="GST Compliance">GST Compliance</option>
-                      <option value="Statutory Audit">Statutory Audit</option>
-                      <option value="TDS Compliance">TDS Compliance</option>
-                      <option value="Bookkeeping">Bookkeeping &amp; Accounts</option>
-                      <option value="ROC Compliance">ROC &amp; Corporate</option>
-                      <option value="Advisory">Tax Advisory</option>
-                    </select>
+                    {services && services.length > 0 ? (
+                      <select
+                        value={editServiceId}
+                        onChange={(e) => {
+                          const sId = e.target.value;
+                          setEditServiceId(sId);
+                          const match = services.find((s) => s.id === sId);
+                          if (match) setEditService(match.name);
+                        }}
+                        disabled={isTerminal || isSubmitting}
+                      >
+                        {services.map((svc) => (
+                          <option key={svc.id} value={svc.id}>
+                            {svc.name}
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      <input
+                        value={editService}
+                        onChange={(e) => setEditService(e.target.value)}
+                        disabled={isTerminal || isSubmitting}
+                      />
+                    )}
                   </Field>
                 </div>
               </div>
 
               <div className="drawer-card" style={{ padding: 14 }}>
-                <h4 style={{ marginBottom: 10 }}>Ownership, Review &amp; Status</h4>
-                {isTerminal && (
-                  <div
-                    className="terminal-notice"
-                    style={{
-                      background: 'var(--canvas)',
-                      padding: '10px 12px',
-                      borderRadius: 'var(--radius-md)',
-                      border: '1px solid var(--border)',
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 8,
-                      color: 'var(--ink-muted)',
-                      fontSize: 12,
-                      marginBottom: 12,
-                    }}
-                  >
-                    <Lock size={14} />
-                    <span>This assignment is approved/closed and remains an immutable audit artifact.</span>
-                  </div>
-                )}
+                <h4 style={{ marginBottom: 10 }}>Ownership &amp; Statutory Target</h4>
                 <div className="form-grid">
                   <Field label="Assigned Staff (Owner / Custodian)">
                     <select
                       value={editOwnerId}
                       onChange={(e) => setEditOwnerId(e.target.value)}
-                      disabled={isTerminal || eligibleStaffOwners.length === 0}
+                      disabled={isTerminal || isSubmitting || eligibleStaffOwners.length === 0}
                     >
-                      {eligibleStaffOwners.length > 0 ? (
+                      {eligibleStaffOwners.length === 0 ? (
+                        <option value="">No eligible staff available</option>
+                      ) : (
                         eligibleStaffOwners.map((staff) => (
                           <option key={staff.id} value={staff.id}>
                             {staff.name} · {ROLE_LABELS[staff.role] ?? staff.role}
                           </option>
                         ))
-                      ) : (
-                        <option value="" disabled>No eligible staff available</option>
                       )}
                     </select>
                   </Field>
-                  <Field label="Sign-off Reviewer (Partner / Manager)">
+                  <Field label="Sign-off Reviewer (Partner / Manager / Senior Staff)">
                     <select
                       value={editReviewerId}
                       onChange={(e) => setEditReviewerId(e.target.value)}
-                      disabled={isTerminal || eligibleStaffOwners.length === 0}
+                      disabled={isTerminal || isSubmitting}
                     >
-                      {eligibleStaffOwners.length > 0 ? (
-                        eligibleStaffOwners.map((staff) => (
+                      <option value="">Not designated</option>
+                      {eligibleReviewers.length === 0 ? (
+                        <option value="" disabled>No eligible reviewers available</option>
+                      ) : (
+                        eligibleReviewers.map((staff) => (
                           <option key={staff.id} value={staff.id}>
                             {staff.name} ({ROLE_LABELS[staff.role] ?? staff.role})
                           </option>
                         ))
-                      ) : (
-                        <option value="" disabled>No eligible reviewers available</option>
                       )}
-                    </select>
-                  </Field>
-                  <Field label="Assignment Status">
-                    <select value={editStatus} onChange={(e) => setEditStatus(e.target.value)} disabled={isTerminal}>
-                      <option value="In progress">In progress</option>
-                      <option value="Pending review">Pending review</option>
-                      <option value="Awaiting documents">Awaiting documents</option>
-                      <option value="Completed">Completed</option>
                     </select>
                   </Field>
                   <Field label="Target Statutory Due Date">
@@ -371,23 +563,30 @@ export function AssignmentDetailDrawer({
                       value={editDue}
                       onChange={(e) => setEditDue(e.target.value)}
                       placeholder="e.g. 11/11/2026 or Today"
-                      disabled={isTerminal}
+                      disabled={isTerminal || isSubmitting}
                     />
                   </Field>
                 </div>
               </div>
 
               <div className="drawer-card" style={{ padding: 14 }}>
-                <h4 style={{ marginBottom: 10 }}>Delivery Instructions &amp; Notes</h4>
+                <h4 style={{ marginBottom: 10 }}>Delivery Instructions &amp; Working Notes</h4>
                 <div className="form-grid">
                   <Field label="Delivery Instructions / Working Notes" full>
                     <textarea
                       rows={3}
                       value={editDeliveryNotes}
                       onChange={(e) => setEditDeliveryNotes(e.target.value)}
-                      disabled={isTerminal}
+                      disabled={isTerminal || isSubmitting}
                       placeholder="Special instructions, portal credentials note, or client reminders"
-                      style={{ width: '100%', padding: '8px 10px', borderRadius: 'var(--radius-control)', border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--ink)' }}
+                      style={{
+                        width: '100%',
+                        padding: '8px 10px',
+                        borderRadius: 'var(--radius-control)',
+                        border: '1px solid var(--border)',
+                        background: 'var(--surface)',
+                        color: 'var(--ink)',
+                      }}
                     />
                   </Field>
                 </div>
@@ -397,61 +596,216 @@ export function AssignmentDetailDrawer({
             <>
               {tab === 'checklist' ? (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-                  {!isAssignedCustodian ? (
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'var(--canvas)', border: '1px solid var(--border)', padding: '10px 14px', borderRadius: 8, fontSize: 12, color: 'var(--ink-secondary)' }}>
+                  {!isAssignedCustodian && !isTerminal ? (
+                    <div
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 8,
+                        background: 'var(--canvas)',
+                        border: '1px solid var(--border)',
+                        padding: '10px 14px',
+                        borderRadius: 8,
+                        fontSize: 12,
+                        color: 'var(--ink-secondary)',
+                      }}
+                    >
                       <Lock size={14} color="var(--ink-muted)" />
                       <span>
-                        Fieldwork milestones and delivery progress can only be updated by the assigned custodian (<strong>{assignment.owner}</strong>).
+                        Fieldwork milestones and delivery progress can only be updated by the assigned custodian (
+                        <strong>{assignment.owner}</strong>).
                       </span>
                     </div>
                   ) : null}
 
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: 'var(--surface-muted)', padding: '12px 16px', borderRadius: 10 }}>
-                    <div>
-                      <span style={{ fontSize: 12, color: 'var(--ink-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600 }}>Delivery Progress</span>
-                      <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--ink)' }}>
-                        {Math.round((visibleMilestones.filter(({ milestone: m }) => m.done).length / (visibleMilestones.length || 1)) * 100)}%
+                  {/* Lifecycle Action Bar */}
+                  <div
+                    style={{
+                      background: 'var(--surface-muted)',
+                      padding: '12px 16px',
+                      borderRadius: 10,
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: 10,
+                    }}
+                  >
+                    <div
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                      }}
+                    >
+                      <div>
+                        <span
+                          style={{
+                            fontSize: 12,
+                            color: 'var(--ink-muted)',
+                            textTransform: 'uppercase',
+                            letterSpacing: '0.05em',
+                            fontWeight: 600,
+                          }}
+                        >
+                          Lifecycle Stage
+                        </span>
+                        <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--ink)', marginTop: 2 }}>
+                          {assignment.status}
+                        </div>
+                      </div>
+                      <div>
+                        <span
+                          style={{
+                            fontSize: 12,
+                            color: 'var(--ink-muted)',
+                            textTransform: 'uppercase',
+                            letterSpacing: '0.05em',
+                            fontWeight: 600,
+                          }}
+                        >
+                          Fieldwork Completion
+                        </span>
+                        <div
+                          style={{
+                            fontSize: 16,
+                            fontWeight: 700,
+                            color: 'var(--ink)',
+                            marginTop: 2,
+                            textAlign: 'right',
+                          }}
+                        >
+                          {Math.round((visibleMilestones.filter(({ milestone: m }) => m.done).length / (visibleMilestones.length || 1)) * 100)}%
+                        </div>
                       </div>
                     </div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <span style={{ fontSize: 12, color: 'var(--ink-muted)' }}>Status:</span>
-                      <select
-                        className="staff-scope-select"
-                        value={status}
-                        disabled={!isAssignedCustodian}
-                        onChange={(e) => setStatus(e.target.value)}
-                        style={{ opacity: isAssignedCustodian ? 1 : 0.7, cursor: isAssignedCustodian ? 'pointer' : 'not-allowed' }}
-                      >
-                        <option value="In progress">In progress</option>
-                        <option value="Pending review">Pending review</option>
-                        <option value="Awaiting documents">Awaiting documents</option>
-                        <option value="Completed">Completed</option>
-                      </select>
+
+                    {/* Contextual Lifecycle Transition Controls */}
+                    <div
+                      style={{
+                        display: 'flex',
+                        flexWrap: 'wrap',
+                        gap: 8,
+                        paddingTop: 8,
+                        borderTop: '1px solid var(--border)',
+                      }}
+                    >
+                      {/* Custodian: Start Assignment */}
+                      {isAssignedCustodian &&
+                      (normalizedStatus === 'assigned' ||
+                        normalizedStatus === 'awaiting documents' ||
+                        normalizedStatus === 'changes requested' ||
+                        normalizedStatus === 'changes_requested') ? (
+                        <button
+                          className="primary-button"
+                          type="button"
+                          disabled={isSubmitting}
+                          onClick={() => handleTransition('In progress', 'Start Assignment')}
+                          style={{ fontSize: 12, padding: '6px 12px', display: 'inline-flex', alignItems: 'center', gap: 6 }}
+                        >
+                          <Clock size={13} /> Start Assignment
+                        </button>
+                      ) : null}
+
+                      {/* Custodian: Submit for Review */}
+                      {isAssignedCustodian &&
+                      (normalizedStatus === 'in progress' ||
+                        normalizedStatus === 'in_progress' ||
+                        normalizedStatus === 'assigned' ||
+                        normalizedStatus === 'awaiting documents' ||
+                        normalizedStatus === 'changes requested' ||
+                        normalizedStatus === 'changes_requested') ? (
+                        <button
+                          className="soft-button"
+                          type="button"
+                          disabled={isSubmitting}
+                          onClick={() => handleTransition('Pending review', 'Submit for Review')}
+                          style={{ fontSize: 12, padding: '6px 12px', display: 'inline-flex', alignItems: 'center', gap: 6 }}
+                        >
+                          <Send size={13} /> Submit for Review
+                        </button>
+                      ) : null}
+
+                      {/* Leadership: Approve */}
+                      {leadership &&
+                      (normalizedStatus === 'pending review' ||
+                        normalizedStatus === 'ready for review' ||
+                        normalizedStatus === 'ready_for_review') ? (
+                        <button
+                          className="primary-button"
+                          type="button"
+                          disabled={isSubmitting}
+                          onClick={() => handleTransition('Approved', 'Approve Assignment')}
+                          style={{ fontSize: 12, padding: '6px 12px', display: 'inline-flex', alignItems: 'center', gap: 6 }}
+                        >
+                          <CheckCircle2 size={13} /> Approve Deliverable
+                        </button>
+                      ) : null}
+
+                      {/* Leadership: Request Changes */}
+                      {leadership &&
+                      (normalizedStatus === 'pending review' ||
+                        normalizedStatus === 'ready for review' ||
+                        normalizedStatus === 'ready_for_review') ? (
+                        <button
+                          className="soft-button"
+                          type="button"
+                          disabled={isSubmitting}
+                          onClick={() => handleTransition('Changes requested', 'Request Changes')}
+                          style={{ fontSize: 12, padding: '6px 12px', display: 'inline-flex', alignItems: 'center', gap: 6 }}
+                        >
+                          <RotateCcw size={13} /> Request Changes
+                        </button>
+                      ) : null}
+
+                      {/* Leadership: Close */}
+                      {leadership && normalizedStatus === 'approved' ? (
+                        <button
+                          className="primary-button"
+                          type="button"
+                          disabled={isSubmitting}
+                          onClick={() => handleTransition('Completed', 'Close Assignment')}
+                          style={{ fontSize: 12, padding: '6px 12px', display: 'inline-flex', alignItems: 'center', gap: 6 }}
+                        >
+                          <Check size={13} /> Close Assignment
+                        </button>
+                      ) : null}
                     </div>
                   </div>
 
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                    <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink-secondary)' }}>Engagement Milestones</span>
+                    <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink-secondary)' }}>
+                      Engagement Milestones &amp; Verification
+                    </span>
                     {visibleMilestones.map(({ milestone: m, sourceIndex }, idx) => (
                       <label
                         key={m.title}
                         className={`checklist-interactive-row ${m.done ? 'is-completed' : ''}`}
-                        style={{ cursor: isAssignedCustodian ? 'pointer' : 'not-allowed', padding: '10px 14px', borderRadius: 8, opacity: isAssignedCustodian ? 1 : 0.85 }}
+                        style={{
+                          cursor: isAssignedCustodian && !isTerminal ? 'pointer' : 'default',
+                          padding: '10px 14px',
+                          borderRadius: 8,
+                          opacity: isAssignedCustodian && !isTerminal ? 1 : 0.85,
+                        }}
                       >
                         <input
                           type="checkbox"
                           checked={m.done}
-                          disabled={!isAssignedCustodian}
-                          onChange={() => isAssignedCustodian && toggleMilestone(sourceIndex)}
+                          disabled={!isAssignedCustodian || isTerminal || isSubmitting}
+                          onChange={() => isAssignedCustodian && !isTerminal && toggleMilestone(sourceIndex)}
                           className="checklist-checkbox"
-                          style={{ cursor: isAssignedCustodian ? 'pointer' : 'not-allowed' }}
+                          style={{ cursor: isAssignedCustodian && !isTerminal ? 'pointer' : 'default' }}
                         />
                         <div style={{ display: 'flex', flexDirection: 'column', flex: 1 }}>
-                          <span style={{ fontSize: 13, fontWeight: m.done ? 500 : 600, textDecoration: m.done ? 'line-through' : 'none' }}>
+                          <span
+                            style={{
+                              fontSize: 13,
+                              fontWeight: m.done ? 500 : 600,
+                              textDecoration: m.done ? 'line-through' : 'none',
+                            }}
+                          >
                             {m.title}
                           </span>
                           <small style={{ fontSize: 12, color: 'var(--ink-muted)' }}>
-                            {m.done ? 'Completed and verified' : `Step ${idx + 1} pending`}
+                            {m.done ? 'Verified' : `Step ${idx + 1} pending`}
                           </small>
                         </div>
                       </label>
@@ -465,7 +819,8 @@ export function AssignmentDetailDrawer({
                   <div className="drawer-item" style={{ gridColumn: 'span 2' }}>
                     <span className="drawer-label">Engagement Scope</span>
                     <span className="drawer-val" style={{ fontWeight: 400, fontSize: 13, lineHeight: 1.5 }}>
-                      {assignment.scope || 'Full statutory deliverable verification and reporting according to ICAI standards.'}
+                      {assignment.scope ||
+                        'Full statutory deliverable verification and reporting according to ICAI standards.'}
                     </span>
                   </div>
                   <div className="drawer-item">
@@ -473,34 +828,54 @@ export function AssignmentDetailDrawer({
                     <span className="drawer-val">{assignment.owner}</span>
                   </div>
                   <div className="drawer-item">
-                    <span className="drawer-label">Reviewer / Sign-off</span>
-                    <span className="drawer-val">{assignment.reviewer || 'S. Narayanan (Founder)'}</span>
+                    <span className="drawer-label">Sign-off Reviewer</span>
+                    <span className="drawer-val">{assignment.reviewer || 'Not designated'}</span>
                   </div>
                   <div className="drawer-item">
                     <span className="drawer-label">Statutory Target Due Date</span>
-                    <span className="drawer-val" style={{ color: assignment.due === 'Today' ? 'var(--signal)' : 'inherit' }}>
+                    <span
+                      className="drawer-val"
+                      style={{ color: assignment.due === 'Today' ? 'var(--signal)' : 'inherit' }}
+                    >
                       {assignment.due}
                     </span>
                   </div>
                   <div className="drawer-item">
-                    <span className="drawer-label">Bank Rec for GST</span>
+                    <span className="drawer-label">Bank Rec Requirement</span>
                     <span className="drawer-val">
                       {assignment.bankStatementRequired === false ? (
-                        <span className="category-tag" style={{ background: 'var(--canvas)', color: 'var(--ink-muted)', padding: '2px 8px' }}>
-                          Not Applicable (No Bank)
+                        <span
+                          className="category-tag"
+                          style={{
+                            background: 'var(--canvas)',
+                            color: 'var(--ink-muted)',
+                            padding: '2px 8px',
+                          }}
+                        >
+                          Not applicable (Managed in Client profile)
                         </span>
                       ) : (
-                        <span style={{ color: 'var(--success)', fontWeight: 600 }}>Required</span>
+                        <span style={{ color: 'var(--success)', fontWeight: 600 }}>
+                          Required (Managed in Client profile)
+                        </span>
                       )}
                     </span>
                   </div>
                   <div className="drawer-item" style={{ gridColumn: 'span 2' }}>
                     <span className="drawer-label">Delivery Notes</span>
                     <span className="drawer-val" style={{ fontWeight: 400, fontSize: 12 }}>
-                      {assignment.deliveryNotes || 'Standard delivery cycle.'}
+                      {assignment.deliveryNotes || 'None recorded'}
                     </span>
                   </div>
-                  <div className="drawer-item" style={{ gridColumn: 'span 2', marginTop: 8, paddingTop: 12, borderTop: '1px solid var(--border)' }}>
+                  <div
+                    className="drawer-item"
+                    style={{
+                      gridColumn: 'span 2',
+                      marginTop: 8,
+                      paddingTop: 12,
+                      borderTop: '1px solid var(--border)',
+                    }}
+                  >
                     <span className="drawer-label">Related Settings</span>
                     <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-muted)', lineHeight: 1.5 }}>
                       Professional fees are managed in Billing. Document and bank-statement requirements are managed on the Client profile.
@@ -510,10 +885,22 @@ export function AssignmentDetailDrawer({
               ) : null}
 
               {tab === 'papers' ? (
-                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '36px 16px', textAlign: 'center', gap: 10 }}>
+                <div
+                  style={{
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    padding: '36px 16px',
+                    textAlign: 'center',
+                    gap: 10,
+                  }}
+                >
                   <Files size={28} color="var(--ink-muted)" style={{ opacity: 0.6 }} />
                   <div>
-                    <p style={{ margin: 0, fontSize: 13, fontWeight: 600, color: 'var(--ink)' }}>No linked working papers</p>
+                    <p style={{ margin: 0, fontSize: 13, fontWeight: 600, color: 'var(--ink)' }}>
+                      No linked working papers
+                    </p>
                     <p style={{ margin: '4px 0 0', fontSize: 12, color: 'var(--ink-muted)' }}>
                       Working papers and statutory evidence files are managed through the client document repository.
                     </p>
@@ -549,7 +936,15 @@ export function AssignmentDetailDrawer({
                     </div>
                   ) : null}
                   {!assignment.billed && leadership ? (
-                    <div className="drawer-item" style={{ gridColumn: 'span 2', background: 'var(--surface-muted)', padding: 14, borderRadius: 8 }}>
+                    <div
+                      className="drawer-item"
+                      style={{
+                        gridColumn: 'span 2',
+                        background: 'var(--surface-muted)',
+                        padding: 14,
+                        borderRadius: 8,
+                      }}
+                    >
                       <p style={{ fontSize: 12, color: 'var(--ink)', margin: '0 0 10px' }}>
                         Deliverable is nearing completion. You can raise a Tax Invoice now with standard 18% GST (CGST 9% + SGST 9%).
                       </p>
@@ -574,27 +969,37 @@ export function AssignmentDetailDrawer({
         <div className="drawer-footer">
           {isEditing ? (
             <>
-              <button className="soft-button" type="button" onClick={() => setIsEditing(false)}>
+              <button
+                className="soft-button"
+                type="button"
+                onClick={() => setIsEditing(false)}
+                disabled={isSubmitting}
+              >
                 Cancel
               </button>
               <button
                 className="primary-button"
                 type="submit"
                 form="assignment-edit-form"
-                disabled={isTerminal}
+                disabled={isTerminal || isSubmitting}
                 style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}
               >
-                <Check size={14} /> Save Changes
+                <Check size={14} /> {isSubmitting ? 'Saving...' : 'Save Changes'}
               </button>
             </>
           ) : (
             <>
-              <button className="soft-button" type="button" onClick={onClose}>
+              <button className="soft-button" type="button" onClick={onClose} disabled={isSubmitting}>
                 Close
               </button>
-              {isAssignedCustodian ? (
-                <button className="primary-button" type="button" onClick={handleSave}>
-                  <Check size={14} /> Save progress &amp; update status
+              {isAssignedCustodian && !isTerminal ? (
+                <button
+                  className="primary-button"
+                  type="button"
+                  onClick={handleSaveProgress}
+                  disabled={isSubmitting}
+                >
+                  <Check size={14} /> {isSubmitting ? 'Saving...' : 'Save Fieldwork Progress'}
                 </button>
               ) : (
                 <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--ink-muted)', background: 'var(--surface-muted)', padding: '6px 12px', borderRadius: 'var(--radius-md)', border: '1px solid var(--border)' }}>
