@@ -7,6 +7,7 @@ const migration0002Path = new URL('../../supabase/migrations/20261103105200_work
 const migration0003Path = new URL('../../supabase/migrations/20261103120000_add_demo_support.sql', import.meta.url);
 const migration0004Path = new URL('../../supabase/migrations/20261110163000_as01_hardening.sql', import.meta.url);
 const migration0005Path = new URL('../../supabase/migrations/20261111113000_eng01_engagement_core.sql', import.meta.url);
+const migration0006Path = new URL('../../supabase/migrations/20261111120000_eng01_operation_receipts.sql', import.meta.url);
 
 function readMigration(path, label) {
   if (!existsSync(path)) {
@@ -592,4 +593,58 @@ test('migration 0005 defines ENG-01 core engagement schema, authority, immutabil
   // 10. Invariant: no engagement_id added to assignments or recurring schedules
   assert.doesNotMatch(sql0005, /alter table\s+public\.assignments\s+add\s+column[^\n]*engagement_id/i, 'no engagement_id on assignments');
   assert.doesNotMatch(sql0005, /alter table\s+public\.recurring_schedules\s+add\s+column[^\n]*engagement_id/i, 'no engagement_id on recurring_schedules');
+});
+
+test('migration 0006 defines ENG-01 operation receipts, actor isolation, and cleanup', () => {
+  // 1. Prior migrations exist and remain untouched
+  assert.ok(existsSync(migration0001Path));
+  assert.ok(existsSync(migration0002Path));
+  assert.ok(existsSync(migration0003Path));
+  assert.ok(existsSync(migration0004Path));
+  assert.ok(existsSync(migration0005Path));
+  assert.ok(existsSync(migration0006Path));
+
+  const sql0006 = readMigration(migration0006Path, 'Migration 0006');
+
+  // 2. Table creation and exact columns
+  expectSql(sql0006, /create table public\.operation_receipts\s*\(/i, 'operation_receipts table');
+  expectSql(sql0006, /actor_id uuid not null references public\.profiles\(user_id\) on delete restrict/i, 'actor_id references profiles(user_id)');
+  expectSql(sql0006, /char_length\(trim\(idempotency_key\)\) between 1 and 255/i, 'trimmed idempotency_key length check');
+  expectSql(sql0006, /char_length\(trim\(operation_type\)\) between 1 and 120/i, 'trimmed operation_type length check');
+  expectSql(sql0006, /request_hash text not null check \(request_hash ~ '\^\[0-9a-f\]\{64\}\$'\)/i, 'sha256 hex request_hash regex');
+  expectSql(sql0006, /result jsonb not null/i, 'result jsonb');
+  expectSql(sql0006, /is_demo boolean not null default false/i, 'is_demo boolean default false');
+  expectSql(sql0006, /unique\s*\(actor_id,\s*idempotency_key\)/i, 'unique(actor_id, idempotency_key)');
+
+  // 3. RLS enabled
+  expectSql(sql0006, /alter table public\.operation_receipts enable row level security;/i, 'RLS enabled on operation_receipts');
+
+  // 4. Management + actor ownership isolation (no cross-actor replay/read)
+  expectSql(sql0006, /create policy operation_receipts_select on public\.operation_receipts\s+for select to authenticated\s+using \(public\.is_management\(\) and actor_id = auth\.uid\(\)\);/i, 'select policy');
+  expectSql(sql0006, /create policy operation_receipts_insert on public\.operation_receipts\s+for insert to authenticated\s+with check \(public\.is_management\(\) and actor_id = auth\.uid\(\)\);/i, 'insert policy');
+
+  // No update or delete policies
+  assert.doesNotMatch(sql0006, /create policy [a-z_]+ on public\.operation_receipts\s+for delete/i, 'no delete policy on operation_receipts');
+  assert.doesNotMatch(sql0006, /create policy [a-z_]+ on public\.operation_receipts\s+for update/i, 'no update policy on operation_receipts');
+
+  // 5. Least privilege grants: select, insert only
+  expectSql(sql0006, /revoke all on public\.operation_receipts from anon;/i, 'revoke anon');
+  expectSql(sql0006, /grant select,\s*insert on public\.operation_receipts to authenticated;/i, 'grant select, insert only');
+  assert.doesNotMatch(sql0006, /grant\s+.*update.*on public\.operation_receipts/i, 'no update grant');
+  assert.doesNotMatch(sql0006, /grant\s+.*delete.*on public\.operation_receipts/i, 'no delete grant');
+
+  // 6. Triggers: demo tampering and audit
+  expectSql(sql0006, /create trigger prevent_demo_flag_tampering\s+before update on public\.operation_receipts/i, 'tampering trigger');
+  expectSql(sql0006, /create trigger audit_operation_receipts\s+after insert or update or delete on public\.operation_receipts/i, 'audit trigger');
+
+  // 7. remove_demo_data teardown cleans operation_receipts
+  const removeRpc = functionBlock(sql0006, 'remove_demo_data');
+  const rcptDel = removeRpc.indexOf('delete from public.operation_receipts where is_demo = true;');
+  const engDel = removeRpc.indexOf('delete from public.engagements where is_demo = true;');
+  const cliDel = removeRpc.indexOf('delete from public.clients where is_demo = true;');
+
+  assert.ok(rcptDel > 0, 'operation_receipts delete statement must exist');
+  assert.ok(rcptDel < cliDel, 'operation_receipts must be deleted before clients');
+  assert.ok(rcptDel < engDel, 'operation_receipts must be deleted before engagements');
+  assert.match(removeRpc, /'operation_receipts',\s*v_operation_receipts_count/i, 'summary includes operation_receipts');
 });

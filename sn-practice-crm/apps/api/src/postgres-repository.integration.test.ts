@@ -31,7 +31,8 @@ describe('PostgresCrmRepository Integration Suite', () => {
   let seqAssSnapshot: { last_value: string; is_called: boolean };
   let seqWorkSnapshot: { last_value: string; is_called: boolean };
   let seqClientSnapshot: { last_value: string; is_called: boolean };
-  let initialCounts: { assignments: number; reviewers: number; workItems: number; clients: number };
+  let seqEngagementSnapshot: { last_value: string; is_called: boolean };
+  let initialCounts: { assignments: number; reviewers: number; workItems: number; clients: number; engagements: number; engagementVersions: number; operationReceipts: number; auditLog: number };
 
   beforeAll(async () => {
     // 1. Dedicated session-stable advisory lock on pinned single-connection client
@@ -43,26 +44,37 @@ describe('PostgresCrmRepository Integration Suite', () => {
     const assSeqRows = await rootClient`SELECT last_value::text, is_called FROM public.assignment_code_seq`;
     const workSeqRows = await rootClient`SELECT last_value::text, is_called FROM public.work_item_code_seq`;
     const clientSeqRows = await rootClient`SELECT last_value::text, is_called FROM public.client_code_seq`;
+    const engagementSeqRows = await rootClient`SELECT last_value::text, is_called FROM public.engagement_code_seq`;
     const assSeq = assSeqRows[0];
     const workSeq = workSeqRows[0];
     const clientSeq = clientSeqRows[0];
-    if (!assSeq || !workSeq || !clientSeq) {
+    const engagementSeq = engagementSeqRows[0];
+    if (!assSeq || !workSeq || !clientSeq || !engagementSeq) {
       throw new Error('Failed to snapshot sequences.');
     }
     seqAssSnapshot = { last_value: String(assSeq['last_value']), is_called: Boolean(assSeq['is_called']) };
     seqWorkSnapshot = { last_value: String(workSeq['last_value']), is_called: Boolean(workSeq['is_called']) };
     seqClientSnapshot = { last_value: String(clientSeq['last_value']), is_called: Boolean(clientSeq['is_called']) };
+    seqEngagementSnapshot = { last_value: String(engagementSeq['last_value']), is_called: Boolean(engagementSeq['is_called']) };
 
     // 3. Dynamic baseline row counts
     const assCountRows = await rootClient`SELECT count(*)::int as c FROM public.assignments`;
     const revCountRows = await rootClient`SELECT count(*)::int as c FROM public.assignment_reviewers`;
     const workCountRows = await rootClient`SELECT count(*)::int as c FROM public.work_items`;
     const clientCountRows = await rootClient`SELECT count(*)::int as c FROM public.clients`;
+    const engagementCountRows = await rootClient`SELECT count(*)::int as c FROM public.engagements`;
+    const engagementVersionCountRows = await rootClient`SELECT count(*)::int as c FROM public.engagement_versions`;
+    const operationReceiptCountRows = await rootClient`SELECT count(*)::int as c FROM public.operation_receipts`;
+    const auditLogCountRows = await rootClient`SELECT count(*)::int as c FROM public.audit_log`;
     const assCount = assCountRows[0];
     const revCount = revCountRows[0];
     const workCount = workCountRows[0];
     const clientCount = clientCountRows[0];
-    if (!assCount || !revCount || !workCount || !clientCount) {
+    const engagementCount = engagementCountRows[0];
+    const engagementVersionCount = engagementVersionCountRows[0];
+    const operationReceiptCount = operationReceiptCountRows[0];
+    const auditLogCount = auditLogCountRows[0];
+    if (!assCount || !revCount || !workCount || !clientCount || !engagementCount || !engagementVersionCount || !operationReceiptCount || !auditLogCount) {
       throw new Error('Failed to read initial counts.');
     }
     initialCounts = {
@@ -70,6 +82,10 @@ describe('PostgresCrmRepository Integration Suite', () => {
       reviewers: Number(revCount['c']),
       workItems: Number(workCount['c']),
       clients: Number(clientCount['c']),
+      engagements: Number(engagementCount['c']),
+      engagementVersions: Number(engagementVersionCount['c']),
+      operationReceipts: Number(operationReceiptCount['c']),
+      auditLog: Number(auditLogCount['c']),
     };
 
     // 4. Standard application pool
@@ -83,21 +99,34 @@ describe('PostgresCrmRepository Integration Suite', () => {
         await rootClient`SELECT setval('public.assignment_code_seq', ${seqAssSnapshot.last_value}::bigint, ${seqAssSnapshot.is_called})`;
         await rootClient`SELECT setval('public.work_item_code_seq', ${seqWorkSnapshot.last_value}::bigint, ${seqWorkSnapshot.is_called})`;
         await rootClient`SELECT setval('public.client_code_seq', ${seqClientSnapshot.last_value}::bigint, ${seqClientSnapshot.is_called})`;
+        await rootClient`SELECT setval('public.engagement_code_seq', ${seqEngagementSnapshot.last_value}::bigint, ${seqEngagementSnapshot.is_called})`;
 
         // Post-condition: assert 0 table count drift
         const assCountRows = await rootClient`SELECT count(*)::int as c FROM public.assignments`;
         const revCountRows = await rootClient`SELECT count(*)::int as c FROM public.assignment_reviewers`;
         const workCountRows = await rootClient`SELECT count(*)::int as c FROM public.work_items`;
         const clientCountRows = await rootClient`SELECT count(*)::int as c FROM public.clients`;
+        const engagementCountRows = await rootClient`SELECT count(*)::int as c FROM public.engagements`;
+        const engagementVersionCountRows = await rootClient`SELECT count(*)::int as c FROM public.engagement_versions`;
+        const operationReceiptCountRows = await rootClient`SELECT count(*)::int as c FROM public.operation_receipts`;
+        const auditLogCountRows = await rootClient`SELECT count(*)::int as c FROM public.audit_log`;
         const assCount = assCountRows[0];
         const revCount = revCountRows[0];
         const workCount = workCountRows[0];
         const clientCount = clientCountRows[0];
-        if (assCount && revCount && workCount && clientCount) {
+        const engagementCount = engagementCountRows[0];
+        const engagementVersionCount = engagementVersionCountRows[0];
+        const operationReceiptCount = operationReceiptCountRows[0];
+        const auditLogCount = auditLogCountRows[0];
+        if (assCount && revCount && workCount && clientCount && engagementCount && engagementVersionCount && operationReceiptCount && auditLogCount) {
           expect(Number(assCount['c'])).toBe(initialCounts.assignments);
           expect(Number(revCount['c'])).toBe(initialCounts.reviewers);
           expect(Number(workCount['c'])).toBe(initialCounts.workItems);
           expect(Number(clientCount['c'])).toBe(initialCounts.clients);
+          expect(Number(engagementCount['c'])).toBe(initialCounts.engagements);
+          expect(Number(engagementVersionCount['c'])).toBe(initialCounts.engagementVersions);
+          expect(Number(operationReceiptCount['c'])).toBe(initialCounts.operationReceipts);
+          expect(Number(auditLogCount['c'])).toBe(initialCounts.auditLog);
         }
       }
     } finally {
@@ -781,6 +810,534 @@ describe('PostgresCrmRepository Integration Suite', () => {
 
       const fetchedAfterClear = await repo.getAssignment(ctx, newId);
       expect(fetchedAfterClear?.description).toBeNull();
+    });
+  });
+
+  describe('ENG-01-A2a Postgres Integration: Engagements, Versions, and Operation Receipts', () => {
+    it('IT-15: creates draft engagement + v1 atomically with ENG-###### code sequence', async () => {
+      await runIsolatedTest(async (repo, tx) => {
+        const ctx = { actorId: FOUNDER_ID };
+        const clients = await repo.listClientReferences(ctx);
+        const services = await repo.listServiceReferences(ctx);
+        const firstService = services[0]!;
+        const realClient = await repo.createClient(ctx, {
+          id: '90000000-0000-4000-a000-000000000015',
+          displayName: 'IT-15 Real Client',
+          relationshipOwnerId: MANAGER_ID,
+          createdAt: '2026-04-01T00:00:00.000Z',
+          updatedAt: '2026-04-01T00:00:00.000Z',
+        });
+
+        const created = await repo.mutateEngagement(ctx, {
+          kind: 'createDraft',
+          idempotencyKey: 'it-create-draft-1',
+          clientId: realClient.id,
+          serviceId: firstService.id,
+          title: 'Integration Test Statutory Audit',
+          scope: 'Comprehensive annual financial audit and statutory reporting',
+          responsiblePartnerId: FOUNDER_ID,
+          deliveryManagerId: MANAGER_ID,
+          feeModel: 'fixed',
+          agreedFeePaise: 50000000,
+          billingTerms: '50% advance on sign-off, 50% on deliverable',
+          startDate: '2026-04-01',
+          endDate: '2027-03-31',
+        });
+
+        expect(created.id).toMatch(/^[0-9a-f-]{36}$/);
+        expect(created.code).toMatch(/^ENG-\d{6}$/);
+        expect(created.status).toBe('draft');
+        expect(created.approvedVersionId).toBeNull();
+        expect(created.approvedVersion).toBeNull();
+        expect(created.approvedAt).toBeNull();
+        expect(created.endedAt).toBeNull();
+
+        // Verify version 1 exists in DB
+        const versions = await repo.listEngagementVersions(ctx, created.id);
+        expect(versions).toHaveLength(1);
+        expect(versions[0]!.id).toMatch(/^[0-9a-f-]{36}$/);
+        expect(versions[0]!.versionNumber).toBe(1);
+        expect(versions[0]!.approvedAt).toBeNull();
+
+        // Verify operation_receipt was recorded
+        const receipts = await tx`
+          SELECT idempotency_key, operation_type, request_hash
+          FROM public.operation_receipts
+          WHERE actor_id = ${FOUNDER_ID}::uuid AND idempotency_key = 'it-create-draft-1';
+        `;
+        expect(receipts).toHaveLength(1);
+        expect(receipts[0]?.['operation_type']).toBe('createDraft');
+
+        const rawLineage = await tx`
+          SELECT e.is_demo AS engagement_demo, ev.is_demo AS version_demo, r.is_demo AS receipt_demo
+          FROM public.engagements e
+          JOIN public.engagement_versions ev ON ev.engagement_id = e.id
+          JOIN public.operation_receipts r ON r.actor_id = ${FOUNDER_ID}::uuid
+            AND r.idempotency_key = 'it-create-draft-1'
+          WHERE e.id = ${created.id}::uuid AND ev.version_number = 1;
+        `;
+        expect(rawLineage[0]).toMatchObject({ engagement_demo: false, version_demo: false, receipt_demo: false });
+
+        const demoClient = (await tx`SELECT id FROM public.clients WHERE is_demo = true LIMIT 1`)[0];
+        expect(demoClient).toBeDefined();
+        const realClientRaw = await tx`SELECT is_demo FROM public.clients WHERE id = ${realClient.id}::uuid`;
+        expect(realClientRaw[0]?.['is_demo']).toBe(false);
+        const demo = await repo.mutateEngagement(ctx, {
+          kind: 'createDraft', idempotencyKey: 'it-create-demo-lineage', clientId: String(demoClient!['id']),
+          serviceId: firstService.id, title: 'Demo lineage', scope: 'Demo scope',
+          responsiblePartnerId: FOUNDER_ID, deliveryManagerId: MANAGER_ID, feeModel: 'fixed',
+          agreedFeePaise: 1000000, billingTerms: 'Terms', startDate: '2026-04-01',
+        });
+        const demoLineage = await tx`
+          SELECT e.is_demo AS engagement_demo, ev.is_demo AS version_demo, r.is_demo AS receipt_demo
+          FROM public.engagements e JOIN public.engagement_versions ev ON ev.engagement_id = e.id
+          JOIN public.operation_receipts r ON r.actor_id = ${FOUNDER_ID}::uuid AND r.idempotency_key = 'it-create-demo-lineage'
+          WHERE e.id = ${demo.id}::uuid AND ev.version_number = 1;
+        `;
+        expect(demoLineage[0]).toMatchObject({ engagement_demo: true, version_demo: true, receipt_demo: true });
+      });
+    });
+
+    it('IT-15b: preserves real and demo is_demo lineage through amendment', async () => {
+      await runIsolatedTest(async (repo, tx) => {
+        const ctx = { actorId: FOUNDER_ID };
+        const service = (await repo.listServiceReferences(ctx))[0];
+        if (!service) throw new Error('Service missing');
+        const realClient = await repo.createClient(ctx, {
+          id: '90000000-0000-4000-a000-00000000015b',
+          displayName: 'IT-15b Real Client',
+          relationshipOwnerId: MANAGER_ID,
+          createdAt: '2026-04-02T00:00:00.000Z',
+          updatedAt: '2026-04-02T00:00:00.000Z',
+        });
+        const demoClient = (await tx`SELECT id FROM public.clients WHERE is_demo = true LIMIT 1`)[0];
+        if (!demoClient) throw new Error('Demo client missing');
+
+        const createAndAmend = async (clientId: string, prefix: string) => {
+          const draft = await repo.mutateEngagement(ctx, {
+            kind: 'createDraft', idempotencyKey: `${prefix}-create`, clientId, serviceId: service.id,
+            title: `${prefix} engagement`, scope: `${prefix} scope`, responsiblePartnerId: FOUNDER_ID,
+            deliveryManagerId: MANAGER_ID, feeModel: 'fixed', agreedFeePaise: 1000000,
+            billingTerms: 'Terms', startDate: '2026-04-02',
+          });
+          const version = (await repo.listEngagementVersions(ctx, draft.id))[0];
+          if (!version) throw new Error('Version missing');
+          const activated = await repo.mutateEngagement(ctx, {
+            kind: 'activate', idempotencyKey: `${prefix}-activate`, engagementId: draft.id,
+            versionId: version.id, expectedUpdatedAt: draft.updatedAt,
+          });
+          const amended = await repo.mutateEngagement(ctx, {
+            kind: 'amend', idempotencyKey: `${prefix}-amend`, engagementId: draft.id,
+            title: `${prefix} amended`, scope: `${prefix} amended scope`, responsiblePartnerId: FOUNDER_ID,
+            deliveryManagerId: MANAGER_ID, feeModel: 'fixed', agreedFeePaise: 2000000,
+            billingTerms: 'Updated terms', startDate: '2026-04-02', expectedUpdatedAt: activated.updatedAt,
+          });
+          return { id: draft.id, amendedVersionId: amended.approvedVersion?.id };
+        };
+
+        const real = await createAndAmend(realClient.id, 'it-15b-real');
+        const demo = await createAndAmend(String(demoClient['id']), 'it-15b-demo');
+        const lineage = await tx`
+          SELECT e.id, e.is_demo AS engagement_demo, ev.version_number, ev.is_demo AS version_demo
+          FROM public.engagements e
+          JOIN public.engagement_versions ev ON ev.engagement_id = e.id
+          WHERE e.id IN (${real.id}::uuid, ${demo.id}::uuid)
+          ORDER BY e.id, ev.version_number;
+        `;
+        expect(lineage.filter((row) => row['id'] === real.id).map((row) => [row['engagement_demo'], row['version_number'], row['version_demo']])).toEqual([[false, 1, false], [false, 2, false]]);
+        expect(lineage.filter((row) => row['id'] === demo.id).map((row) => [row['engagement_demo'], row['version_number'], row['version_demo']])).toEqual([[true, 1, true], [true, 2, true]]);
+        const receipts = await tx`
+          SELECT idempotency_key, is_demo FROM public.operation_receipts
+          WHERE idempotency_key IN ('it-15b-real-create', 'it-15b-real-amend', 'it-15b-demo-create', 'it-15b-demo-amend')
+          ORDER BY idempotency_key;
+        `;
+        expect(receipts.map((row) => [row['idempotency_key'], row['is_demo']])).toEqual([
+          ['it-15b-demo-amend', true], ['it-15b-demo-create', true],
+          ['it-15b-real-amend', false], ['it-15b-real-create', false],
+        ]);
+      });
+    });
+
+    it('IT-16: executes full lifecycle: activate -> amend to v2 -> end under Postgres authority', async () => {
+      await runIsolatedTest(async (repo, tx) => {
+        const founderCtx = { actorId: FOUNDER_ID };
+        const clients = await repo.listClientReferences(founderCtx);
+        const services = await repo.listServiceReferences(founderCtx);
+        const client = clients[0]!;
+        const service = services[0]!;
+
+        // 1. Create draft (adapter generates IDs internally)
+        const draft = await repo.mutateEngagement(founderCtx, {
+          kind: 'createDraft',
+          idempotencyKey: 'it-lifecycle-create',
+          clientId: client.id,
+          serviceId: service.id,
+          title: 'Full Lifecycle Engagement',
+          scope: 'Scope definition for full lifecycle',
+          responsiblePartnerId: FOUNDER_ID,
+          deliveryManagerId: MANAGER_ID,
+          feeModel: 'fixed',
+          agreedFeePaise: 20000000,
+          billingTerms: 'Deliverable completion',
+          startDate: '2026-05-01',
+        });
+
+        // Use returned IDs — no caller-generated IDs
+        const versions = await repo.listEngagementVersions(founderCtx, draft.id);
+        const verId = versions[0]!.id;
+
+        // 2. Activate
+        const activated = await repo.mutateEngagement(founderCtx, {
+          kind: 'activate',
+          idempotencyKey: 'it-lifecycle-activate',
+          engagementId: draft.id,
+          versionId: verId,
+          expectedUpdatedAt: draft.updatedAt,
+        });
+
+        expect(activated.status).toBe('active');
+        expect(activated.approvedVersionId).toBe(verId);
+        expect(activated.approvedVersion?.id).toBe(verId);
+        expect(activated.approvedAt).not.toBeNull();
+        expect(activated.approvedById).toBe(FOUNDER_ID);
+
+        // 3. Amend active engagement -> allocates version 2
+        const amended = await repo.mutateEngagement(founderCtx, {
+          kind: 'amend',
+          idempotencyKey: 'it-lifecycle-amend',
+          engagementId: draft.id,
+          title: 'Full Lifecycle Engagement (Amended)',
+          scope: 'Amended scope with branch offices',
+          responsiblePartnerId: FOUNDER_ID,
+          deliveryManagerId: MANAGER_ID,
+          feeModel: 'recurring',
+          agreedFeePaise: 25000000,
+          billingTerms: 'Quarterly',
+          startDate: '2026-05-01',
+          expectedUpdatedAt: activated.updatedAt,
+        });
+
+        expect(amended.status).toBe('active');
+        expect(amended.approvedVersion?.versionNumber).toBe(2);
+        expect(amended.approvedVersion?.agreedFeePaise).toBe(25000000);
+
+        const allVersions = await repo.listEngagementVersions(founderCtx, draft.id);
+        expect(allVersions).toHaveLength(2);
+        expect(allVersions.map((v) => v.versionNumber)).toEqual([1, 2]);
+
+        // 4. End active engagement
+        const ended = await repo.mutateEngagement(founderCtx, {
+          kind: 'end',
+          idempotencyKey: 'it-lifecycle-end',
+          engagementId: draft.id,
+          outcome: 'completed',
+          reason: 'Engagement deliverables fulfilled in accordance with terms.',
+          expectedUpdatedAt: amended.updatedAt,
+        });
+
+        expect(ended.status).toBe('ended');
+        expect(ended.endOutcome).toBe('completed');
+        expect(ended.endReason).toBe('Engagement deliverables fulfilled in accordance with terms.');
+        expect(ended.endedAt).not.toBeNull();
+        expect(ended.endedById).toBe(FOUNDER_ID);
+      });
+    });
+
+    it('IT-17: rejects stale-write concurrency and enforces non-management RLS/forbidden', async () => {
+      await runIsolatedTest(async (repo, tx) => {
+        const founderCtx = { actorId: FOUNDER_ID };
+        const staffCtx = { actorId: STAFF_ID };
+        const clients = await repo.listClientReferences(founderCtx);
+        const services = await repo.listServiceReferences(founderCtx);
+
+        // Staff cannot mutate or read engagements under RLS
+        await expect(
+          repo.mutateEngagement(staffCtx, {
+            kind: 'createDraft',
+            idempotencyKey: 'staff-forbidden-attempt',
+            clientId: clients[0]!.id,
+            serviceId: services[0]!.id,
+            title: 'Staff Attempt',
+            scope: 'Scope',
+            responsiblePartnerId: FOUNDER_ID,
+            deliveryManagerId: MANAGER_ID,
+            feeModel: 'fixed',
+            agreedFeePaise: 1000000,
+            billingTerms: 'Terms',
+            startDate: '2026-06-01',
+          }),
+        ).rejects.toMatchObject({
+          code: 'forbidden',
+        });
+
+        // Founder creates draft
+        const created = await repo.mutateEngagement(founderCtx, {
+          kind: 'createDraft',
+          idempotencyKey: 'stale-rejection-test',
+          clientId: clients[0]!.id,
+          serviceId: services[0]!.id,
+          title: 'Concurrency Rejection Test',
+          scope: 'Scope',
+          responsiblePartnerId: FOUNDER_ID,
+          deliveryManagerId: MANAGER_ID,
+          feeModel: 'fixed',
+          agreedFeePaise: 10000000,
+          billingTerms: 'Terms',
+          startDate: '2026-06-01',
+        });
+
+        const versions = await repo.listEngagementVersions(founderCtx, created.id);
+
+        // 409 optimistic_lock_conflict on stale expectedUpdatedAt
+        await expect(
+          repo.mutateEngagement(founderCtx, {
+            kind: 'activate',
+            idempotencyKey: 'stale-activate-key',
+            engagementId: created.id,
+            versionId: versions[0]!.id,
+            expectedUpdatedAt: '2020-01-01T00:00:00.000Z',
+          }),
+        ).rejects.toMatchObject({
+          status: 409,
+          code: 'optimistic_lock_conflict',
+        });
+      });
+    });
+
+    it('IT-18: identical replay returns stored original; mismatched payload throws conflict (409)', async () => {
+      await runIsolatedTest(async (repo, tx) => {
+        const founderCtx = { actorId: FOUNDER_ID };
+        const clients = await repo.listClientReferences(founderCtx);
+        const services = await repo.listServiceReferences(founderCtx);
+
+        const payload = {
+          kind: 'createDraft' as const,
+          idempotencyKey: 'it-idemp-key-99',
+          clientId: clients[0]!.id,
+          serviceId: services[0]!.id,
+          title: 'Idempotent Integration Test',
+          scope: 'Integration scope',
+          responsiblePartnerId: FOUNDER_ID,
+          deliveryManagerId: MANAGER_ID,
+          feeModel: 'fixed' as const,
+          agreedFeePaise: 15000000,
+          billingTerms: 'Terms',
+          startDate: '2026-07-01',
+        };
+
+        const original = await repo.mutateEngagement(founderCtx, payload);
+
+        // Identical replay returns exact stored DTO
+        const replay = await repo.mutateEngagement(founderCtx, payload);
+        expect(replay.id).toBe(original.id);
+        expect(replay.code).toBe(original.code);
+
+        // Mismatched payload with same key throws 409 conflict
+        await expect(
+          repo.mutateEngagement(founderCtx, {
+            ...payload,
+            agreedFeePaise: 88888888,
+          }),
+        ).rejects.toMatchObject({
+          status: 409,
+          code: 'conflict',
+        });
+      });
+    });
+
+    it('IT-19: rolls back atomically leaving no orphan version or receipt on failure', async () => {
+      await runIsolatedTest(async (repo, tx) => {
+        const founderCtx = { actorId: FOUNDER_ID };
+        const clients = await repo.listClientReferences(founderCtx);
+
+        const invalidServiceId = '00000000-0000-4000-a000-999999999999';
+        const beforeCounts = await tx`
+          SELECT
+            (SELECT count(*) FROM public.engagements WHERE client_id = ${clients[0]!.id}::uuid) AS engagements,
+            (SELECT count(*) FROM public.engagement_versions WHERE engagement_id IN
+              (SELECT id FROM public.engagements WHERE client_id = ${clients[0]!.id}::uuid)) AS versions;
+        `;
+
+        await expect(
+          repo.mutateEngagement(founderCtx, {
+            kind: 'createDraft',
+            idempotencyKey: 'it-failing-rollback-key',
+            clientId: clients[0]!.id,
+            serviceId: invalidServiceId,
+            title: 'Failing Engagement',
+            scope: 'Scope',
+            responsiblePartnerId: FOUNDER_ID,
+            deliveryManagerId: MANAGER_ID,
+            feeModel: 'fixed',
+            agreedFeePaise: 10000000,
+            billingTerms: 'Terms',
+            startDate: '2026-08-01',
+          }),
+        ).rejects.toBeDefined();
+
+        const afterCounts = await tx`
+          SELECT
+            (SELECT count(*) FROM public.engagements WHERE client_id = ${clients[0]!.id}::uuid) AS engagements,
+            (SELECT count(*) FROM public.engagement_versions WHERE engagement_id IN
+              (SELECT id FROM public.engagements WHERE client_id = ${clients[0]!.id}::uuid)) AS versions;
+        `;
+        expect(afterCounts[0]).toMatchObject({ engagements: beforeCounts[0]!['engagements'], versions: beforeCounts[0]!['versions'] });
+
+        // Verify no orphaned receipt
+        const rcptRows = await tx`
+          SELECT id FROM public.operation_receipts
+          WHERE actor_id = ${FOUNDER_ID}::uuid AND idempotency_key = 'it-failing-rollback-key';
+        `;
+        expect(rcptRows).toHaveLength(0);
+      });
+    });
+
+    it('IT-20: parallel same-key requests under advisory lock — only one write; replay returns stored DTO', async () => {
+      // Uses two independent pool connections racing the same actor+key
+      const founderCtx = { actorId: FOUNDER_ID };
+      const idempotencyKey = 'it-parallel-race-key-' + Date.now();
+
+      const clients = await new PostgresCrmRepository(pool).listClientReferences(founderCtx);
+      const services = await new PostgresCrmRepository(pool).listServiceReferences(founderCtx);
+
+      const payload = {
+        kind: 'createDraft' as const,
+        idempotencyKey,
+        clientId: clients[0]!.id,
+        serviceId: services[0]!.id,
+        title: 'Parallel Race Engagement',
+        scope: 'Race condition test scope',
+        responsiblePartnerId: FOUNDER_ID,
+        deliveryManagerId: MANAGER_ID,
+        feeModel: 'fixed' as const,
+        agreedFeePaise: 7000000,
+        billingTerms: 'Race terms',
+        startDate: '2026-09-01',
+      };
+
+      let createdEngagementId: string | undefined;
+      try {
+        // Fire two concurrent mutateEngagement calls for the same actor+key
+        const [r1, r2] = await Promise.allSettled([
+          new PostgresCrmRepository(pool).mutateEngagement(founderCtx, payload),
+          new PostgresCrmRepository(pool).mutateEngagement(founderCtx, payload),
+        ]);
+        if (r1.status === 'fulfilled') createdEngagementId = r1.value.id;
+        if (!createdEngagementId && r2.status === 'fulfilled') createdEngagementId = r2.value.id;
+        expect(r1.status).toBe('fulfilled');
+        expect(r2.status).toBe('fulfilled');
+        if (r1.status !== 'fulfilled' || r2.status !== 'fulfilled') return;
+
+        // Both returned the same engagement ID and code (idempotent)
+        expect(r1.value.id).toBe(r2.value.id);
+        expect(r1.value.code).toBe(r2.value.code);
+
+        const counts = await pool`
+          SELECT (SELECT count(*) FROM public.engagements WHERE id = ${r1.value.id}::uuid) AS engagements,
+                 (SELECT count(*) FROM public.engagement_versions WHERE engagement_id = ${r1.value.id}::uuid) AS versions,
+                 (SELECT count(*) FROM public.operation_receipts WHERE actor_id = ${FOUNDER_ID}::uuid AND idempotency_key = ${idempotencyKey}) AS receipts;
+        `;
+        expect(Number(counts[0]!['engagements'])).toBe(1);
+        expect(Number(counts[0]!['versions'])).toBe(1);
+        expect(Number(counts[0]!['receipts'])).toBe(1);
+
+      } finally {
+        if (createdEngagementId) {
+          const cleanupEngagementId = createdEngagementId;
+          await rootClient.begin(async (tx) => {
+            await tx`SELECT set_config('request.jwt.claim.sub', ${FOUNDER_ID}, true)`;
+            await tx`SELECT set_config('app.demo_cleanup', 'on', true)`;
+            await tx`SELECT set_config('app.demo_cleanup_actor', ${FOUNDER_ID}, true)`;
+            await tx`
+              DELETE FROM public.audit_log
+              WHERE is_demo = true
+                AND (
+                  (table_name = 'engagements' AND record_pk = ${cleanupEngagementId})
+                  OR (table_name = 'engagement_versions' AND record_pk IN (
+                    SELECT id::text FROM public.engagement_versions WHERE engagement_id = ${cleanupEngagementId}::uuid
+                  ))
+                  OR (table_name = 'operation_receipts' AND record_pk IN (
+                    SELECT id::text FROM public.operation_receipts
+                    WHERE actor_id = ${FOUNDER_ID}::uuid AND idempotency_key = ${idempotencyKey}
+                  ))
+                )
+            `;
+            await tx`
+              DELETE FROM public.operation_receipts
+              WHERE actor_id = ${FOUNDER_ID}::uuid AND idempotency_key = ${idempotencyKey}
+            `;
+            await tx`DELETE FROM public.engagement_versions WHERE engagement_id = ${cleanupEngagementId}::uuid`;
+            await tx`DELETE FROM public.engagements WHERE id = ${cleanupEngagementId}::uuid`;
+            await tx`SELECT set_config('app.demo_cleanup', 'off', true)`;
+            await tx`SELECT set_config('app.demo_cleanup_actor', '', true)`;
+          });
+        }
+      }
+    });
+
+    it('IT-21: cross-management-actor receipt isolation — Manager cannot replay Founder receipt', async () => {
+      await runIsolatedTest(async (repo, tx) => {
+        const founderCtx = { actorId: FOUNDER_ID };
+        const managerCtx = { actorId: MANAGER_ID };
+
+        const clients = await repo.listClientReferences(founderCtx);
+        const services = await repo.listServiceReferences(founderCtx);
+        const idempotencyKey = 'it-cross-actor-isolation-key';
+
+        // Founder creates a draft
+        const founderDraft = await repo.mutateEngagement(founderCtx, {
+          kind: 'createDraft',
+          idempotencyKey,
+          clientId: clients[0]!.id,
+          serviceId: services[0]!.id,
+          title: 'Cross-Actor Isolation Test',
+          scope: 'Actor isolation scope',
+          responsiblePartnerId: FOUNDER_ID,
+          deliveryManagerId: MANAGER_ID,
+          feeModel: 'fixed',
+          agreedFeePaise: 3000000,
+          billingTerms: 'Terms',
+          startDate: '2026-10-01',
+        });
+
+        // Verify Founder receipt exists for Founder
+        const founderReceipts = await tx`
+          SELECT id FROM public.operation_receipts
+          WHERE actor_id = ${FOUNDER_ID}::uuid AND idempotency_key = ${idempotencyKey};
+        `;
+        expect(founderReceipts).toHaveLength(1);
+
+        // Even with the exact same payload, RLS/actor scoping prevents replay of the Founder receipt.
+        const managerDraft = await repo.mutateEngagement(managerCtx, {
+          kind: 'createDraft',
+          idempotencyKey,
+          clientId: clients[0]!.id,
+          serviceId: services[0]!.id,
+          title: 'Cross-Actor Isolation Test',
+          scope: 'Actor isolation scope',
+          responsiblePartnerId: FOUNDER_ID,
+          deliveryManagerId: MANAGER_ID,
+          feeModel: 'fixed',
+          agreedFeePaise: 3000000,
+          billingTerms: 'Terms',
+          startDate: '2026-10-01',
+        });
+
+        // Manager receipt stored separately — different actor_id produces different receipt row
+        const founderReceiptInvisible = await tx`
+          SELECT id FROM public.operation_receipts
+          WHERE actor_id = ${FOUNDER_ID}::uuid AND idempotency_key = ${idempotencyKey};
+        `;
+        expect(founderReceiptInvisible).toHaveLength(0);
+        const managerReceiptVisible = await tx`
+          SELECT id FROM public.operation_receipts
+          WHERE actor_id = ${MANAGER_ID}::uuid AND idempotency_key = ${idempotencyKey};
+        `;
+        expect(managerReceiptVisible).toHaveLength(1);
+
+        // The two engagements are distinct
+        expect(founderDraft.id).not.toBe(managerDraft.id);
+      });
     });
   });
 });

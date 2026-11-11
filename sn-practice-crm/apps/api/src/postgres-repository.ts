@@ -4,6 +4,8 @@ import type {
   ClientStatus,
   CreateLedgerEntryInput,
   CreateRecurringScheduleInput,
+  EngagementDto,
+  EngagementVersionDto,
   GenerateDueAssignmentsResult,
   LedgerEntryDto,
   OfficeAccountsSummaryDto,
@@ -17,6 +19,7 @@ import { PostgresTransactionRunner, type SqlClient } from './db';
 import { ApiError } from './errors';
 import { maskGstinForRoutineRead, maskPanForRoutineRead } from './client-privacy';
 import { isProductionEnvironment } from './http';
+import { computeRequestHash } from './idempotency';
 import type {
   ClientReference,
   CreateAssignmentRecord,
@@ -25,6 +28,7 @@ import type {
   CrmRepository,
   DevActorDirectory,
   EmployeeRecord,
+  MutateEngagementCommand,
   RepositoryContext,
   ServiceReference,
   UpdateAssignmentCommand,
@@ -1317,5 +1321,622 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
     input: CreateLedgerEntryInput & { id: string; recordedById: string },
   ): Promise<LedgerEntryDto> {
     throw new ApiError(501, 'domain_not_persisted', 'Recurring schedules and ledger persistence are deferred to future slices.');
+  }
+
+  // --- Engagements (ENG-01) ---
+
+  private async fetchEngagementVersionDto(tx: SqlClient, id: string): Promise<EngagementVersionDto | null> {
+    const rows = await tx`
+      SELECT
+        ev.id,
+        ev.engagement_id AS "engagementId",
+        ev.version_number AS "versionNumber",
+        ev.title,
+        ev.scope,
+        ev.exclusions,
+        ev.responsible_partner_id AS "responsiblePartnerId",
+        p_partner.full_name AS "responsiblePartnerName",
+        ev.delivery_manager_id AS "deliveryManagerId",
+        p_mgr.full_name AS "deliveryManagerName",
+        ev.fee_model AS "feeModel",
+        ev.agreed_fee_paise AS "agreedFeePaise",
+        ev.billing_terms AS "billingTerms",
+        ev.start_date::text AS "startDate",
+        ev.end_date::text AS "endDate",
+        ev.approved_at AS "approvedAt",
+        ev.approved_by AS "approvedById",
+        ev.created_by AS "createdById",
+        ev.created_at AS "createdAt"
+      FROM public.engagement_versions ev
+      LEFT JOIN public.profiles p_partner ON p_partner.user_id = ev.responsible_partner_id
+      LEFT JOIN public.profiles p_mgr ON p_mgr.user_id = ev.delivery_manager_id
+      WHERE ev.id = ${id}::uuid;
+    `;
+    const row = rows[0];
+    if (!row) return null;
+
+    return {
+      id: String(row['id']),
+      engagementId: String(row['engagementId']),
+      versionNumber: Number(row['versionNumber']),
+      title: String(row['title']),
+      scope: String(row['scope']),
+      exclusions: row['exclusions'] !== null && row['exclusions'] !== undefined ? String(row['exclusions']) : null,
+      responsiblePartnerId: String(row['responsiblePartnerId']),
+      responsiblePartnerName: row['responsiblePartnerName'] ? String(row['responsiblePartnerName']) : undefined,
+      deliveryManagerId: String(row['deliveryManagerId']),
+      deliveryManagerName: row['deliveryManagerName'] ? String(row['deliveryManagerName']) : undefined,
+      feeModel: row['feeModel'] as EngagementVersionDto['feeModel'],
+      agreedFeePaise: Number(row['agreedFeePaise']),
+      billingTerms: String(row['billingTerms']),
+      startDate: String(row['startDate']),
+      endDate: row['endDate'] !== null && row['endDate'] !== undefined ? String(row['endDate']) : null,
+      approvedAt: row['approvedAt'] ? toIsoString(row['approvedAt']) : null,
+      approvedById: row['approvedById'] ? String(row['approvedById']) : null,
+      createdById: String(row['createdById']),
+      createdAt: toIsoString(row['createdAt']),
+    };
+  }
+
+  private async fetchEngagementDto(tx: SqlClient, id: string): Promise<EngagementDto | null> {
+    const rows = await tx`
+      SELECT
+        e.id,
+        e.code,
+        e.client_id AS "clientId",
+        c.display_name AS "clientName",
+        e.service_id AS "serviceId",
+        s.name AS "serviceName",
+        e.status,
+        e.approved_version_id AS "approvedVersionId",
+        e.approved_at AS "approvedAt",
+        e.approved_by AS "approvedById",
+        e.ended_at AS "endedAt",
+        e.ended_by AS "endedById",
+        e.end_outcome AS "endOutcome",
+        e.end_reason AS "endReason",
+        e.created_by AS "createdById",
+        e.created_at AS "createdAt",
+        e.updated_at AS "updatedAt"
+      FROM public.engagements e
+      JOIN public.clients c ON c.id = e.client_id
+      JOIN public.service_catalog s ON s.id = e.service_id
+      WHERE e.id = ${id}::uuid;
+    `;
+    const row = rows[0];
+    if (!row) return null;
+
+    let approvedVersion: EngagementVersionDto | null = null;
+    if (row['approvedVersionId']) {
+      approvedVersion = await this.fetchEngagementVersionDto(tx, String(row['approvedVersionId']));
+    }
+
+    return {
+      id: String(row['id']),
+      code: String(row['code']),
+      clientId: String(row['clientId']),
+      clientName: row['clientName'] ? String(row['clientName']) : undefined,
+      serviceId: String(row['serviceId']),
+      serviceName: row['serviceName'] ? String(row['serviceName']) : null,
+      status: row['status'] as EngagementDto['status'],
+      approvedVersionId: row['approvedVersionId'] ? String(row['approvedVersionId']) : null,
+      approvedVersion,
+      approvedAt: row['approvedAt'] ? toIsoString(row['approvedAt']) : null,
+      approvedById: row['approvedById'] ? String(row['approvedById']) : null,
+      endedAt: row['endedAt'] ? toIsoString(row['endedAt']) : null,
+      endedById: row['endedById'] ? String(row['endedById']) : null,
+      endOutcome: row['endOutcome'] ? (row['endOutcome'] as EngagementDto['endOutcome']) : null,
+      endReason: row['endReason'] ? String(row['endReason']) : null,
+      createdById: String(row['createdById']),
+      createdAt: toIsoString(row['createdAt']),
+      updatedAt: toIsoString(row['updatedAt']),
+    };
+  }
+
+  async getEngagement(ctx: RepositoryContext, id: string): Promise<EngagementDto | null> {
+    try {
+      return await this.runner.withUserContext(ctx, async (tx) => {
+        return this.fetchEngagementDto(tx, id);
+      });
+    } catch (error) {
+      sanitizeDatabaseError(error);
+    }
+  }
+
+  async listEngagements(ctx: RepositoryContext): Promise<EngagementDto[]> {
+    try {
+      return await this.runner.withUserContext(ctx, async (tx) => {
+        // Single query with LEFT JOIN to approved version — no N+1
+        const rows = await tx`
+          SELECT
+            e.id,
+            e.code,
+            e.client_id AS "clientId",
+            c.display_name AS "clientName",
+            e.service_id AS "serviceId",
+            s.name AS "serviceName",
+            e.status,
+            e.approved_version_id AS "approvedVersionId",
+            e.approved_at AS "approvedAt",
+            e.approved_by AS "approvedById",
+            e.ended_at AS "endedAt",
+            e.ended_by AS "endedById",
+            e.end_outcome AS "endOutcome",
+            e.end_reason AS "endReason",
+            e.created_by AS "createdById",
+            e.created_at AS "createdAt",
+            e.updated_at AS "updatedAt",
+            ev.id AS "av_id",
+            ev.engagement_id AS "av_engagementId",
+            ev.version_number AS "av_versionNumber",
+            ev.title AS "av_title",
+            ev.scope AS "av_scope",
+            ev.exclusions AS "av_exclusions",
+            ev.responsible_partner_id AS "av_responsiblePartnerId",
+            p_partner.full_name AS "av_responsiblePartnerName",
+            ev.delivery_manager_id AS "av_deliveryManagerId",
+            p_mgr.full_name AS "av_deliveryManagerName",
+            ev.fee_model AS "av_feeModel",
+            ev.agreed_fee_paise AS "av_agreedFeePaise",
+            ev.billing_terms AS "av_billingTerms",
+            ev.start_date::text AS "av_startDate",
+            ev.end_date::text AS "av_endDate",
+            ev.approved_at AS "av_approvedAt",
+            ev.approved_by AS "av_approvedById",
+            ev.created_by AS "av_createdById",
+            ev.created_at AS "av_createdAt"
+          FROM public.engagements e
+          JOIN public.clients c ON c.id = e.client_id
+          JOIN public.service_catalog s ON s.id = e.service_id
+          LEFT JOIN public.engagement_versions ev ON ev.id = e.approved_version_id
+          LEFT JOIN public.profiles p_partner ON p_partner.user_id = ev.responsible_partner_id
+          LEFT JOIN public.profiles p_mgr ON p_mgr.user_id = ev.delivery_manager_id
+          ORDER BY e.created_at DESC;
+        `;
+
+        return rows.map((row) => {
+          let approvedVersion: EngagementVersionDto | null = null;
+          if (row['approvedVersionId'] && row['av_id']) {
+            approvedVersion = {
+              id: String(row['av_id']),
+              engagementId: String(row['av_engagementId']),
+              versionNumber: Number(row['av_versionNumber']),
+              title: String(row['av_title']),
+              scope: String(row['av_scope']),
+              exclusions: row['av_exclusions'] !== null && row['av_exclusions'] !== undefined ? String(row['av_exclusions']) : null,
+              responsiblePartnerId: String(row['av_responsiblePartnerId']),
+              responsiblePartnerName: row['av_responsiblePartnerName'] ? String(row['av_responsiblePartnerName']) : undefined,
+              deliveryManagerId: String(row['av_deliveryManagerId']),
+              deliveryManagerName: row['av_deliveryManagerName'] ? String(row['av_deliveryManagerName']) : undefined,
+              feeModel: row['av_feeModel'] as EngagementVersionDto['feeModel'],
+              agreedFeePaise: Number(row['av_agreedFeePaise']),
+              billingTerms: String(row['av_billingTerms']),
+              startDate: String(row['av_startDate']),
+              endDate: row['av_endDate'] !== null && row['av_endDate'] !== undefined ? String(row['av_endDate']) : null,
+              approvedAt: row['av_approvedAt'] ? toIsoString(row['av_approvedAt']) : null,
+              approvedById: row['av_approvedById'] ? String(row['av_approvedById']) : null,
+              createdById: String(row['av_createdById']),
+              createdAt: toIsoString(row['av_createdAt']),
+            };
+          }
+          return {
+            id: String(row['id']),
+            code: String(row['code']),
+            clientId: String(row['clientId']),
+            clientName: row['clientName'] ? String(row['clientName']) : undefined,
+            serviceId: String(row['serviceId']),
+            serviceName: row['serviceName'] ? String(row['serviceName']) : null,
+            status: row['status'] as EngagementDto['status'],
+            approvedVersionId: row['approvedVersionId'] ? String(row['approvedVersionId']) : null,
+            approvedVersion,
+            approvedAt: row['approvedAt'] ? toIsoString(row['approvedAt']) : null,
+            approvedById: row['approvedById'] ? String(row['approvedById']) : null,
+            endedAt: row['endedAt'] ? toIsoString(row['endedAt']) : null,
+            endedById: row['endedById'] ? String(row['endedById']) : null,
+            endOutcome: row['endOutcome'] ? (row['endOutcome'] as EngagementDto['endOutcome']) : null,
+            endReason: row['endReason'] ? String(row['endReason']) : null,
+            createdById: String(row['createdById']),
+            createdAt: toIsoString(row['createdAt']),
+            updatedAt: toIsoString(row['updatedAt']),
+          };
+        });
+      });
+    } catch (error) {
+      sanitizeDatabaseError(error);
+    }
+  }
+
+  async listEngagementVersions(ctx: RepositoryContext, engagementId: string): Promise<EngagementVersionDto[]> {
+    try {
+      return await this.runner.withUserContext(ctx, async (tx) => {
+        const rows = await tx`
+          SELECT
+            ev.id,
+            ev.engagement_id AS "engagementId",
+            ev.version_number AS "versionNumber",
+            ev.title,
+            ev.scope,
+            ev.exclusions,
+            ev.responsible_partner_id AS "responsiblePartnerId",
+            p_partner.full_name AS "responsiblePartnerName",
+            ev.delivery_manager_id AS "deliveryManagerId",
+            p_mgr.full_name AS "deliveryManagerName",
+            ev.fee_model AS "feeModel",
+            ev.agreed_fee_paise AS "agreedFeePaise",
+            ev.billing_terms AS "billingTerms",
+            ev.start_date::text AS "startDate",
+            ev.end_date::text AS "endDate",
+            ev.approved_at AS "approvedAt",
+            ev.approved_by AS "approvedById",
+            ev.created_by AS "createdById",
+            ev.created_at AS "createdAt"
+          FROM public.engagement_versions ev
+          LEFT JOIN public.profiles p_partner ON p_partner.user_id = ev.responsible_partner_id
+          LEFT JOIN public.profiles p_mgr ON p_mgr.user_id = ev.delivery_manager_id
+          WHERE ev.engagement_id = ${engagementId}::uuid
+          ORDER BY ev.version_number ASC;
+        `;
+
+        return rows.map((row) => ({
+          id: String(row['id']),
+          engagementId: String(row['engagementId']),
+          versionNumber: Number(row['versionNumber']),
+          title: String(row['title']),
+          scope: String(row['scope']),
+          exclusions: row['exclusions'] !== null && row['exclusions'] !== undefined ? String(row['exclusions']) : null,
+          responsiblePartnerId: String(row['responsiblePartnerId']),
+          responsiblePartnerName: row['responsiblePartnerName'] ? String(row['responsiblePartnerName']) : undefined,
+          deliveryManagerId: String(row['deliveryManagerId']),
+          deliveryManagerName: row['deliveryManagerName'] ? String(row['deliveryManagerName']) : undefined,
+          feeModel: row['feeModel'] as EngagementVersionDto['feeModel'],
+          agreedFeePaise: Number(row['agreedFeePaise']),
+          billingTerms: String(row['billingTerms']),
+          startDate: String(row['startDate']),
+          endDate: row['endDate'] !== null && row['endDate'] !== undefined ? String(row['endDate']) : null,
+          approvedAt: row['approvedAt'] ? toIsoString(row['approvedAt']) : null,
+          approvedById: row['approvedById'] ? String(row['approvedById']) : null,
+          createdById: String(row['createdById']),
+          createdAt: toIsoString(row['createdAt']),
+        }));
+      });
+    } catch (error) {
+      sanitizeDatabaseError(error);
+    }
+  }
+
+  async mutateEngagement(ctx: RepositoryContext, command: MutateEngagementCommand): Promise<EngagementDto> {
+    try {
+      return await this.runner.withUserContext(ctx, async (tx) => {
+        const trimmedKey = command.idempotencyKey.trim();
+        if (trimmedKey.length < 1 || trimmedKey.length > 255) {
+          throw new ApiError(422, 'validation_failed', 'idempotencyKey must be between 1 and 255 characters.');
+        }
+
+        // Transaction-scoped advisory xact lock based on actor + idempotencyKey
+        const lockStr = `${ctx.actorId}:${trimmedKey}`;
+        await tx`SELECT pg_advisory_xact_lock(hashtext(${lockStr}))`;
+
+        // Strip idempotencyKey for canonical request payload hashing
+        const { idempotencyKey: _, ...payload } = command;
+        const requestHash = computeRequestHash(payload);
+
+        // Lookup existing receipt
+        const receiptRows = await tx`
+          SELECT operation_type, request_hash, result
+          FROM public.operation_receipts
+          WHERE actor_id = ${ctx.actorId}::uuid
+            AND idempotency_key = ${trimmedKey};
+        `;
+
+        if (receiptRows.length > 0) {
+          const receipt = receiptRows[0]!;
+          if (receipt['operation_type'] !== command.kind || receipt['request_hash'] !== requestHash) {
+            throw new ApiError(
+              409,
+              'conflict',
+              'Idempotency key was previously used with a different operation or payload.',
+            );
+          }
+          return receipt['result'] as EngagementDto;
+        }
+
+        let result: EngagementDto;
+
+        switch (command.kind) {
+          case 'createDraft': {
+            const engId = crypto.randomUUID();
+            const verId = crypto.randomUUID();
+
+            // Derive is_demo from the client row — real clients are false, demo clients are true
+            const clientDemoRows = await tx`
+              SELECT is_demo FROM public.clients WHERE id = ${command.clientId}::uuid;
+            `;
+            const clientIsDemo = clientDemoRows.length > 0 ? Boolean(clientDemoRows[0]!['is_demo']) : false;
+
+            await tx`
+              INSERT INTO public.engagements (
+                id, client_id, service_id, status, is_demo
+              ) VALUES (
+                ${engId}::uuid,
+                ${command.clientId}::uuid,
+                ${command.serviceId}::uuid,
+                'draft'::public.engagement_status,
+                ${clientIsDemo}
+              );
+            `;
+
+            await tx`
+              INSERT INTO public.engagement_versions (
+                id, engagement_id, version_number, title, scope, exclusions,
+                responsible_partner_id, delivery_manager_id, fee_model,
+                agreed_fee_paise, billing_terms, start_date, end_date, is_demo
+              ) VALUES (
+                ${verId}::uuid,
+                ${engId}::uuid,
+                1,
+                ${command.title.trim()},
+                ${command.scope.trim()},
+                ${command.exclusions ? command.exclusions.trim() : null},
+                ${command.responsiblePartnerId}::uuid,
+                ${command.deliveryManagerId}::uuid,
+                ${command.feeModel}::public.engagement_fee_model,
+                ${command.agreedFeePaise},
+                ${command.billingTerms.trim()},
+                ${command.startDate}::date,
+                ${command.endDate ? command.endDate : null}::date,
+                ${clientIsDemo}
+              );
+            `;
+
+            const created = await this.fetchEngagementDto(tx, engId);
+            if (!created) {
+              throw new ApiError(500, 'internal_error', 'Created engagement could not be retrieved.');
+            }
+            result = created;
+            break;
+          }
+
+          case 'reviseDraft': {
+            const updateParent = await tx`
+              UPDATE public.engagements
+              SET updated_at = now()
+              WHERE id = ${command.engagementId}::uuid
+                AND date_trunc('milliseconds', updated_at) = date_trunc('milliseconds', ${command.expectedUpdatedAt}::timestamptz)
+              RETURNING id;
+            `;
+
+            if (updateParent.length === 0) {
+              const checkRows = await tx`
+                SELECT updated_at FROM public.engagements WHERE id = ${command.engagementId}::uuid;
+              `;
+              if (checkRows.length === 0) {
+                throw new ApiError(404, 'not_found', 'Engagement was not found.');
+              }
+              throw new ApiError(
+                409,
+                'optimistic_lock_conflict',
+                'The resource was updated concurrently by another operation.',
+              );
+            }
+
+            const updateVer = await tx`
+              UPDATE public.engagement_versions
+              SET title = ${command.title.trim()},
+                  scope = ${command.scope.trim()},
+                  exclusions = ${command.exclusions ? command.exclusions.trim() : null},
+                  responsible_partner_id = ${command.responsiblePartnerId}::uuid,
+                  delivery_manager_id = ${command.deliveryManagerId}::uuid,
+                  fee_model = ${command.feeModel}::public.engagement_fee_model,
+                  agreed_fee_paise = ${command.agreedFeePaise},
+                  billing_terms = ${command.billingTerms.trim()},
+                  start_date = ${command.startDate}::date,
+                  end_date = ${command.endDate ? command.endDate : null}::date
+              WHERE engagement_id = ${command.engagementId}::uuid
+                AND version_number = 1
+                AND approved_at IS NULL
+              RETURNING id;
+            `;
+
+            if (updateVer.length === 0) {
+              throw new ApiError(422, 'validation_failed', 'Draft version could not be updated or was already approved.');
+            }
+
+            const updated = await this.fetchEngagementDto(tx, command.engagementId);
+            if (!updated) {
+              throw new ApiError(404, 'not_found', 'Engagement was not found.');
+            }
+            result = updated;
+            break;
+          }
+
+          case 'activate': {
+            const approveVer = await tx`
+              UPDATE public.engagement_versions
+              SET approved_at = now(),
+                  approved_by = ${ctx.actorId}::uuid
+              WHERE id = ${command.versionId}::uuid
+                AND engagement_id = ${command.engagementId}::uuid
+              RETURNING id;
+            `;
+
+            if (approveVer.length === 0) {
+              const verCheck = await tx`
+                SELECT id FROM public.engagement_versions WHERE id = ${command.versionId}::uuid;
+              `;
+              if (verCheck.length === 0) {
+                throw new ApiError(404, 'not_found', 'Approved version does not exist.');
+              }
+              throw new ApiError(422, 'validation_failed', 'Approved version does not belong to this engagement.');
+            }
+
+            const updateParent = await tx`
+              UPDATE public.engagements
+              SET status = 'active'::public.engagement_status,
+                  approved_version_id = ${command.versionId}::uuid,
+                  updated_at = now()
+              WHERE id = ${command.engagementId}::uuid
+                AND date_trunc('milliseconds', updated_at) = date_trunc('milliseconds', ${command.expectedUpdatedAt}::timestamptz)
+              RETURNING id;
+            `;
+
+            if (updateParent.length === 0) {
+              const checkRows = await tx`
+                SELECT updated_at FROM public.engagements WHERE id = ${command.engagementId}::uuid;
+              `;
+              if (checkRows.length === 0) {
+                throw new ApiError(404, 'not_found', 'Engagement was not found.');
+              }
+              throw new ApiError(
+                409,
+                'optimistic_lock_conflict',
+                'The resource was updated concurrently by another operation.',
+              );
+            }
+
+            const updated = await this.fetchEngagementDto(tx, command.engagementId);
+            if (!updated) {
+              throw new ApiError(404, 'not_found', 'Engagement was not found.');
+            }
+            result = updated;
+            break;
+          }
+
+          case 'amend': {
+            const parentLock = await tx`
+              SELECT id, status, is_demo
+              FROM public.engagements
+              WHERE id = ${command.engagementId}::uuid
+                AND date_trunc('milliseconds', updated_at) = date_trunc('milliseconds', ${command.expectedUpdatedAt}::timestamptz)
+              FOR UPDATE;
+            `;
+
+            if (parentLock.length === 0) {
+              const checkRows = await tx`
+                SELECT updated_at FROM public.engagements WHERE id = ${command.engagementId}::uuid;
+              `;
+              if (checkRows.length === 0) {
+                throw new ApiError(404, 'not_found', 'Engagement was not found.');
+              }
+              throw new ApiError(
+                409,
+                'optimistic_lock_conflict',
+                'The resource was updated concurrently by another operation.',
+              );
+            }
+
+            const parentRow = parentLock[0]!;
+            if (parentRow['status'] !== 'active') {
+              throw new ApiError(422, 'validation_failed', 'Cannot amend an engagement that is not active.');
+            }
+
+            const maxVerRows = await tx`
+              SELECT coalesce(max(version_number), 0) AS max_v
+              FROM public.engagement_versions
+              WHERE engagement_id = ${command.engagementId}::uuid;
+            `;
+            const nextVersionNumber = Number(maxVerRows[0]?.['max_v'] ?? 0) + 1;
+            const newVersionId = crypto.randomUUID();
+
+            await tx`
+              INSERT INTO public.engagement_versions (
+                id, engagement_id, version_number, title, scope, exclusions,
+                responsible_partner_id, delivery_manager_id, fee_model,
+                agreed_fee_paise, billing_terms, start_date, end_date,
+                approved_at, approved_by, is_demo
+              ) VALUES (
+                ${newVersionId}::uuid,
+                ${command.engagementId}::uuid,
+                ${nextVersionNumber},
+                ${command.title.trim()},
+                ${command.scope.trim()},
+                ${command.exclusions ? command.exclusions.trim() : null},
+                ${command.responsiblePartnerId}::uuid,
+                ${command.deliveryManagerId}::uuid,
+                ${command.feeModel}::public.engagement_fee_model,
+                ${command.agreedFeePaise},
+                ${command.billingTerms.trim()},
+                ${command.startDate}::date,
+                ${command.endDate ? command.endDate : null}::date,
+                now(),
+                ${ctx.actorId}::uuid,
+                ${Boolean(parentRow['is_demo'])}
+              );
+            `;
+
+            await tx`
+              UPDATE public.engagements
+              SET approved_version_id = ${newVersionId}::uuid,
+                  updated_at = now()
+              WHERE id = ${command.engagementId}::uuid;
+            `;
+
+            const updated = await this.fetchEngagementDto(tx, command.engagementId);
+            if (!updated) {
+              throw new ApiError(404, 'not_found', 'Engagement was not found.');
+            }
+            result = updated;
+            break;
+          }
+
+          case 'end': {
+            const updateRows = await tx`
+              UPDATE public.engagements
+              SET status = 'ended'::public.engagement_status,
+                  end_outcome = ${command.outcome}::public.engagement_end_outcome,
+                  end_reason = ${command.reason.trim()},
+                  ended_at = now(),
+                  ended_by = ${ctx.actorId}::uuid,
+                  updated_at = now()
+              WHERE id = ${command.engagementId}::uuid
+                AND date_trunc('milliseconds', updated_at) = date_trunc('milliseconds', ${command.expectedUpdatedAt}::timestamptz)
+              RETURNING id;
+            `;
+
+            if (updateRows.length === 0) {
+              const checkRows = await tx`
+                SELECT updated_at FROM public.engagements WHERE id = ${command.engagementId}::uuid;
+              `;
+              if (checkRows.length === 0) {
+                throw new ApiError(404, 'not_found', 'Engagement was not found.');
+              }
+              throw new ApiError(
+                409,
+                'optimistic_lock_conflict',
+                'The resource was updated concurrently by another operation.',
+              );
+            }
+
+            const updated = await this.fetchEngagementDto(tx, command.engagementId);
+            if (!updated) {
+              throw new ApiError(404, 'not_found', 'Engagement was not found.');
+            }
+            result = updated;
+            break;
+          }
+        }
+
+        // Atomically store operation receipt within the same transaction
+        await tx`
+          INSERT INTO public.operation_receipts (
+            actor_id, idempotency_key, operation_type, request_hash, result, is_demo
+          ) VALUES (
+            ${ctx.actorId}::uuid,
+            ${trimmedKey},
+            ${command.kind},
+            ${requestHash},
+            ${tx.json(result as unknown as import('postgres').JSONValue)},
+            (
+              SELECT e.is_demo
+              FROM public.engagements e
+              WHERE e.id = ${result.id}::uuid
+            )
+          );
+        `;
+
+        return result;
+      });
+    } catch (error) {
+      sanitizeDatabaseError(error);
+    }
   }
 }

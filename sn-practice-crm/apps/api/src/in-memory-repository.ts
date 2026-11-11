@@ -3,6 +3,8 @@ import type {
   ClientDto,
   CreateLedgerEntryInput,
   CreateRecurringScheduleInput,
+  EngagementDto,
+  EngagementVersionDto,
   GenerateDueAssignmentsResult,
   LedgerEntryDto,
   OfficeAccountsSummaryDto,
@@ -13,6 +15,7 @@ import type {
 } from '@sn/contracts';
 import { ApiError } from './errors';
 import { maskGstinForRoutineRead, maskPanForRoutineRead } from './client-privacy';
+import { computeRequestHash } from './idempotency';
 import type {
   ClientReference,
   CreateAssignmentRecord,
@@ -21,6 +24,7 @@ import type {
   CrmRepository,
   DevActorDirectory,
   EmployeeRecord,
+  MutateEngagementCommand,
   RepositoryContext,
   ServiceReference,
   UpdateAssignmentCommand,
@@ -29,12 +33,23 @@ import type {
   UpdateWorkItemStatusCommand,
 } from './repository';
 
+export interface StoredOperationReceipt {
+  readonly actorId: string;
+  readonly idempotencyKey: string;
+  readonly operationType: string;
+  readonly requestHash: string;
+  readonly result: unknown;
+  readonly isDemo: boolean;
+  readonly createdAt: string;
+}
+
 export type ClientSeedRecord = Omit<
   ClientDto,
   'relationshipOwnerName' | 'activeAssignmentsCount' | 'panMasked' | 'gstinMasked'
 > & {
   pan: string | null;
   gstin: string | null;
+  isDemo?: boolean;
 };
 
 export interface DemoSeed {
@@ -108,11 +123,16 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
   private readonly schedules = new Map<string, RecurringScheduleDto>();
   private readonly workItems = new Map<string, WorkItemDto>();
   private readonly ledgerEntries = new Map<string, LedgerEntryDto>();
+  private readonly engagements = new Map<string, EngagementDto>();
+  private readonly engagementVersions = new Map<string, EngagementVersionDto[]>();
+  private readonly operationReceipts = new Map<string, StoredOperationReceipt>();
+  private readonly engagementIsDemo = new Map<string, boolean>();
 
   private assignmentCounter = 1000;
   private workItemCounter = 1000;
   private scheduleCounter = 1000;
   private clientCounter = 1000;
+  private engagementCounter = 1000;
 
   constructor(seed: DemoSeed) {
     seed.employees.forEach((value) => this.employees.set(value.id, copy(value)));
@@ -380,6 +400,7 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
       createdById: actor.id,
       createdAt: record.createdAt,
       updatedAt: record.updatedAt,
+      isDemo: false,
     };
 
     this.clients.set(seedRecord.id, copy(seedRecord));
@@ -854,5 +875,410 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
     };
     this.ledgerEntries.set(entry.id, copy(entry));
     return copy(entry);
+  }
+
+  // --- Engagements (ENG-01) ---
+
+  async getEngagement(_ctx: RepositoryContext, id: string): Promise<EngagementDto | null> {
+    const engagement = this.engagements.get(id);
+    if (!engagement) return null;
+    return this.enrichEngagementDto(engagement);
+  }
+
+  async listEngagements(_ctx: RepositoryContext): Promise<EngagementDto[]> {
+    const list = [...this.engagements.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    return list.map((e) => this.enrichEngagementDto(e));
+  }
+
+  async listEngagementVersions(_ctx: RepositoryContext, engagementId: string): Promise<EngagementVersionDto[]> {
+    const versions = this.engagementVersions.get(engagementId) ?? [];
+    return copy(versions).sort((a, b) => a.versionNumber - b.versionNumber);
+  }
+
+  private enrichEngagementDto(engagement: EngagementDto): EngagementDto {
+    const client = this.clients.get(engagement.clientId);
+    const service = this.services.get(engagement.serviceId);
+
+    let approvedVersion: EngagementVersionDto | null = null;
+    if (engagement.approvedVersionId) {
+      const versions = this.engagementVersions.get(engagement.id) ?? [];
+      const found = versions.find((v) => v.id === engagement.approvedVersionId);
+      if (found) {
+        approvedVersion = copy(found);
+      }
+    }
+
+    return {
+      ...copy(engagement),
+      clientName: client?.displayName,
+      serviceName: service?.name ?? null,
+      approvedVersion,
+    };
+  }
+
+  private enrichEngagementVersionDto(version: EngagementVersionDto): EngagementVersionDto {
+    const partner = this.employees.get(version.responsiblePartnerId);
+    const manager = this.employees.get(version.deliveryManagerId);
+
+    return {
+      ...copy(version),
+      responsiblePartnerName: partner?.name,
+      deliveryManagerName: manager?.name,
+    };
+  }
+
+  private checkExpectedUpdatedAt(currentUpdatedAt: string, expectedUpdatedAt: string): void {
+    const curMs = new Date(currentUpdatedAt).getTime();
+    const expMs = new Date(expectedUpdatedAt).getTime();
+    if (isNaN(curMs) || isNaN(expMs) || curMs !== expMs) {
+      throw new ApiError(
+        409,
+        'optimistic_lock_conflict',
+        'The resource was updated concurrently by another operation.',
+      );
+    }
+  }
+
+  async mutateEngagement(ctx: RepositoryContext, command: MutateEngagementCommand): Promise<EngagementDto> {
+    const actor = this.employees.get(ctx.actorId);
+    if (!actor || (actor.role !== 'founder' && actor.role !== 'manager')) {
+      throw new ApiError(403, 'forbidden', 'Only Founder or Manager may access engagements.');
+    }
+
+    const trimmedKey = command.idempotencyKey.trim();
+    if (trimmedKey.length < 1 || trimmedKey.length > 255) {
+      throw new ApiError(422, 'validation_failed', 'idempotencyKey must be between 1 and 255 characters.');
+    }
+
+    // Strip idempotencyKey for canonical payload hashing
+    const { idempotencyKey: _, ...payload } = command;
+    const requestHash = computeRequestHash(payload);
+    const receiptKey = `${ctx.actorId}:${trimmedKey}`;
+
+    const existingReceipt = this.operationReceipts.get(receiptKey);
+    if (existingReceipt) {
+      if (existingReceipt.operationType !== command.kind || existingReceipt.requestHash !== requestHash) {
+        throw new ApiError(
+          409,
+          'conflict',
+          'Idempotency key was previously used with a different operation or payload.',
+        );
+      }
+      return copy(existingReceipt.result as EngagementDto);
+    }
+
+    let result: EngagementDto;
+
+    switch (command.kind) {
+      case 'createDraft': {
+        const client = this.clients.get(command.clientId);
+        if (!client) {
+          throw new ApiError(422, 'referenced_entity_not_found', 'Client does not exist.');
+        }
+        if (client.status !== 'active') {
+          throw new ApiError(422, 'validation_failed', 'Client must be active for engagement creation.');
+        }
+
+        const service = this.services.get(command.serviceId);
+        if (!service) {
+          throw new ApiError(422, 'referenced_entity_not_found', 'Service does not exist.');
+        }
+
+        const partner = this.employees.get(command.responsiblePartnerId);
+        if (!partner || !partner.active || partner.role !== 'founder') {
+          throw new ApiError(422, 'validation_failed', 'The responsible partner must be an active Founder.');
+        }
+
+        const deliveryManager = this.employees.get(command.deliveryManagerId);
+        if (!deliveryManager || !deliveryManager.active || (deliveryManager.role !== 'founder' && deliveryManager.role !== 'manager')) {
+          throw new ApiError(422, 'validation_failed', 'The delivery manager must be an active Founder or Manager.');
+        }
+
+        this.engagementCounter += 1;
+        const code = `ENG-${String(this.engagementCounter).padStart(6, '0')}`;
+        const engagementId = crypto.randomUUID();
+        const versionId = crypto.randomUUID();
+        const isDemo = client.isDemo ?? false;
+        const now = new Date().toISOString();
+
+        const versionDto: EngagementVersionDto = this.enrichEngagementVersionDto({
+          id: versionId,
+          engagementId,
+          versionNumber: 1,
+          title: command.title.trim(),
+          scope: command.scope.trim(),
+          exclusions: command.exclusions ? command.exclusions.trim() : null,
+          responsiblePartnerId: command.responsiblePartnerId,
+          deliveryManagerId: command.deliveryManagerId,
+          feeModel: command.feeModel,
+          agreedFeePaise: command.agreedFeePaise,
+          billingTerms: command.billingTerms.trim(),
+          startDate: command.startDate,
+          endDate: command.endDate ?? null,
+          approvedAt: null,
+          approvedById: null,
+          createdById: ctx.actorId,
+          createdAt: now,
+        });
+
+        const engagementDto: EngagementDto = {
+          id: engagementId,
+          code,
+          clientId: command.clientId,
+          clientName: client.displayName,
+          serviceId: command.serviceId,
+          serviceName: service.name,
+          status: 'draft',
+          approvedVersionId: null,
+          approvedVersion: null,
+          approvedAt: null,
+          approvedById: null,
+          endedAt: null,
+          endedById: null,
+          endOutcome: null,
+          endReason: null,
+          createdById: ctx.actorId,
+          createdAt: now,
+          updatedAt: now,
+        };
+
+        this.engagements.set(engagementId, copy(engagementDto));
+        this.engagementVersions.set(engagementId, [copy(versionDto)]);
+        this.engagementIsDemo.set(engagementId, isDemo);
+        result = copy(engagementDto);
+        break;
+      }
+
+      case 'reviseDraft': {
+        const existing = this.engagements.get(command.engagementId);
+        if (!existing) {
+          throw new ApiError(404, 'not_found', 'Engagement was not found.');
+        }
+        if (existing.status !== 'draft') {
+          throw new ApiError(422, 'validation_failed', 'Cannot update versions on an active or ended engagement.');
+        }
+
+        this.checkExpectedUpdatedAt(existing.updatedAt, command.expectedUpdatedAt);
+
+        const partner = this.employees.get(command.responsiblePartnerId);
+        if (!partner || !partner.active || partner.role !== 'founder') {
+          throw new ApiError(422, 'validation_failed', 'The responsible partner must be an active Founder.');
+        }
+
+        const deliveryManager = this.employees.get(command.deliveryManagerId);
+        if (!deliveryManager || !deliveryManager.active || (deliveryManager.role !== 'founder' && deliveryManager.role !== 'manager')) {
+          throw new ApiError(422, 'validation_failed', 'The delivery manager must be an active Founder or Manager.');
+        }
+
+        const versions = this.engagementVersions.get(command.engagementId) ?? [];
+        const v1 = versions.find((v) => v.versionNumber === 1);
+        if (!v1) {
+          throw new ApiError(404, 'not_found', 'Draft version was not found.');
+        }
+        if (v1.approvedAt !== null) {
+          throw new ApiError(422, 'validation_failed', 'Approved engagement versions are strictly immutable.');
+        }
+
+        const now = new Date().toISOString();
+        const updatedV1: EngagementVersionDto = this.enrichEngagementVersionDto({
+          ...v1,
+          title: command.title.trim(),
+          scope: command.scope.trim(),
+          exclusions: command.exclusions ? command.exclusions.trim() : null,
+          responsiblePartnerId: command.responsiblePartnerId,
+          deliveryManagerId: command.deliveryManagerId,
+          feeModel: command.feeModel,
+          agreedFeePaise: command.agreedFeePaise,
+          billingTerms: command.billingTerms.trim(),
+          startDate: command.startDate,
+          endDate: command.endDate ?? null,
+        });
+
+        const updatedEngagement: EngagementDto = {
+          ...existing,
+          updatedAt: now,
+        };
+
+        this.engagements.set(existing.id, copy(updatedEngagement));
+        this.engagementVersions.set(existing.id, [copy(updatedV1)]);
+        result = this.enrichEngagementDto(updatedEngagement);
+        break;
+      }
+
+      case 'activate': {
+        if (actor.role !== 'founder') {
+          throw new ApiError(403, 'forbidden', 'Only the Founder may activate an engagement.');
+        }
+
+        const existing = this.engagements.get(command.engagementId);
+        if (!existing) {
+          throw new ApiError(404, 'not_found', 'Engagement was not found.');
+        }
+        if (existing.status !== 'draft') {
+          throw new ApiError(422, 'validation_failed', `Cannot activate engagement with status ${existing.status}.`);
+        }
+
+        this.checkExpectedUpdatedAt(existing.updatedAt, command.expectedUpdatedAt);
+
+        const client = this.clients.get(existing.clientId);
+        if (!client || client.status !== 'active') {
+          throw new ApiError(422, 'validation_failed', 'Client must be active for engagement activation.');
+        }
+
+        const service = this.services.get(existing.serviceId);
+        if (!service) {
+          throw new ApiError(422, 'validation_failed', 'Service must be active in catalog for engagement activation.');
+        }
+
+        const versions = this.engagementVersions.get(command.engagementId) ?? [];
+        const version = versions.find((v) => v.id === command.versionId);
+        if (!version) {
+          throw new ApiError(404, 'not_found', 'Approved version does not exist.');
+        }
+
+        const now = new Date().toISOString();
+        const approvedVersion: EngagementVersionDto = this.enrichEngagementVersionDto({
+          ...version,
+          approvedAt: now,
+          approvedById: ctx.actorId,
+        });
+
+        const updatedVersions = versions.map((v) => (v.id === approvedVersion.id ? copy(approvedVersion) : copy(v)));
+        this.engagementVersions.set(existing.id, updatedVersions);
+
+        const updatedEngagement: EngagementDto = {
+          ...existing,
+          status: 'active',
+          approvedVersionId: approvedVersion.id,
+          approvedAt: now,
+          approvedById: ctx.actorId,
+          updatedAt: now,
+        };
+
+        this.engagements.set(existing.id, copy(updatedEngagement));
+        result = this.enrichEngagementDto(updatedEngagement);
+        break;
+      }
+
+      case 'amend': {
+        if (actor.role !== 'founder') {
+          throw new ApiError(403, 'forbidden', 'Only the Founder may approve an amendment on an active engagement.');
+        }
+
+        const existing = this.engagements.get(command.engagementId);
+        if (!existing) {
+          throw new ApiError(404, 'not_found', 'Engagement was not found.');
+        }
+        if (existing.status !== 'active') {
+          throw new ApiError(422, 'validation_failed', 'Cannot amend an engagement that is not active.');
+        }
+
+        this.checkExpectedUpdatedAt(existing.updatedAt, command.expectedUpdatedAt);
+
+        const partner = this.employees.get(command.responsiblePartnerId);
+        if (!partner || !partner.active || partner.role !== 'founder') {
+          throw new ApiError(422, 'validation_failed', 'The responsible partner must be an active Founder.');
+        }
+
+        const deliveryManager = this.employees.get(command.deliveryManagerId);
+        if (!deliveryManager || !deliveryManager.active || (deliveryManager.role !== 'founder' && deliveryManager.role !== 'manager')) {
+          throw new ApiError(422, 'validation_failed', 'The delivery manager must be an active Founder or Manager.');
+        }
+
+        const versions = this.engagementVersions.get(command.engagementId) ?? [];
+        const maxVersionNumber = versions.reduce((max, v) => Math.max(max, v.versionNumber), 0);
+        const nextVersionNumber = maxVersionNumber + 1;
+
+        const newVersionId = crypto.randomUUID();
+        const now = new Date().toISOString();
+
+        const approvedNewVersion: EngagementVersionDto = this.enrichEngagementVersionDto({
+          id: newVersionId,
+          engagementId: existing.id,
+          versionNumber: nextVersionNumber,
+          title: command.title.trim(),
+          scope: command.scope.trim(),
+          exclusions: command.exclusions ? command.exclusions.trim() : null,
+          responsiblePartnerId: command.responsiblePartnerId,
+          deliveryManagerId: command.deliveryManagerId,
+          feeModel: command.feeModel,
+          agreedFeePaise: command.agreedFeePaise,
+          billingTerms: command.billingTerms.trim(),
+          startDate: command.startDate,
+          endDate: command.endDate ?? null,
+          approvedAt: now,
+          approvedById: ctx.actorId,
+          createdById: ctx.actorId,
+          createdAt: now,
+        });
+
+        versions.push(copy(approvedNewVersion));
+        this.engagementVersions.set(existing.id, versions);
+
+        const updatedEngagement: EngagementDto = {
+          ...existing,
+          approvedVersionId: approvedNewVersion.id,
+          approvedAt: now,
+          approvedById: ctx.actorId,
+          updatedAt: now,
+        };
+
+        this.engagements.set(existing.id, copy(updatedEngagement));
+        result = this.enrichEngagementDto(updatedEngagement);
+        break;
+      }
+
+      case 'end': {
+        if (actor.role !== 'founder') {
+          throw new ApiError(403, 'forbidden', 'Only the Founder may end an engagement.');
+        }
+
+        const existing = this.engagements.get(command.engagementId);
+        if (!existing) {
+          throw new ApiError(404, 'not_found', 'Engagement was not found.');
+        }
+        if (existing.status !== 'active') {
+          throw new ApiError(422, 'validation_failed', 'Cannot end an engagement that is not active.');
+        }
+
+        this.checkExpectedUpdatedAt(existing.updatedAt, command.expectedUpdatedAt);
+
+        const now = new Date().toISOString();
+        const updatedEngagement: EngagementDto = {
+          ...existing,
+          status: 'ended',
+          endedAt: now,
+          endedById: ctx.actorId,
+          endOutcome: command.outcome,
+          endReason: command.reason.trim(),
+          updatedAt: now,
+        };
+
+        this.engagements.set(existing.id, copy(updatedEngagement));
+        result = this.enrichEngagementDto(updatedEngagement);
+        break;
+      }
+    }
+
+    const receiptIsDemo = command.kind === 'createDraft'
+      ? (this.clients.get(command.clientId)?.isDemo ?? false)
+      : (this.engagementIsDemo.get(
+          command.kind === 'reviseDraft' || command.kind === 'activate' || command.kind === 'amend' || command.kind === 'end'
+            ? command.engagementId
+            : ''
+        ) ?? false);
+
+    const storedReceipt: StoredOperationReceipt = {
+      actorId: ctx.actorId,
+      idempotencyKey: trimmedKey,
+      operationType: command.kind,
+      requestHash,
+      result: copy(result),
+      isDemo: receiptIsDemo,
+      createdAt: new Date().toISOString(),
+    };
+    this.operationReceipts.set(receiptKey, storedReceipt);
+
+    return result;
   }
 }

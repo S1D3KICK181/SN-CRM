@@ -1,14 +1,21 @@
 import type {
+  ActivateEngagementInput,
+  AmendActiveEngagementInput,
   AssignmentDto,
   AssignmentStatus,
   ClientDto,
+  CreateEngagementDraftInput,
   CreateLedgerEntryInput,
   CreateRecurringScheduleInput,
+  EndEngagementInput,
+  EngagementDto,
+  EngagementVersionDto,
   GenerateDueAssignmentsResult,
   LedgerEntryDto,
   OfficeAccountsSummaryDto,
   RecurringScheduleDto,
   ReportingLineDto,
+  ReviseEngagementDraftInput,
   SessionActor,
   UpdateRecurringScheduleInput,
   WorkItemDto,
@@ -138,6 +145,30 @@ export interface UpdateWorkItemStatusCommand {
   readonly completionNote?: string | null;
 }
 
+// --- Engagement Mutation Command Union ---
+
+export type MutateEngagementCommand =
+  | ({
+      readonly kind: 'createDraft';
+      readonly idempotencyKey: string;
+    } & CreateEngagementDraftInput)
+  | ({
+      readonly kind: 'reviseDraft';
+      readonly idempotencyKey: string;
+    } & ReviseEngagementDraftInput)
+  | ({
+      readonly kind: 'activate';
+      readonly idempotencyKey: string;
+    } & ActivateEngagementInput)
+  | ({
+      readonly kind: 'amend';
+      readonly idempotencyKey: string;
+    } & AmendActiveEngagementInput)
+  | ({
+      readonly kind: 'end';
+      readonly idempotencyKey: string;
+    } & EndEngagementInput);
+
 export interface CrmRepository {
   // Clients
   getClient(ctx: RepositoryContext, clientId: string): Promise<ClientDto | null>;
@@ -202,6 +233,12 @@ export interface CrmRepository {
     ctx: RepositoryContext,
     throughDate: string,
   ): Promise<GenerateDueAssignmentsResult>;
+
+  // Engagements (ENG-01)
+  getEngagement(ctx: RepositoryContext, id: string): Promise<EngagementDto | null>;
+  listEngagements(ctx: RepositoryContext): Promise<EngagementDto[]>;
+  listEngagementVersions(ctx: RepositoryContext, engagementId: string): Promise<EngagementVersionDto[]>;
+  mutateEngagement(ctx: RepositoryContext, command: MutateEngagementCommand): Promise<EngagementDto>;
 
   // Office Accounts & Ledger
   getOfficeAccountsSummary(ctx: RepositoryContext): Promise<OfficeAccountsSummaryDto>;

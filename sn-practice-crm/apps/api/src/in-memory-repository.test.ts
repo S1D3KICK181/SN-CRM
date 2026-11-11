@@ -721,4 +721,378 @@ describe('Client visibility and read operations (CL-02A parity)', () => {
       });
     });
   });
+
+  describe('ENG-01-A2a Engagement Repository Invariants & Lifecycle Mutations', () => {
+    const founderCtx: RepositoryContext = { actorId: DEMO_ACTOR_IDS.founder };
+    const managerCtx: RepositoryContext = { actorId: DEMO_ACTOR_IDS.manager };
+    const staffCtx: RepositoryContext = { actorId: DEMO_ACTOR_IDS.staff };
+
+    const validClientId = '10000000-0000-4000-a000-000000000001';
+    const validServiceId = '50000000-0000-4000-a000-000000000001';
+
+    it('executes complete happy lifecycle: createDraft -> reviseDraft -> activate -> amend -> end', async () => {
+      const repository = new InMemoryCrmRepository(createDemoSeed());
+
+      // 1. createDraft
+      const created = await repository.mutateEngagement(founderCtx, {
+        kind: 'createDraft',
+        idempotencyKey: 'eng-create-1',
+        clientId: validClientId,
+        serviceId: validServiceId,
+        title: 'Statutory Audit FY 2026-27',
+        scope: 'Complete year-end audit of accounts and financial disclosures',
+        exclusions: 'Direct tax assessment representation',
+        responsiblePartnerId: DEMO_ACTOR_IDS.founder,
+        deliveryManagerId: DEMO_ACTOR_IDS.manager,
+        feeModel: 'fixed',
+        agreedFeePaise: 25000000,
+        billingTerms: '50% advance, 50% on deliverable',
+        startDate: '2026-04-01',
+        endDate: '2027-03-31',
+      });
+
+      expect(created.status).toBe('draft');
+      expect(created.code).toMatch(/^ENG-\d{6}$/);
+      expect(created.approvedVersionId).toBeNull();
+      expect(created.approvedVersion).toBeNull();
+      expect(created.approvedAt).toBeNull();
+      expect(created.approvedById).toBeNull();
+      expect(created.endedAt).toBeNull();
+      expect(created.endedById).toBeNull();
+      expect(created.endOutcome).toBeNull();
+      expect(created.endReason).toBeNull();
+
+      // List versions shows v1
+      const versionsAfterCreate = await repository.listEngagementVersions(founderCtx, created.id);
+      expect(versionsAfterCreate).toHaveLength(1);
+      const v1 = versionsAfterCreate[0]!;
+      expect(v1.versionNumber).toBe(1);
+      expect(v1.title).toBe('Statutory Audit FY 2026-27');
+      expect(v1.responsiblePartnerId).toBe(DEMO_ACTOR_IDS.founder);
+      expect(v1.responsiblePartnerName).toBe('S. Narayanan');
+      expect(v1.deliveryManagerId).toBe(DEMO_ACTOR_IDS.manager);
+      expect(v1.deliveryManagerName).toBe('Priya Desai');
+      expect(v1.approvedAt).toBeNull();
+
+      // 2. reviseDraft
+      const revised = await repository.mutateEngagement(managerCtx, {
+        kind: 'reviseDraft',
+        idempotencyKey: 'eng-revise-1',
+        engagementId: created.id,
+        title: 'Statutory Audit FY 2026-27 (Revised Scope)',
+        scope: 'Expanded scope including branch audits',
+        exclusions: null,
+        responsiblePartnerId: DEMO_ACTOR_IDS.founder,
+        deliveryManagerId: DEMO_ACTOR_IDS.manager,
+        feeModel: 'fixed',
+        agreedFeePaise: 30000000,
+        billingTerms: '100% on deliverable',
+        startDate: '2026-04-01',
+        endDate: '2027-03-31',
+        expectedUpdatedAt: created.updatedAt,
+      });
+
+      expect(revised.status).toBe('draft');
+      expect(revised.approvedVersionId).toBeNull();
+      expect(revised.approvedVersion).toBeNull();
+
+      const versionsAfterRevise = await repository.listEngagementVersions(founderCtx, created.id);
+      expect(versionsAfterRevise).toHaveLength(1);
+      expect(versionsAfterRevise[0]!.versionNumber).toBe(1);
+      expect(versionsAfterRevise[0]!.title).toBe('Statutory Audit FY 2026-27 (Revised Scope)');
+      expect(versionsAfterRevise[0]!.agreedFeePaise).toBe(30000000);
+
+      // 3. activate
+      const activated = await repository.mutateEngagement(founderCtx, {
+        kind: 'activate',
+        idempotencyKey: 'eng-activate-1',
+        engagementId: created.id,
+        versionId: v1.id,
+        expectedUpdatedAt: revised.updatedAt,
+      });
+
+      expect(activated.status).toBe('active');
+      expect(activated.approvedVersionId).toBe(v1.id);
+      expect(activated.approvedVersion?.id).toBe(v1.id);
+      expect(activated.approvedVersion?.versionNumber).toBe(1);
+      expect(activated.approvedAt).not.toBeNull();
+      expect(activated.approvedById).toBe(DEMO_ACTOR_IDS.founder);
+
+      // 4. amend
+      const amended = await repository.mutateEngagement(founderCtx, {
+        kind: 'amend',
+        idempotencyKey: 'eng-amend-1',
+        engagementId: created.id,
+        title: 'Statutory Audit FY 2026-27 (Amendment 1)',
+        scope: 'Quarterly review additions',
+        responsiblePartnerId: DEMO_ACTOR_IDS.founder,
+        deliveryManagerId: DEMO_ACTOR_IDS.manager,
+        feeModel: 'recurring',
+        agreedFeePaise: 35000000,
+        billingTerms: 'Quarterly arrears',
+        startDate: '2026-04-01',
+        endDate: '2027-03-31',
+        expectedUpdatedAt: activated.updatedAt,
+      });
+
+      expect(amended.status).toBe('active');
+      expect(amended.approvedVersion?.versionNumber).toBe(2);
+      expect(amended.approvedVersion?.feeModel).toBe('recurring');
+      expect(amended.approvedVersion?.agreedFeePaise).toBe(35000000);
+
+      const versionsAfterAmend = await repository.listEngagementVersions(founderCtx, created.id);
+      expect(versionsAfterAmend).toHaveLength(2);
+      expect(versionsAfterAmend.map((v) => v.versionNumber)).toEqual([1, 2]);
+
+      // 5. end
+      const ended = await repository.mutateEngagement(founderCtx, {
+        kind: 'end',
+        idempotencyKey: 'eng-end-1',
+        engagementId: created.id,
+        outcome: 'completed',
+        reason: 'Statutory audit concluded successfully with unqualified audit opinion.',
+        expectedUpdatedAt: amended.updatedAt,
+      });
+
+      expect(ended.status).toBe('ended');
+      expect(ended.endOutcome).toBe('completed');
+      expect(ended.endReason).toBe('Statutory audit concluded successfully with unqualified audit opinion.');
+      expect(ended.endedAt).not.toBeNull();
+      expect(ended.endedById).toBe(DEMO_ACTOR_IDS.founder);
+      expect(ended.approvedVersionId).toBe(amended.approvedVersionId);
+    });
+
+    it('enforces that draft approvedVersion remains null while listEngagementVersions returns draft v1', async () => {
+      const repository = new InMemoryCrmRepository(createDemoSeed());
+
+      const draft = await repository.mutateEngagement(managerCtx, {
+        kind: 'createDraft',
+        idempotencyKey: 'draft-null-check-key',
+        clientId: validClientId,
+        serviceId: validServiceId,
+        title: 'Draft Terms Test',
+        scope: 'Draft terms scope testing',
+        responsiblePartnerId: DEMO_ACTOR_IDS.founder,
+        deliveryManagerId: DEMO_ACTOR_IDS.manager,
+        feeModel: 'fixed',
+        agreedFeePaise: 10000000,
+        billingTerms: 'Net 30',
+        startDate: '2026-05-01',
+      });
+
+      expect(draft.status).toBe('draft');
+      expect(draft.approvedVersionId).toBeNull();
+      expect(draft.approvedVersion).toBeNull();
+
+      const read = await repository.getEngagement(founderCtx, draft.id);
+      expect(read?.approvedVersionId).toBeNull();
+      expect(read?.approvedVersion).toBeNull();
+
+      const versions = await repository.listEngagementVersions(founderCtx, draft.id);
+      expect(versions).toHaveLength(1);
+      expect(versions[0]!.versionNumber).toBe(1);
+      expect(versions[0]!.approvedAt).toBeNull();
+    });
+
+    it('rejects stale expectedUpdatedAt with optimistic_lock_conflict (409)', async () => {
+      const repository = new InMemoryCrmRepository(createDemoSeed());
+
+      const created = await repository.mutateEngagement(founderCtx, {
+        kind: 'createDraft',
+        idempotencyKey: 'stale-test-create',
+        clientId: validClientId,
+        serviceId: validServiceId,
+        title: 'Concurrency Test',
+        scope: 'Testing concurrency timestamp check',
+        responsiblePartnerId: DEMO_ACTOR_IDS.founder,
+        deliveryManagerId: DEMO_ACTOR_IDS.manager,
+        feeModel: 'fixed',
+        agreedFeePaise: 5000000,
+        billingTerms: 'Immediate',
+        startDate: '2026-06-01',
+      });
+
+      const versions = await repository.listEngagementVersions(founderCtx, created.id);
+      const v1Id = versions[0]!.id;
+
+      await expect(
+        repository.mutateEngagement(founderCtx, {
+          kind: 'activate',
+          idempotencyKey: 'stale-test-activate',
+          engagementId: created.id,
+          versionId: v1Id,
+          expectedUpdatedAt: '2020-01-01T00:00:00.000Z',
+        }),
+      ).rejects.toMatchObject({
+        status: 409,
+        code: 'optimistic_lock_conflict',
+      });
+    });
+
+    it('rejects invalid state transitions and non-management actors with 403 / 422', async () => {
+      const repository = new InMemoryCrmRepository(createDemoSeed());
+
+      // Staff cannot mutate engagements
+      await expect(
+        repository.mutateEngagement(staffCtx, {
+          kind: 'createDraft',
+          idempotencyKey: 'staff-attempt',
+          clientId: validClientId,
+          serviceId: validServiceId,
+          title: 'Unauthorized Draft',
+          scope: 'Scope',
+          responsiblePartnerId: DEMO_ACTOR_IDS.founder,
+          deliveryManagerId: DEMO_ACTOR_IDS.manager,
+          feeModel: 'fixed',
+          agreedFeePaise: 1000000,
+          billingTerms: 'Terms',
+          startDate: '2026-07-01',
+        }),
+      ).rejects.toMatchObject({
+        status: 403,
+        code: 'forbidden',
+      });
+
+      // Manager cannot activate (Founder sole authority)
+      const draft = await repository.mutateEngagement(founderCtx, {
+        kind: 'createDraft',
+        idempotencyKey: 'founder-draft-transition-test',
+        clientId: validClientId,
+        serviceId: validServiceId,
+        title: 'Transition Test Draft',
+        scope: 'Scope',
+        responsiblePartnerId: DEMO_ACTOR_IDS.founder,
+        deliveryManagerId: DEMO_ACTOR_IDS.manager,
+        feeModel: 'fixed',
+        agreedFeePaise: 1000000,
+        billingTerms: 'Terms',
+        startDate: '2026-07-01',
+      });
+
+      const versions = await repository.listEngagementVersions(founderCtx, draft.id);
+
+      await expect(
+        repository.mutateEngagement(managerCtx, {
+          kind: 'activate',
+          idempotencyKey: 'manager-activate-attempt',
+          engagementId: draft.id,
+          versionId: versions[0]!.id,
+          expectedUpdatedAt: draft.updatedAt,
+        }),
+      ).rejects.toMatchObject({
+        status: 403,
+        code: 'forbidden',
+      });
+
+      // Cannot amend a draft engagement
+      await expect(
+        repository.mutateEngagement(founderCtx, {
+          kind: 'amend',
+          idempotencyKey: 'amend-draft-attempt',
+          engagementId: draft.id,
+          title: 'Premature Amendment',
+          scope: 'Scope',
+          responsiblePartnerId: DEMO_ACTOR_IDS.founder,
+          deliveryManagerId: DEMO_ACTOR_IDS.manager,
+          feeModel: 'fixed',
+          agreedFeePaise: 2000000,
+          billingTerms: 'Terms',
+          startDate: '2026-07-01',
+          expectedUpdatedAt: draft.updatedAt,
+        }),
+      ).rejects.toMatchObject({
+        status: 422,
+        code: 'validation_failed',
+      });
+    });
+
+    it('returns stored original DTO on identical replay; rejects mismatched payload with conflict (409)', async () => {
+      const repository = new InMemoryCrmRepository(createDemoSeed());
+
+      const payload = {
+        kind: 'createDraft' as const,
+        idempotencyKey: 'idemp-replay-key-1',
+        clientId: validClientId,
+        serviceId: validServiceId,
+        title: 'Idempotency Replay Test',
+        scope: 'Idempotency test scope',
+        responsiblePartnerId: DEMO_ACTOR_IDS.founder,
+        deliveryManagerId: DEMO_ACTOR_IDS.manager,
+        feeModel: 'fixed' as const,
+        agreedFeePaise: 12000000,
+        billingTerms: 'Monthly',
+        startDate: '2026-08-01',
+      };
+
+      const original = await repository.mutateEngagement(founderCtx, payload);
+      expect(original.code).toBeDefined();
+
+      // Identical replay with same actor and key returns identical original DTO
+      const replay = await repository.mutateEngagement(founderCtx, payload);
+      expect(replay).toEqual(original);
+
+      // Replay with same key but different payload throws 409 conflict
+      await expect(
+        repository.mutateEngagement(founderCtx, {
+          ...payload,
+          agreedFeePaise: 99999999, // Mismatched fee
+        }),
+      ).rejects.toMatchObject({
+        status: 409,
+        code: 'conflict',
+      });
+
+      // Replay with same key but different operation throws 409 conflict
+      await expect(
+        repository.mutateEngagement(founderCtx, {
+          kind: 'end',
+          idempotencyKey: 'idemp-replay-key-1',
+          engagementId: original.id,
+          outcome: 'terminated',
+          reason: 'Different operation',
+          expectedUpdatedAt: original.updatedAt,
+        }),
+      ).rejects.toMatchObject({
+        status: 409,
+        code: 'conflict',
+      });
+    });
+
+    it('prevents duplicate versions and collision-proof codes', async () => {
+      const repository = new InMemoryCrmRepository(createDemoSeed());
+
+      const e1 = await repository.mutateEngagement(founderCtx, {
+        kind: 'createDraft',
+        idempotencyKey: 'coll-test-1',
+        clientId: validClientId,
+        serviceId: validServiceId,
+        title: 'Code Collision Test 1',
+        scope: 'Scope 1',
+        responsiblePartnerId: DEMO_ACTOR_IDS.founder,
+        deliveryManagerId: DEMO_ACTOR_IDS.manager,
+        feeModel: 'fixed',
+        agreedFeePaise: 5000000,
+        billingTerms: 'Terms',
+        startDate: '2026-09-01',
+      });
+
+      const e2 = await repository.mutateEngagement(founderCtx, {
+        kind: 'createDraft',
+        idempotencyKey: 'coll-test-2',
+        clientId: validClientId,
+        serviceId: validServiceId,
+        title: 'Code Collision Test 2',
+        scope: 'Scope 2',
+        responsiblePartnerId: DEMO_ACTOR_IDS.founder,
+        deliveryManagerId: DEMO_ACTOR_IDS.manager,
+        feeModel: 'fixed',
+        agreedFeePaise: 6000000,
+        billingTerms: 'Terms',
+        startDate: '2026-09-01',
+      });
+
+      expect(e1.code).not.toBe(e2.code);
+      expect(e1.id).not.toBe(e2.id);
+    });
+  });
 });

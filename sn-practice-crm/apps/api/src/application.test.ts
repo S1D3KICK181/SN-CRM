@@ -20,6 +20,7 @@ import type {
   CreateWorkItemRecord,
   CrmApplicationDependencies,
   EmployeeRecord,
+  MutateEngagementCommand,
   RepositoryContext,
   ServiceReference,
   UpdateAssignmentReviewersCommand,
@@ -945,6 +946,18 @@ describe("CrmApplication authority and workflow rules", () => {
           callLog.push({ method: "createLedgerEntry", actorId: ctx.actorId, targetId: entry.id });
           const saved = await underlying.createLedgerEntry(ctx, entry);
           return { ...saved, reference: "REF-CANONICAL-DB-GENERATED" };
+        },
+        async getEngagement(ctx: RepositoryContext, id: string) {
+          throw new Error(`Unexpected engagement repository call: getEngagement(${ctx.actorId}, ${id})`);
+        },
+        async listEngagements(ctx: RepositoryContext) {
+          throw new Error(`Unexpected engagement repository call: listEngagements(${ctx.actorId})`);
+        },
+        async listEngagementVersions(ctx: RepositoryContext, engagementId: string) {
+          throw new Error(`Unexpected engagement repository call: listEngagementVersions(${ctx.actorId}, ${engagementId})`);
+        },
+        async mutateEngagement(ctx: RepositoryContext, command: MutateEngagementCommand) {
+          throw new Error(`Unexpected engagement repository call: mutateEngagement(${ctx.actorId}, ${command.kind})`);
         },
       };
 
