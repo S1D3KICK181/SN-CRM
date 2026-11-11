@@ -121,6 +121,7 @@ describe('Contracts Single Status Truth & Runtime Tuples', () => {
   it('exports ENGAGEMENT_OPERATIONS matching ARCHITECTURE.md conventions', () => {
     expect(ENGAGEMENT_OPERATIONS).toEqual({
       createDraft: 'engagement.createDraft',
+      reviseDraft: 'engagement.reviseDraft',
       activate: 'engagement.activate',
       amend: 'engagement.amend',
       end: 'engagement.end',

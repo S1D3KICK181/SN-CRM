@@ -8,6 +8,11 @@ import { DEV_ACTOR_ALIASES, normalizeDevUserHeader, resolveActor, verifySupabase
 import { ApiError } from './errors';
 import {
   assignmentTransitionSchema,
+  activateEngagementSchema,
+  amendEngagementSchema,
+  createEngagementDraftSchema,
+  endEngagementSchema,
+  reviseEngagementDraftSchema,
   createAssignmentSchema,
   createClientSchema,
   createLedgerEntrySchema,
@@ -101,7 +106,7 @@ function writeCorsHeaders(response: ServerResponse, origin: string | undefined, 
   response.setHeader('access-control-allow-methods', 'GET,POST,PUT,PATCH,OPTIONS');
   response.setHeader(
     'access-control-allow-headers',
-    'authorization,content-type,x-demo-user-id,x-request-id',
+    'authorization,content-type,idempotency-key,x-demo-user-id,x-request-id',
   );
   response.setHeader('access-control-max-age', '600');
 }
@@ -172,6 +177,18 @@ async function readJson<T>(request: IncomingMessage, schema: ZodType<T>): Promis
 
 function invalidIdentifier(): never {
   throw new ApiError(422, 'invalid_identifier', 'The route parameter must be a valid RFC 4122 UUID.');
+}
+
+function idempotencyKey(request: IncomingMessage): string {
+  const raw = request.headers['idempotency-key'];
+  if (typeof raw !== 'string') {
+    throw new ApiError(400, 'idempotency_key_required', 'The Idempotency-Key request header is required.');
+  }
+  const value = raw.trim();
+  if (!value || value.length > 255) {
+    throw new ApiError(422, 'invalid_idempotency_key', 'The Idempotency-Key must be non-blank and at most 255 characters.');
+  }
+  return value;
 }
 
 function routeId(pathname: string, pattern: RegExp): string | null {
@@ -349,6 +366,55 @@ export function createApiServer(application: CrmApplication, options: ApiServerO
 
       if (request.method === 'GET' && pathname === '/api/v1/services') {
         sendData(response, context, allowedOrigins, 200, await application.listServices(actor));
+        return;
+      }
+
+      if (request.method === 'GET' && pathname === '/api/v1/engagements') {
+        sendData(response, context, allowedOrigins, 200, await application.listEngagements(actor));
+        return;
+      }
+      if (request.method === 'POST' && pathname === '/api/v1/engagements') {
+        const key = idempotencyKey(request);
+        const body = await readJson(request, createEngagementDraftSchema);
+        sendData(response, context, allowedOrigins, 201, await application.createEngagementDraft(actor, body, key));
+        return;
+      }
+      const engagementVersionsId = routeId(pathname, /^\/api\/v1\/engagements\/([^/]+)\/versions$/);
+      if (request.method === 'GET' && engagementVersionsId) {
+        sendData(response, context, allowedOrigins, 200, await application.listEngagementVersions(actor, engagementVersionsId));
+        return;
+      }
+      const engagementDraftId = routeId(pathname, /^\/api\/v1\/engagements\/([^/]+)\/draft$/);
+      if (request.method === 'PATCH' && engagementDraftId) {
+        const key = idempotencyKey(request);
+        const body = await readJson(request, reviseEngagementDraftSchema);
+        sendData(response, context, allowedOrigins, 200, await application.reviseEngagementDraft(actor, engagementDraftId, body, key));
+        return;
+      }
+      const engagementActivateId = routeId(pathname, /^\/api\/v1\/engagements\/([^/]+)\/activate$/);
+      if (request.method === 'POST' && engagementActivateId) {
+        const key = idempotencyKey(request);
+        const body = await readJson(request, activateEngagementSchema);
+        sendData(response, context, allowedOrigins, 200, await application.activateEngagement(actor, engagementActivateId, body, key));
+        return;
+      }
+      const engagementAmendId = routeId(pathname, /^\/api\/v1\/engagements\/([^/]+)\/amendments$/);
+      if (request.method === 'POST' && engagementAmendId) {
+        const key = idempotencyKey(request);
+        const body = await readJson(request, amendEngagementSchema);
+        sendData(response, context, allowedOrigins, 200, await application.amendEngagement(actor, engagementAmendId, body, key));
+        return;
+      }
+      const engagementEndId = routeId(pathname, /^\/api\/v1\/engagements\/([^/]+)\/end$/);
+      if (request.method === 'POST' && engagementEndId) {
+        const key = idempotencyKey(request);
+        const body = await readJson(request, endEngagementSchema);
+        sendData(response, context, allowedOrigins, 200, await application.endEngagement(actor, engagementEndId, body, key));
+        return;
+      }
+      const engagementId = routeId(pathname, /^\/api\/v1\/engagements\/([^/]+)$/);
+      if (request.method === 'GET' && engagementId) {
+        sendData(response, context, allowedOrigins, 200, await application.getEngagement(actor, engagementId));
         return;
       }
 

@@ -9,6 +9,13 @@ import type {
   CreateLedgerEntryInput,
   CreateRecurringScheduleInput,
   CreateWorkItemInput,
+  ActivateEngagementInput,
+  AmendActiveEngagementInput,
+  CreateEngagementDraftInput,
+  EndEngagementInput,
+  ReviseEngagementDraftInput,
+  EngagementDto,
+  EngagementVersionDto,
   GenerateDueAssignmentsInput,
   GenerateDueAssignmentsResult,
   LedgerEntryDto,
@@ -69,6 +76,10 @@ function invalidTransition(message: string): never {
   throw new ApiError(409, 'invalid_state_transition', message);
 }
 
+function normalizeIdempotencyKey(value: string): string {
+  return value.trim();
+}
+
 export type CreateWorkItemServiceInput = CreateWorkItemInput extends infer T
   ? T extends { kind: string }
     ? Omit<T, 'reminderAt'> & { reminderAt?: string | null }
@@ -93,6 +104,96 @@ export class CrmApplication {
       .filter((employee) => employee.active)
       .map(asSession)
       .sort((left, right) => left.name.localeCompare(right.name));
+  }
+
+  async listEngagements(actor: SessionActor): Promise<EngagementDto[]> {
+    requireAuthority({ action: 'engagement.read', actor: asActor(actor) });
+    return this.repository.listEngagements({ actorId: actor.id });
+  }
+
+  async getEngagement(actor: SessionActor, engagementId: string): Promise<EngagementDto> {
+    requireAuthority({ action: 'engagement.read', actor: asActor(actor) });
+    const engagement = await this.repository.getEngagement({ actorId: actor.id }, engagementId);
+    if (!engagement) throw notFound('Engagement');
+    return engagement;
+  }
+
+  async listEngagementVersions(actor: SessionActor, engagementId: string): Promise<EngagementVersionDto[]> {
+    requireAuthority({ action: 'engagement.read', actor: asActor(actor) });
+    const ctx = { actorId: actor.id };
+    if (!(await this.repository.getEngagement(ctx, engagementId))) throw notFound('Engagement');
+    return this.repository.listEngagementVersions(ctx, engagementId);
+  }
+
+  private async mutateEngagement(
+    actor: SessionActor,
+    action:
+      | 'engagement.create_draft'
+      | 'engagement.revise_draft'
+      | 'engagement.activate'
+      | 'engagement.amend_active'
+      | 'engagement.end',
+    command: Parameters<CrmApplicationDependencies['mutateEngagement']>[1],
+  ): Promise<EngagementDto> {
+    requireAuthority({ action, actor: asActor(actor) });
+    return this.repository.mutateEngagement(
+      { actorId: actor.id },
+      { ...command, idempotencyKey: normalizeIdempotencyKey(command.idempotencyKey) },
+    );
+  }
+
+  createEngagementDraft(
+    actor: SessionActor,
+    input: CreateEngagementDraftInput,
+    idempotencyKey: string,
+  ) {
+    return this.mutateEngagement(actor, 'engagement.create_draft', {
+      kind: 'createDraft', idempotencyKey, ...input,
+    });
+  }
+
+  reviseEngagementDraft(
+    actor: SessionActor,
+    engagementId: string,
+    body: Omit<ReviseEngagementDraftInput, 'engagementId'>,
+    idempotencyKey: string,
+  ) {
+    return this.mutateEngagement(actor, 'engagement.revise_draft', {
+      kind: 'reviseDraft', idempotencyKey, engagementId, ...body,
+    });
+  }
+
+  activateEngagement(
+    actor: SessionActor,
+    engagementId: string,
+    body: Omit<ActivateEngagementInput, 'engagementId'>,
+    idempotencyKey: string,
+  ) {
+    return this.mutateEngagement(actor, 'engagement.activate', {
+      kind: 'activate', idempotencyKey, engagementId, ...body,
+    });
+  }
+
+  amendEngagement(
+    actor: SessionActor,
+    engagementId: string,
+    body: Omit<AmendActiveEngagementInput, 'engagementId'>,
+    idempotencyKey: string,
+  ) {
+    return this.mutateEngagement(actor, 'engagement.amend_active', {
+      kind: 'amend', idempotencyKey, engagementId, ...body,
+    });
+  }
+
+  endEngagement(
+    actor: SessionActor,
+    engagementId: string,
+    body: Omit<EndEngagementInput, 'engagementId'>,
+    idempotencyKey: string,
+  ) {
+    return this.mutateEngagement(actor, 'engagement.end', {
+      kind: 'end', idempotencyKey, engagementId, ...body,
+    });
   }
 
   async requireActor(id: string | undefined): Promise<SessionActor> {

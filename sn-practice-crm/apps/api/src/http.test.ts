@@ -144,6 +144,197 @@ describe('HTTP API', () => {
     expect(response.status).toBe(204);
     expect(response.headers.get('access-control-allow-origin')).toBe('http://127.0.0.1:4321');
     expect(response.headers.get('access-control-allow-headers')).toContain('x-demo-user-id');
+    expect(response.headers.get('access-control-allow-headers')).toContain('idempotency-key');
+  });
+
+  it('distinguishes missing, blank, and oversized Idempotency-Key headers', async () => {
+    const baseUrl = await startServer();
+    const endpoint = `${baseUrl}/api/v1/engagements`;
+    const body = JSON.stringify({});
+    const common = { 'content-type': 'application/json', 'x-demo-user-id': DEMO_ACTOR_IDS.founder };
+
+    const missing = await fetch(endpoint, { method: 'POST', headers: common, body });
+    expect(missing.status).toBe(400);
+    expect((await missing.json()).error.code).toBe('idempotency_key_required');
+
+    const blank = await fetch(endpoint, {
+      method: 'POST', headers: { ...common, 'Idempotency-Key': '   ' }, body,
+    });
+    expect(blank.status).toBe(422);
+    expect((await blank.json()).error.code).toBe('invalid_idempotency_key');
+
+    const oversized = await fetch(endpoint, {
+      method: 'POST', headers: { ...common, 'Idempotency-Key': 'x'.repeat(256) }, body,
+    });
+    expect(oversized.status).toBe(422);
+    expect((await oversized.json()).error.code).toBe('invalid_idempotency_key');
+
+    const list = await fetch(`${baseUrl}/api/v1/engagements`, {
+      headers: { 'x-demo-user-id': DEMO_ACTOR_IDS.founder },
+    });
+    expect(list.status).toBe(200);
+    expect((await list.json()).data).toEqual([]);
+  });
+
+  describe('ENG-01 authenticated engagement HTTP lifecycle', () => {
+    const engagementTerms = (title = 'Annual compliance engagement') => ({
+      title,
+      scope: 'Annual compliance filings',
+      responsiblePartnerId: DEMO_ACTOR_IDS.founder,
+      deliveryManagerId: DEMO_ACTOR_IDS.manager,
+      feeModel: 'fixed',
+      agreedFeePaise: 100000,
+      billingTerms: 'Due on completion',
+      startDate: '2026-11-01',
+      endDate: '2027-03-31',
+    });
+    const draftBody = (title = 'Annual compliance engagement') => ({
+      clientId: CANONICAL_CLIENT_1,
+      serviceId: CANONICAL_SERVICE_1,
+      ...engagementTerms(title),
+    });
+
+    const headers = (actorId: string, key?: string) => ({
+      'content-type': 'application/json',
+      'x-demo-user-id': actorId,
+      ...(key ? { 'Idempotency-Key': key } : {}),
+    });
+
+    async function prepareActive(baseUrl: string) {
+      const create = await fetch(`${baseUrl}/api/v1/engagements`, {
+        method: 'POST', headers: headers(DEMO_ACTOR_IDS.manager, 'prepare-create'), body: JSON.stringify(draftBody()),
+      });
+      const created = (await create.json()).data;
+      const versions = await fetch(`${baseUrl}/api/v1/engagements/${created.id}/versions`, {
+        headers: { 'x-demo-user-id': DEMO_ACTOR_IDS.founder },
+      });
+      const versionId = (await versions.json()).data[0].id;
+      const activateVersion = async (expectedUpdatedAt: string) => {
+        return fetch(`${baseUrl}/api/v1/engagements/${created.id}/activate`, {
+          method: 'POST', headers: headers(DEMO_ACTOR_IDS.founder, 'prepare-activate'),
+          body: JSON.stringify({ versionId, expectedUpdatedAt }),
+        });
+      };
+      const active = await activateVersion(created.updatedAt);
+      return { id: created.id, active: (await active.json()).data, versionId };
+    }
+
+    it('completes the authenticated eight-route lifecycle with route-bound identities', async () => {
+      const baseUrl = await startServer();
+      const list = await fetch(`${baseUrl}/api/v1/engagements`, { headers: { 'x-demo-user-id': DEMO_ACTOR_IDS.manager } });
+      expect(list.status).toBe(200);
+      expect(await list.json()).toMatchObject({ data: expect.any(Array), requestId: 'req-generated' });
+
+      const create = await fetch(`${baseUrl}/api/v1/engagements`, {
+        method: 'POST', headers: headers(DEMO_ACTOR_IDS.manager, 'lifecycle-create'), body: JSON.stringify(draftBody()),
+      });
+      expect(create.status).toBe(201);
+      const createdBody = await create.json();
+      expect(createdBody).toMatchObject({ data: { status: 'draft' }, requestId: 'req-generated' });
+      const id = createdBody.data.id;
+
+      const detail = await fetch(`${baseUrl}/api/v1/engagements/${id}`, { headers: { 'x-demo-user-id': DEMO_ACTOR_IDS.manager } });
+      expect(detail.status).toBe(200);
+      expect(await detail.json()).toMatchObject({ data: { id, status: 'draft' }, requestId: 'req-generated' });
+      const versions = await fetch(`${baseUrl}/api/v1/engagements/${id}/versions`, { headers: { 'x-demo-user-id': DEMO_ACTOR_IDS.manager } });
+      expect(versions.status).toBe(200);
+      const versionsBody = await versions.json();
+      expect(versionsBody).toMatchObject({ data: [expect.objectContaining({ engagementId: id, versionNumber: 1, title: 'Annual compliance engagement' })], requestId: 'req-generated' });
+
+      const revised = await fetch(`${baseUrl}/api/v1/engagements/${id}/draft`, {
+        method: 'PATCH', headers: headers(DEMO_ACTOR_IDS.manager, 'lifecycle-revise'),
+        body: JSON.stringify({ ...engagementTerms('Revised compliance engagement'), expectedUpdatedAt: createdBody.data.updatedAt }),
+      });
+      expect(revised.status).toBe(200);
+      const revisedBody = await revised.json();
+      expect(revisedBody).toMatchObject({ data: { id, status: 'draft' }, requestId: 'req-generated' });
+
+      const revisedVersions = (await (await fetch(`${baseUrl}/api/v1/engagements/${id}/versions`, { headers: { 'x-demo-user-id': DEMO_ACTOR_IDS.founder } })).json()).data;
+      expect(revisedVersions[0]).toMatchObject({ versionNumber: 1, title: 'Revised compliance engagement' });
+      const latestVersion = revisedVersions.at(-1);
+      const activated = await fetch(`${baseUrl}/api/v1/engagements/${id}/activate`, {
+        method: 'POST', headers: headers(DEMO_ACTOR_IDS.founder, 'lifecycle-activate'),
+        body: JSON.stringify({ versionId: latestVersion.id, expectedUpdatedAt: revisedBody.data.updatedAt }),
+      });
+      expect(activated.status).toBe(200);
+      const activeBody = await activated.json();
+      expect(activeBody).toMatchObject({ data: { id, status: 'active' }, requestId: 'req-generated' });
+
+      const amended = await fetch(`${baseUrl}/api/v1/engagements/${id}/amendments`, {
+        method: 'POST', headers: headers(DEMO_ACTOR_IDS.founder, 'lifecycle-amend'),
+        body: JSON.stringify({ ...engagementTerms('Amended compliance engagement'), expectedUpdatedAt: activeBody.data.updatedAt }),
+      });
+      expect(amended.status).toBe(200);
+      const amendedBody = await amended.json();
+      expect(amendedBody).toMatchObject({ data: { id, status: 'active', approvedVersion: { versionNumber: 2 } }, requestId: 'req-generated' });
+      const amendedVersions = await (await fetch(`${baseUrl}/api/v1/engagements/${id}/versions`, { headers: { 'x-demo-user-id': DEMO_ACTOR_IDS.founder } })).json();
+      expect(amendedVersions.data.at(-1)).toMatchObject({ versionNumber: 2, engagementId: id });
+
+      const ended = await fetch(`${baseUrl}/api/v1/engagements/${id}/end`, {
+        method: 'POST', headers: headers(DEMO_ACTOR_IDS.founder, 'lifecycle-end'),
+        body: JSON.stringify({ outcome: 'completed', reason: 'Work completed', expectedUpdatedAt: amendedBody.data.updatedAt }),
+      });
+      expect(ended.status).toBe(200);
+      expect(await ended.json()).toMatchObject({ data: { id, status: 'ended', endOutcome: 'completed', endReason: 'Work completed' }, requestId: 'req-generated' });
+    });
+
+    it('denies Manager founder-only mutations without changing the active engagement', async () => {
+      const baseUrl = await startServer();
+      const { id, active, versionId } = await prepareActive(baseUrl);
+      const requests = [
+        [`/activate`, { versionId, expectedUpdatedAt: active.updatedAt }],
+        [`/amendments`, { ...engagementTerms('Forbidden amendment'), expectedUpdatedAt: active.updatedAt }],
+        [`/end`, { outcome: 'completed', reason: 'Forbidden end', expectedUpdatedAt: active.updatedAt }],
+      ] as const;
+      for (const [path, body] of requests) {
+        const response = await fetch(`${baseUrl}/api/v1/engagements/${id}${path}`, {
+          method: 'POST', headers: headers(DEMO_ACTOR_IDS.manager, `forbidden-${path}`), body: JSON.stringify(body),
+        });
+        expect(response.status).toBe(403);
+        expect((await response.json()).error.code).toBe('role_not_permitted');
+      }
+      const detail = await fetch(`${baseUrl}/api/v1/engagements/${id}`, { headers: { 'x-demo-user-id': DEMO_ACTOR_IDS.manager } });
+      expect((await detail.json()).data).toMatchObject({ id, status: 'active', updatedAt: active.updatedAt });
+    });
+
+    it('rejects invalid route identifiers and mutation bodies without mutating the engagement', async () => {
+      const baseUrl = await startServer();
+      const invalidRoute = await fetch(`${baseUrl}/api/v1/engagements/not-a-uuid`, { headers: { 'x-demo-user-id': DEMO_ACTOR_IDS.manager } });
+      expect(invalidRoute.status).toBe(422);
+      expect((await invalidRoute.json()).error.code).toBe('invalid_identifier');
+
+      const create = await fetch(`${baseUrl}/api/v1/engagements`, {
+        method: 'POST', headers: headers(DEMO_ACTOR_IDS.manager, 'validation-create'), body: JSON.stringify(draftBody()),
+      });
+      const created = (await create.json()).data;
+      const invalidBodies = [
+        { ...draftBody(), engagementId: created.id },
+        { ...draftBody(), agreedFeePaise: -1 },
+        { ...draftBody(), endDate: '2026-10-31' },
+        { ...draftBody(), extraField: true },
+      ];
+      for (const [index, body] of invalidBodies.entries()) {
+        const response = await fetch(`${baseUrl}/api/v1/engagements`, {
+          method: 'POST', headers: headers(DEMO_ACTOR_IDS.manager, `invalid-create-${index}`), body: JSON.stringify(body),
+        });
+        expect(response.status).toBe(422);
+        expect((await response.json()).error.code).toBe('validation_failed');
+      }
+      const invalidPatch = await fetch(`${baseUrl}/api/v1/engagements/${created.id}/draft`, {
+        method: 'PATCH', headers: headers(DEMO_ACTOR_IDS.manager, 'invalid-patch-extra'),
+        body: JSON.stringify({ ...engagementTerms('Invalid revised engagement'), expectedUpdatedAt: created.updatedAt, extraField: true }),
+      });
+      expect(invalidPatch.status).toBe(422);
+      expect((await invalidPatch.json()).error.code).toBe('validation_failed');
+      const invalidEnd = await fetch(`${baseUrl}/api/v1/engagements/${created.id}/end`, {
+        method: 'POST', headers: headers(DEMO_ACTOR_IDS.founder, 'invalid-end'),
+        body: JSON.stringify({ outcome: 'unknown', reason: 'Invalid outcome', expectedUpdatedAt: created.updatedAt }),
+      });
+      expect(invalidEnd.status).toBe(422);
+      expect((await invalidEnd.json()).error.code).toBe('validation_failed');
+      const detail = await fetch(`${baseUrl}/api/v1/engagements/${created.id}`, { headers: { 'x-demo-user-id': DEMO_ACTOR_IDS.manager } });
+      expect((await detail.json()).data).toMatchObject({ id: created.id, status: 'draft', updatedAt: created.updatedAt });
+    });
   });
 
   describe('Fail-Closed Development Auth Gate', () => {

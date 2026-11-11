@@ -1588,4 +1588,112 @@ describe("CrmApplication authority and workflow rules", () => {
       expect(leapOccurrences[1]?.occurrenceDate).toBe("2028-02-29"); // Clamped to Feb 29 in leap year!
     });
   });
+
+  describe("ENG-01 application authority and repository dispatch", () => {
+    const engagementTerms = (founderId: string, managerId: string) => ({
+      title: "Annual compliance engagement",
+      scope: "Annual compliance filings",
+      responsiblePartnerId: founderId,
+      deliveryManagerId: managerId,
+      feeModel: "fixed" as const,
+      agreedFeePaise: 100000,
+      billingTerms: "Due on completion",
+      startDate: "2026-11-01",
+      endDate: "2027-03-31",
+    });
+    const draftInput = (founderId: string, managerId: string) => ({
+      clientId: CANONICAL_CLIENT_1,
+      serviceId: CANONICAL_SERVICE_1,
+      ...engagementTerms(founderId, managerId),
+    });
+
+    it("allows Founder to read created engagements and maps absent ids to 404", async () => {
+      const { application } = createFixture();
+      const founder = await application.requireActor(DEMO_ACTOR_IDS.founder);
+      const manager = await application.requireActor(DEMO_ACTOR_IDS.manager);
+      const created = await application.createEngagementDraft(founder, draftInput(founder.id, manager.id), "founder-read");
+
+      expect((await application.listEngagements(founder)).some((item) => item.id === created.id)).toBe(true);
+      expect(await application.getEngagement(founder, created.id)).toMatchObject({ id: created.id, status: "draft" });
+      expect(await application.listEngagementVersions(founder, created.id)).toEqual([
+        expect.objectContaining({ engagementId: created.id, versionNumber: 1 }),
+      ]);
+      const absentId = "00000000-0000-4000-e000-999999999999";
+      await expect(application.getEngagement(founder, absentId)).rejects.toMatchObject({ status: 404 });
+      await expect(application.listEngagementVersions(founder, absentId)).rejects.toMatchObject({ status: 404 });
+    });
+
+    it("allows Manager read/create/revise and dispatches route-bound commands", async () => {
+      const { application, repository } = createFixture();
+      const manager = await application.requireActor(DEMO_ACTOR_IDS.manager);
+      const founder = await application.requireActor(DEMO_ACTOR_IDS.founder);
+      const original = repository.mutateEngagement.bind(repository);
+      const commands: MutateEngagementCommand[] = [];
+      repository.mutateEngagement = async (ctx, command) => { commands.push(command); return original(ctx, command); };
+
+      await expect(application.listEngagements(manager)).resolves.toBeDefined();
+      const created = await application.createEngagementDraft(manager, draftInput(founder.id, manager.id), "  manager-create  ");
+      const revised = await application.reviseEngagementDraft(manager, created.id, {
+        ...engagementTerms(founder.id, manager.id), title: "Revised engagement", expectedUpdatedAt: created.updatedAt,
+      }, "  manager-revise  ");
+
+      expect(revised.id).toBe(created.id);
+      expect(commands).toEqual([
+        expect.objectContaining({ kind: "createDraft", idempotencyKey: "manager-create" }),
+        expect.objectContaining({ kind: "reviseDraft", idempotencyKey: "manager-revise", engagementId: created.id }),
+      ]);
+    });
+
+    it("dispatches the complete Founder lifecycle in order", async () => {
+      const { application, repository } = createFixture();
+      const founder = await application.requireActor(DEMO_ACTOR_IDS.founder);
+      const manager = await application.requireActor(DEMO_ACTOR_IDS.manager);
+      const original = repository.mutateEngagement.bind(repository);
+      const commands: MutateEngagementCommand[] = [];
+      repository.mutateEngagement = async (ctx, command) => { commands.push(command); return original(ctx, command); };
+      const created = await application.createEngagementDraft(founder, draftInput(founder.id, manager.id), "  create  ");
+      const revised = await application.reviseEngagementDraft(founder, created.id, { ...engagementTerms(founder.id, manager.id), expectedUpdatedAt: created.updatedAt }, "  revise  ");
+      const version = (await application.listEngagementVersions(founder, created.id)).at(-1)!;
+      const activated = await application.activateEngagement(founder, created.id, { versionId: version.id, expectedUpdatedAt: revised.updatedAt }, "  activate  ");
+      const amended = await application.amendEngagement(founder, created.id, { ...engagementTerms(founder.id, manager.id), title: "Amended engagement", expectedUpdatedAt: activated.updatedAt }, "  amend  ");
+      await application.endEngagement(founder, created.id, { outcome: "completed", reason: "Work completed", expectedUpdatedAt: amended.updatedAt }, "  end  ");
+
+      expect(commands.map((command) => command.kind)).toEqual(["createDraft", "reviseDraft", "activate", "amend", "end"]);
+      expect(commands).toEqual([
+        expect.objectContaining({ idempotencyKey: "create" }),
+        expect.objectContaining({ idempotencyKey: "revise", engagementId: created.id }),
+        expect.objectContaining({ idempotencyKey: "activate", engagementId: created.id, versionId: version.id }),
+        expect.objectContaining({ idempotencyKey: "amend", engagementId: created.id }),
+        expect.objectContaining({ idempotencyKey: "end", engagementId: created.id, outcome: "completed", reason: "Work completed" }),
+      ]);
+    });
+
+    it("denies Manager founder-only mutations before repository mutation", async () => {
+      const { application, repository } = createFixture();
+      const founder = await application.requireActor(DEMO_ACTOR_IDS.founder);
+      const manager = await application.requireActor(DEMO_ACTOR_IDS.manager);
+      const created = await application.createEngagementDraft(founder, draftInput(founder.id, manager.id), "prepare");
+      const revised = await application.reviseEngagementDraft(founder, created.id, { ...engagementTerms(founder.id, manager.id), expectedUpdatedAt: created.updatedAt }, "prepare-revise");
+      const version = (await application.listEngagementVersions(founder, created.id))[0]!;
+      const active = await application.activateEngagement(founder, created.id, { versionId: version.id, expectedUpdatedAt: revised.updatedAt }, "prepare-activate");
+      const spy = vi.spyOn(repository, "mutateEngagement");
+      await expect(application.activateEngagement(manager, created.id, { versionId: version.id, expectedUpdatedAt: active.updatedAt }, "forbidden-activate")).rejects.toMatchObject({ status: 403 });
+      await expect(application.amendEngagement(manager, created.id, { ...engagementTerms(founder.id, manager.id), expectedUpdatedAt: active.updatedAt }, "forbidden-amend")).rejects.toMatchObject({ status: 403 });
+      await expect(application.endEngagement(manager, created.id, { outcome: "completed", reason: "forbidden", expectedUpdatedAt: active.updatedAt }, "forbidden-end")).rejects.toMatchObject({ status: 403 });
+      expect(spy).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ["senior_staff", DEMO_ACTOR_IDS.senior], ["staff", DEMO_ACTOR_IDS.staff], ["trainee", DEMO_ACTOR_IDS.trainee],
+    ] as const)("denies %s before engagement repository access", async (_role, actorId) => {
+      const { application, repository } = createFixture();
+      const actor = await application.requireActor(actorId);
+      const listSpy = vi.spyOn(repository, "listEngagements");
+      const mutateSpy = vi.spyOn(repository, "mutateEngagement");
+      await expect(application.listEngagements(actor)).rejects.toMatchObject({ status: 403 });
+      await expect(application.createEngagementDraft(actor, draftInput(DEMO_ACTOR_IDS.founder, DEMO_ACTOR_IDS.manager), "forbidden")).rejects.toMatchObject({ status: 403 });
+      expect(listSpy).not.toHaveBeenCalled();
+      expect(mutateSpy).not.toHaveBeenCalled();
+    });
+  });
 });

@@ -462,6 +462,7 @@ export interface EndEngagementInput {
 
 export const ENGAGEMENT_OPERATIONS = {
   createDraft: 'engagement.createDraft',
+  reviseDraft: 'engagement.reviseDraft',
   activate: 'engagement.activate',
   amend: 'engagement.amend',
   end: 'engagement.end',

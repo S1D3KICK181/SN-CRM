@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { ASSIGNMENT_TRANSITIONS, WORK_ITEM_TRANSITIONS } from '@sn/contracts';
+import { ASSIGNMENT_TRANSITIONS, ENGAGEMENT_END_OUTCOMES, ENGAGEMENT_FEE_MODELS, WORK_ITEM_TRANSITIONS } from '@sn/contracts';
 import { ApiError } from './errors';
 
 export const entityUuid = z.string().uuid();
@@ -48,6 +48,44 @@ export const localDate = z
     },
     { message: 'Must be a valid calendar date in YYYY-MM-DD format.' },
   );
+
+const engagementTerms = {
+  title: z.string().trim().min(2).max(180),
+  scope: z.string().trim().min(2),
+  exclusions: z.string().trim().nullable().optional(),
+  responsiblePartnerId: entityUuid,
+  deliveryManagerId: entityUuid,
+  feeModel: z.enum(ENGAGEMENT_FEE_MODELS),
+  agreedFeePaise: z.number().int().nonnegative().safe(),
+  billingTerms: z.string().trim().min(2),
+  startDate: localDate,
+  endDate: localDate.nullable().optional(),
+};
+
+const withDateOrder = <T extends z.ZodTypeAny>(schema: T) => schema.refine(
+  (value) => value.endDate == null || value.endDate >= value.startDate,
+  { message: 'endDate cannot precede startDate', path: ['endDate'] },
+);
+
+export const createEngagementDraftSchema = withDateOrder(
+  z.object({ clientId: entityUuid, serviceId: entityUuid, ...engagementTerms }).strict(),
+);
+export const reviseEngagementDraftSchema = withDateOrder(
+  z.object({ ...engagementTerms, expectedUpdatedAt: isoInstantSchema }).strict(),
+);
+export const amendEngagementSchema = withDateOrder(
+  z.object({ ...engagementTerms, expectedUpdatedAt: isoInstantSchema }).strict(),
+);
+export const activateEngagementSchema = z
+  .object({ versionId: entityUuid, expectedUpdatedAt: isoInstantSchema })
+  .strict();
+export const endEngagementSchema = z
+  .object({
+    outcome: z.enum(ENGAGEMENT_END_OUTCOMES),
+    reason: z.string().trim().min(2).max(500),
+    expectedUpdatedAt: isoInstantSchema,
+  })
+  .strict();
 
 const PAN_REGEX = /^[A-Z]{5}[0-9]{4}[A-Z]$/;
 const GSTIN_REGEX = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/;
