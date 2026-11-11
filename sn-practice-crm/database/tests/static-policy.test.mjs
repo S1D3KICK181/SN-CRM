@@ -6,6 +6,7 @@ const migration0001Path = new URL('../../supabase/migrations/20261031060700_prac
 const migration0002Path = new URL('../../supabase/migrations/20261103105200_work_item_reminder.sql', import.meta.url);
 const migration0003Path = new URL('../../supabase/migrations/20261103120000_add_demo_support.sql', import.meta.url);
 const migration0004Path = new URL('../../supabase/migrations/20261110163000_as01_hardening.sql', import.meta.url);
+const migration0005Path = new URL('../../supabase/migrations/20261111113000_eng01_engagement_core.sql', import.meta.url);
 
 function readMigration(path, label) {
   if (!existsSync(path)) {
@@ -94,6 +95,7 @@ test('all security-definer functions pin their search path', () => {
     readMigration(migration0002Path, 'Migration 0002'),
     readMigration(migration0003Path, 'Migration 0003'),
     readMigration(migration0004Path, 'Migration 0004'),
+    readMigration(migration0005Path, 'Migration 0005'),
   ];
 
   for (const content of files) {
@@ -472,4 +474,122 @@ test('migration 0004 cleans recurring_schedule_reviewers in remove_demo_data', (
   const sql0004 = readMigration(migration0004Path, 'Migration 0004');
   const removeRpc = functionBlock(sql0004, 'remove_demo_data');
   assert.match(removeRpc, /delete from public\.recurring_schedule_reviewers where is_demo = true;/i);
+});
+
+test('migration 0005 defines ENG-01 core engagement schema, authority, immutability, and cleanup', () => {
+  // 1. Prior migrations must not be edited
+  assert.ok(existsSync(migration0001Path));
+  assert.ok(existsSync(migration0002Path));
+  assert.ok(existsSync(migration0003Path));
+  assert.ok(existsSync(migration0004Path));
+  assert.ok(existsSync(migration0005Path));
+
+  const sql0005 = readMigration(migration0005Path, 'Migration 0005');
+
+  // 2. Exact enums
+  expectSql(sql0005, /create type public\.engagement_status as enum \('draft',\s*'active',\s*'ended'\);/i, 'engagement_status enum');
+  expectSql(sql0005, /create type public\.engagement_fee_model as enum \('fixed',\s*'recurring',\s*'milestone',\s*'time_based'\);/i, 'engagement_fee_model enum');
+  expectSql(sql0005, /create type public\.engagement_end_outcome as enum \('completed',\s*'terminated'\);/i, 'engagement_end_outcome enum');
+
+  // 3. Code sequence prefix ENG, starts at 1001, revoke anon, grant authenticated
+  expectSql(sql0005, /create sequence if not exists public\.engagement_code_seq start with 1001;/i, 'engagement_code_seq starts at 1001');
+  expectSql(sql0005, /'ENG-' \|\| lpad\(nextval\('public\.engagement_code_seq'\)::text,\s*6,\s*'0'\)/i, 'ENG code format');
+  expectSql(sql0005, /revoke all on public\.engagement_code_seq from anon;/i, 'revoke seq from anon');
+  expectSql(sql0005, /grant usage,\s*select on public\.engagement_code_seq to authenticated;/i, 'grant seq to authenticated');
+
+  // 4. Tables and structural constraints: service_id NOT NULL and JS safe integer fee bound
+  expectSql(sql0005, /create table public\.engagements\s*\(/i, 'engagements table');
+  expectSql(sql0005, /service_id uuid not null references public\.service_catalog\(id\) on delete restrict/i, 'service_id NOT NULL on engagements');
+  expectSql(sql0005, /create table public\.engagement_versions\s*\(/i, 'engagement_versions table');
+  expectSql(sql0005, /agreed_fee_paise bigint not null check \(agreed_fee_paise between 0 and 9007199254740991\)/i, 'safe-integer SQL fee bound');
+  expectSql(sql0005, /unique\s*\(engagement_id,\s*version_number\)/i, 'version uniqueness');
+  expectSql(sql0005, /references public\.clients\(id\) on delete restrict/i, 'client foreign key');
+  expectSql(sql0005, /foreign key \(approved_version_id\)\s+references public\.engagement_versions\(id\)/i, 'approved_version_id FK');
+
+  // 5. RLS enabled on both tables
+  expectSql(sql0005, /alter table public\.engagements enable row level security;/i, 'engagements RLS');
+  expectSql(sql0005, /alter table public\.engagement_versions enable row level security;/i, 'engagement_versions RLS');
+
+  // 6. Management-only RLS policies, no DELETE policies
+  expectSql(sql0005, /create policy engagements_select on public\.engagements\s+for select to authenticated\s+using \(public\.is_management\(\)\);/i, 'engagements select policy');
+  expectSql(sql0005, /create policy engagements_insert on public\.engagements\s+for insert to authenticated\s+with check \(public\.is_management\(\)\);/i, 'engagements insert policy');
+  expectSql(sql0005, /create policy engagements_update on public\.engagements\s+for update to authenticated/i, 'engagements update policy');
+  assert.doesNotMatch(sql0005, /create policy [a-z_]+ on public\.engagements\s+for delete/i, 'no delete policy on engagements');
+
+  expectSql(sql0005, /create policy engagement_versions_select on public\.engagement_versions\s+for select to authenticated\s+using \(public\.is_management\(\)\);/i, 'engagement_versions select policy');
+  expectSql(sql0005, /create policy engagement_versions_insert on public\.engagement_versions\s+for insert to authenticated\s+with check \(public\.is_management\(\)\);/i, 'engagement_versions insert policy');
+  expectSql(sql0005, /create policy engagement_versions_update on public\.engagement_versions\s+for update to authenticated/i, 'engagement_versions update policy');
+  assert.doesNotMatch(sql0005, /create policy [a-z_]+ on public\.engagement_versions\s+for delete/i, 'no delete policy on engagement_versions');
+
+  // 7. Lifecycle authority and immutability guards
+  const engagementGuard = functionBlock(sql0005, 'guard_engagement_write');
+  const versionGuard = functionBlock(sql0005, 'guard_engagement_version_write');
+
+  // Draft-only insertion
+  assert.match(engagementGuard, /Every new engagement must be created in draft status/i);
+  assert.match(engagementGuard, /Draft engagement must not have approval or ending metadata/i);
+
+  // Parent ended blocks version writes
+  assert.match(versionGuard, /Cannot create versions on an ended engagement/i);
+  assert.match(versionGuard, /Cannot update versions on an ended engagement/i);
+
+  // Approval/ending actor metadata is server-authored
+  assert.match(versionGuard, /new\.approved_by := v_actor;/i);
+  assert.match(versionGuard, /new\.approved_at := now\(\);/i);
+  assert.match(engagementGuard, /new\.ended_at := now\(\);/i);
+  assert.match(engagementGuard, /new\.ended_by := v_actor;/i);
+  assert.match(engagementGuard, /new\.approved_at := v_approved_ver\.approved_at;/i);
+  assert.match(engagementGuard, /new\.approved_by := v_approved_ver\.approved_by;/i);
+
+  // Version must be approved and belong to aggregate before activation/amendment
+  assert.match(engagementGuard, /Approved version must belong to this engagement/i);
+  assert.match(engagementGuard, /Version must be approved before engagement activation/i);
+  assert.match(engagementGuard, /Version approver must resolve to an active Founder/i);
+
+  // Service/client immutability
+  assert.match(engagementGuard, /Engagement identity, client, service, and provenance are immutable/i);
+  assert.match(versionGuard, /Engagement version identity and provenance are immutable/i);
+
+  // Active client & service checks apply on creation and activation, without blocking ending
+  assert.match(engagementGuard, /Client must be active for engagement creation/i);
+  assert.match(engagementGuard, /Service must be active in catalog for engagement creation/i);
+  assert.match(engagementGuard, /Client must be active for engagement activation/i);
+  assert.match(engagementGuard, /Service must be active in catalog for engagement activation/i);
+
+  // Approved versions are immutable
+  assert.match(versionGuard, /Approved engagement versions are strictly immutable/i);
+
+  // Founder sole authority for activation, approved amendment, and ending
+  assert.match(engagementGuard, /Only the Founder may activate an engagement/i);
+  assert.match(engagementGuard, /Only the Founder may approve an amendment on an active engagement/i);
+  assert.match(engagementGuard, /Only the Founder may end an engagement/i);
+  assert.match(engagementGuard, /An end outcome and reason are required to end an engagement/i);
+
+  // 8. Triggers: updated_at, audit_row_change, prevent_demo_flag_tampering
+  expectSql(sql0005, /create trigger set_engagements_updated_at\s+before update on public\.engagements/i, 'set_updated_at trigger');
+  expectSql(sql0005, /create trigger audit_engagements\s+after insert or update or delete on public\.engagements/i, 'audit_engagements trigger');
+  expectSql(sql0005, /create trigger audit_engagement_versions\s+after insert or update or delete on public\.engagement_versions/i, 'audit_engagement_versions trigger');
+  expectSql(sql0005, /create trigger prevent_demo_flag_tampering\s+before update on public\.engagements/i, 'demo flag tamper trigger on engagements');
+  expectSql(sql0005, /create trigger prevent_demo_flag_tampering\s+before update on public\.engagement_versions/i, 'demo flag tamper trigger on engagement_versions');
+
+  // 9. remove_demo_data full lifecycle normalization before version and engagement deletes
+  const removeRpc = functionBlock(sql0005, 'remove_demo_data');
+  const normUpdate = removeRpc.indexOf("status = 'draft'");
+  const verDel = removeRpc.indexOf('delete from public.engagement_versions where is_demo = true;');
+  const engDel = removeRpc.indexOf('delete from public.engagements where is_demo = true;');
+  const srvDel = removeRpc.indexOf('delete from public.service_catalog where is_demo = true;');
+  const cliDel = removeRpc.indexOf('delete from public.clients where is_demo = true;');
+
+  assert.ok(normUpdate > 0, 'full lifecycle normalization statement must exist');
+  assert.ok(verDel > 0, 'engagement_versions delete statement must exist');
+  assert.ok(engDel > 0, 'engagements delete statement must exist');
+  assert.ok(normUpdate < verDel, 'full lifecycle normalization must precede engagement_versions delete');
+  assert.ok(verDel < engDel, 'engagement_versions must be deleted before engagements');
+  assert.ok(engDel < srvDel, 'engagements must be deleted before service_catalog');
+  assert.ok(engDel < cliDel, 'engagements must be deleted before clients');
+  assert.match(removeRpc, /approved_version_id = null[\s\S]*approved_at = null[\s\S]*ended_at = null/i, 'proves full teardown normalization');
+
+  // 10. Invariant: no engagement_id added to assignments or recurring schedules
+  assert.doesNotMatch(sql0005, /alter table\s+public\.assignments\s+add\s+column[^\n]*engagement_id/i, 'no engagement_id on assignments');
+  assert.doesNotMatch(sql0005, /alter table\s+public\.recurring_schedules\s+add\s+column[^\n]*engagement_id/i, 'no engagement_id on recurring_schedules');
 });

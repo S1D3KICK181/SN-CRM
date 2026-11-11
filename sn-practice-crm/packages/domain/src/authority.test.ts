@@ -181,3 +181,53 @@ describe('client creation authority', () => {
     },
   );
 });
+
+describe('ENG-01 engagement authority matrix across all five roles', () => {
+  const actions = [
+    'engagement.read',
+    'engagement.create_draft',
+    'engagement.revise_draft',
+    'engagement.activate',
+    'engagement.amend_active',
+    'engagement.end',
+  ] as const;
+
+  // Expected permitted matrix:
+  // founder: all 6
+  // manager: read, create_draft, revise_draft
+  // senior_staff, staff, trainee: none
+  const allowedSet = new Set<string>([
+    'founder:engagement.read',
+    'founder:engagement.create_draft',
+    'founder:engagement.revise_draft',
+    'founder:engagement.activate',
+    'founder:engagement.amend_active',
+    'founder:engagement.end',
+    'manager:engagement.read',
+    'manager:engagement.create_draft',
+    'manager:engagement.revise_draft',
+  ]);
+
+  const testMatrix = COMPANY_ROLES.flatMap((role) =>
+    actions.map((action) => ({
+      role,
+      action,
+      shouldAllow: allowedSet.has(`${role}:${action}`),
+    }))
+  );
+
+  it.each(testMatrix)(
+    'evaluates $role on $action -> shouldAllow: $shouldAllow',
+    ({ role, action, shouldAllow }) => {
+      const decision = authorize({ action, actor: actor(role) });
+      if (shouldAllow) {
+        expect(decision).toEqual({ allowed: true });
+      } else {
+        expect(decision).toMatchObject({
+          allowed: false,
+          code: 'role_not_permitted',
+        });
+      }
+    },
+  );
+});

@@ -40,7 +40,17 @@ export type AuthorityRequest =
   | { action: 'task.create_personal'; actor: Actor; ownerId: string }
   | { action: 'client.read' | 'client.create'; actor: Actor }
   | { action: 'finance.manage' | 'reports.view_practice' | 'team.manage_access'; actor: Actor }
-  | { action: 'team.manage_reporting'; actor: Actor; subject: EmployeeRef; proposedManager: EmployeeRef | null };
+  | { action: 'team.manage_reporting'; actor: Actor; subject: EmployeeRef; proposedManager: EmployeeRef | null }
+  | {
+      action:
+        | 'engagement.read'
+        | 'engagement.create_draft'
+        | 'engagement.revise_draft'
+        | 'engagement.activate'
+        | 'engagement.amend_active'
+        | 'engagement.end';
+      actor: Actor;
+    };
 
 const ALLOWED: AuthorityDecision = { allowed: true };
 
@@ -179,5 +189,19 @@ export function authorize(request: AuthorityRequest): AuthorityDecision {
       }
       return validateReportingLine(request.subject, request.proposedManager);
     }
+
+    case 'engagement.read':
+    case 'engagement.create_draft':
+    case 'engagement.revise_draft':
+      return isLeadership(actor.role)
+        ? ALLOWED
+        : deny('role_not_permitted', 'Engagement preparation and reading are reserved for the Founder or Manager.');
+
+    case 'engagement.activate':
+    case 'engagement.amend_active':
+    case 'engagement.end':
+      return actor.role === 'founder'
+        ? ALLOWED
+        : deny('role_not_permitted', 'Engagement activation, approved amendments, and ending are reserved solely for the Founder.');
   }
 }

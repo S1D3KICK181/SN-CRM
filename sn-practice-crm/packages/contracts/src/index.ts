@@ -347,3 +347,297 @@ export interface ClientDto {
   readonly createdAt: string; // ISO-8601 UTC
   readonly updatedAt: string; // ISO-8601 UTC
 }
+
+// --- Engagement Domain (ENG-01) ---
+
+export const ENGAGEMENT_STATUSES = ['draft', 'active', 'ended'] as const;
+export type EngagementStatus = (typeof ENGAGEMENT_STATUSES)[number];
+
+export const ENGAGEMENT_FEE_MODELS = ['fixed', 'recurring', 'milestone', 'time_based'] as const;
+export type EngagementFeeModel = (typeof ENGAGEMENT_FEE_MODELS)[number];
+
+export const ENGAGEMENT_END_OUTCOMES = ['completed', 'terminated'] as const;
+export type EngagementEndOutcome = (typeof ENGAGEMENT_END_OUTCOMES)[number];
+
+export interface EngagementVersionDto {
+  readonly id: string; // RFC 4122 UUID
+  readonly engagementId: string; // RFC 4122 UUID
+  readonly versionNumber: number; // Positive integer >= 1
+  readonly title: string;
+  readonly scope: string;
+  readonly exclusions: string | null;
+  readonly responsiblePartnerId: string; // RFC 4122 UUID references Founder
+  readonly responsiblePartnerName?: string; // Denormalized display name
+  readonly deliveryManagerId: string; // RFC 4122 UUID references Manager / Founder
+  readonly deliveryManagerName?: string; // Denormalized display name
+  readonly feeModel: EngagementFeeModel;
+  readonly agreedFeePaise: number; // Integer paise >= 0
+  readonly billingTerms: string;
+  readonly startDate: string; // YYYY-MM-DD
+  readonly endDate: string | null; // YYYY-MM-DD
+  readonly approvedAt: string | null; // ISO-8601 UTC
+  readonly approvedById: string | null; // RFC 4122 UUID
+  readonly createdById: string; // RFC 4122 UUID
+  readonly createdAt: string; // ISO-8601 UTC
+}
+
+export interface EngagementDto {
+  readonly id: string; // RFC 4122 UUID
+  readonly code: string; // Output-only: ENG-xxxxxx
+  readonly clientId: string; // RFC 4122 UUID
+  readonly clientName?: string; // Denormalized display name
+  readonly serviceId: string; // RFC 4122 UUID (required)
+  readonly serviceName?: string | null; // Denormalized display name
+  readonly status: EngagementStatus;
+  readonly approvedVersionId: string | null; // RFC 4122 UUID
+  readonly approvedVersion?: EngagementVersionDto | null;
+  readonly approvedAt: string | null; // ISO-8601 UTC
+  readonly approvedById: string | null; // RFC 4122 UUID
+  readonly endedAt: string | null; // ISO-8601 UTC
+  readonly endedById: string | null; // RFC 4122 UUID
+  readonly endOutcome: EngagementEndOutcome | null;
+  readonly endReason: string | null;
+  readonly createdById: string; // RFC 4122 UUID
+  readonly createdAt: string; // ISO-8601 UTC
+  readonly updatedAt: string; // ISO-8601 UTC
+}
+
+export interface CreateEngagementDraftInput {
+  readonly clientId: string; // RFC 4122 UUID
+  readonly serviceId: string; // RFC 4122 UUID (required)
+  readonly title: string;
+  readonly scope: string;
+  readonly exclusions?: string | null;
+  readonly responsiblePartnerId: string; // RFC 4122 UUID (must resolve to active Founder)
+  readonly deliveryManagerId: string; // RFC 4122 UUID (must resolve to active management user)
+  readonly feeModel: EngagementFeeModel;
+  readonly agreedFeePaise: number; // Integer paise >= 0
+  readonly billingTerms: string;
+  readonly startDate: string; // YYYY-MM-DD
+  readonly endDate?: string | null; // YYYY-MM-DD
+}
+
+export interface ReviseEngagementDraftInput {
+  readonly engagementId: string; // RFC 4122 UUID
+  readonly title: string;
+  readonly scope: string;
+  readonly exclusions?: string | null;
+  readonly responsiblePartnerId: string; // RFC 4122 UUID
+  readonly deliveryManagerId: string; // RFC 4122 UUID
+  readonly feeModel: EngagementFeeModel;
+  readonly agreedFeePaise: number; // Integer paise >= 0
+  readonly billingTerms: string;
+  readonly startDate: string; // YYYY-MM-DD
+  readonly endDate?: string | null; // YYYY-MM-DD
+  readonly expectedUpdatedAt: string; // Required optimistic concurrency token
+}
+
+export interface ActivateEngagementInput {
+  readonly engagementId: string; // RFC 4122 UUID
+  readonly versionId: string; // RFC 4122 UUID
+  readonly expectedUpdatedAt: string; // Required optimistic concurrency token
+}
+
+export interface AmendActiveEngagementInput {
+  readonly engagementId: string; // RFC 4122 UUID
+  readonly title: string;
+  readonly scope: string;
+  readonly exclusions?: string | null;
+  readonly responsiblePartnerId: string; // RFC 4122 UUID
+  readonly deliveryManagerId: string; // RFC 4122 UUID
+  readonly feeModel: EngagementFeeModel;
+  readonly agreedFeePaise: number; // Integer paise >= 0
+  readonly billingTerms: string;
+  readonly startDate: string; // YYYY-MM-DD
+  readonly endDate?: string | null; // YYYY-MM-DD
+  readonly expectedUpdatedAt: string; // Required optimistic concurrency token
+}
+
+export interface EndEngagementInput {
+  readonly engagementId: string; // RFC 4122 UUID
+  readonly outcome: EngagementEndOutcome;
+  readonly reason: string; // Required non-empty end reason
+  readonly expectedUpdatedAt: string; // Required optimistic concurrency token
+}
+
+export const ENGAGEMENT_OPERATIONS = {
+  createDraft: 'engagement.createDraft',
+  activate: 'engagement.activate',
+  amend: 'engagement.amend',
+  end: 'engagement.end',
+} as const;
+export type EngagementOperation = (typeof ENGAGEMENT_OPERATIONS)[keyof typeof ENGAGEMENT_OPERATIONS];
+
+// --- Internal Helper Predicates & Error Collector ---
+
+function isIsoUtcString(val: string): boolean {
+  if (typeof val !== 'string') return false;
+  const isoUtcPattern = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/;
+  if (!isoUtcPattern.test(val)) return false;
+  const d = new Date(val);
+  if (isNaN(d.getTime())) return false;
+  // Ensure calendar date validity matches parsed UTC components
+  const [datePart, timePart] = val.slice(0, -1).split('T');
+  if (!datePart || !timePart) return false;
+  const [yStr, mStr, dStr] = datePart.split('-');
+  const y = Number(yStr);
+  const m = Number(mStr);
+  const day = Number(dStr);
+  if (d.getUTCFullYear() !== y || d.getUTCMonth() + 1 !== m || d.getUTCDate() !== day) {
+    return false;
+  }
+  return true;
+}
+
+function isIsoDateString(val: string): boolean {
+  if (typeof val !== 'string') return false;
+  const datePattern = /^\d{4}-\d{2}-\d{2}$/;
+  if (!datePattern.test(val)) return false;
+  const [yStr, mStr, dStr] = val.split('-');
+  const y = Number(yStr);
+  const m = Number(mStr);
+  const d = Number(dStr);
+  const date = new Date(Date.UTC(y, m - 1, d));
+  return (
+    date.getUTCFullYear() === y &&
+    date.getUTCMonth() + 1 === m &&
+    date.getUTCDate() === d
+  );
+}
+
+function isUuid(val: string): boolean {
+  if (typeof val !== 'string') return false;
+  const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  return uuidPattern.test(val);
+}
+
+function isIntegerPaise(val: unknown): val is number {
+  return typeof val === 'number' && Number.isSafeInteger(val) && val >= 0;
+}
+
+function collectEngagementTermsErrors(obj: Record<string, unknown>, errors: string[]): void {
+  if (typeof obj['title'] !== 'string' || obj['title'].trim().length < 2 || obj['title'].trim().length > 180) {
+    errors.push('title must be between 2 and 180 characters');
+  }
+  if (typeof obj['scope'] !== 'string' || obj['scope'].trim().length < 2) {
+    errors.push('scope must be at least 2 characters');
+  }
+  if (obj['exclusions'] !== undefined && obj['exclusions'] !== null && typeof obj['exclusions'] !== 'string') {
+    errors.push('exclusions must be a string or null when provided');
+  }
+  if (!isUuid(String(obj['responsiblePartnerId']))) errors.push('responsiblePartnerId must be a valid UUID');
+  if (!isUuid(String(obj['deliveryManagerId']))) errors.push('deliveryManagerId must be a valid UUID');
+  if (!ENGAGEMENT_FEE_MODELS.includes(obj['feeModel'] as EngagementFeeModel)) {
+    errors.push(`feeModel must be one of: ${ENGAGEMENT_FEE_MODELS.join(', ')}`);
+  }
+  if (!isIntegerPaise(obj['agreedFeePaise'])) {
+    errors.push('agreedFeePaise must be a non-negative safe integer');
+  }
+  if (typeof obj['billingTerms'] !== 'string' || obj['billingTerms'].trim().length < 2) {
+    errors.push('billingTerms must be at least 2 characters');
+  }
+  if (!isIsoDateString(String(obj['startDate']))) {
+    errors.push('startDate must be in YYYY-MM-DD format');
+  }
+  if (obj['endDate'] !== undefined && obj['endDate'] !== null) {
+    if (!isIsoDateString(String(obj['endDate']))) {
+      errors.push('endDate must be in YYYY-MM-DD format');
+    } else if (String(obj['startDate']) > String(obj['endDate'])) {
+      errors.push('endDate cannot precede startDate');
+    }
+  }
+}
+
+// --- Contract Validation Functions ---
+
+export function validateCreateEngagementDraftInput(input: unknown): { success: true; data: CreateEngagementDraftInput } | { success: false; errors: string[] } {
+  const errors: string[] = [];
+  if (!input || typeof input !== 'object') {
+    return { success: false, errors: ['Input must be a non-null object'] };
+  }
+  const obj = input as Record<string, unknown>;
+
+  if (!isUuid(String(obj['clientId']))) errors.push('clientId must be a valid UUID');
+  if (!isUuid(String(obj['serviceId']))) {
+    errors.push('serviceId must be a valid UUID');
+  }
+  collectEngagementTermsErrors(obj, errors);
+
+  if (errors.length > 0) return { success: false, errors };
+  return { success: true, data: input as CreateEngagementDraftInput };
+}
+
+export function validateReviseEngagementDraftInput(input: unknown): { success: true; data: ReviseEngagementDraftInput } | { success: false; errors: string[] } {
+  const errors: string[] = [];
+  if (!input || typeof input !== 'object') {
+    return { success: false, errors: ['Input must be a non-null object'] };
+  }
+  const obj = input as Record<string, unknown>;
+
+  if (!isUuid(String(obj['engagementId']))) errors.push('engagementId must be a valid UUID');
+  collectEngagementTermsErrors(obj, errors);
+  if (!isIsoUtcString(String(obj['expectedUpdatedAt']))) {
+    errors.push('expectedUpdatedAt must be an ISO-8601 UTC timestamp');
+  }
+
+  if (errors.length > 0) return { success: false, errors };
+  return { success: true, data: input as ReviseEngagementDraftInput };
+}
+
+export function validateActivateEngagementInput(input: unknown): { success: true; data: ActivateEngagementInput } | { success: false; errors: string[] } {
+  const errors: string[] = [];
+  if (!input || typeof input !== 'object') {
+    return { success: false, errors: ['Input must be a non-null object'] };
+  }
+  const obj = input as Record<string, unknown>;
+
+  if (!isUuid(String(obj['engagementId']))) errors.push('engagementId must be a valid UUID');
+  if (!isUuid(String(obj['versionId']))) errors.push('versionId must be a valid UUID');
+  if (!isIsoUtcString(String(obj['expectedUpdatedAt']))) {
+    errors.push('expectedUpdatedAt must be an ISO-8601 UTC timestamp');
+  }
+
+  if (errors.length > 0) return { success: false, errors };
+  return { success: true, data: input as ActivateEngagementInput };
+}
+
+export function validateAmendActiveEngagementInput(input: unknown): { success: true; data: AmendActiveEngagementInput } | { success: false; errors: string[] } {
+  const errors: string[] = [];
+  if (!input || typeof input !== 'object') {
+    return { success: false, errors: ['Input must be a non-null object'] };
+  }
+  const obj = input as Record<string, unknown>;
+
+  if (!isUuid(String(obj['engagementId']))) errors.push('engagementId must be a valid UUID');
+  collectEngagementTermsErrors(obj, errors);
+  if (!isIsoUtcString(String(obj['expectedUpdatedAt']))) {
+    errors.push('expectedUpdatedAt must be an ISO-8601 UTC timestamp');
+  }
+
+  if (errors.length > 0) return { success: false, errors };
+  return { success: true, data: input as AmendActiveEngagementInput };
+}
+
+export function validateEndEngagementInput(input: unknown): { success: true; data: EndEngagementInput } | { success: false; errors: string[] } {
+  const errors: string[] = [];
+  if (!input || typeof input !== 'object') {
+    return { success: false, errors: ['Input must be a non-null object'] };
+  }
+  const obj = input as Record<string, unknown>;
+
+  if (!isUuid(String(obj['engagementId']))) errors.push('engagementId must be a valid UUID');
+  if (!ENGAGEMENT_END_OUTCOMES.includes(obj['outcome'] as EngagementEndOutcome)) {
+    errors.push(`outcome must be one of: ${ENGAGEMENT_END_OUTCOMES.join(', ')}`);
+  }
+  if (typeof obj['reason'] !== 'string' || obj['reason'].trim().length < 2) {
+    errors.push('reason is required and must be at least 2 characters');
+  } else if (obj['reason'].trim().length > 500) {
+    errors.push('reason cannot exceed 500 characters');
+  }
+  if (!isIsoUtcString(String(obj['expectedUpdatedAt']))) {
+    errors.push('expectedUpdatedAt must be an ISO-8601 UTC timestamp');
+  }
+
+  if (errors.length > 0) return { success: false, errors };
+  return { success: true, data: input as EndEngagementInput };
+}
