@@ -19,3 +19,7 @@ export * from './team-directory-types';
 export * from './http-team-directory-adapter';
 export * from './team-directory-coordinator';
 export * from './use-team-directory';
+export * from './engagements-types';
+export * from './http-engagements-adapter';
+export * from './engagements-coordinator';
+export * from './use-engagements';
