@@ -2,6 +2,7 @@ import type { LucideIcon } from 'lucide-react';
 import {
   BriefcaseBusiness,
   Building2,
+  Handshake,
   Files,
   LayoutDashboard,
   ListChecks,
@@ -17,6 +18,7 @@ import type { CompanyRole } from '@sn/domain';
 export type PageKey =
   | 'Dashboard'
   | 'Clients'
+  | 'Engagements'
   | 'Assignments'
   | 'My Tasks'
   | 'Team'
@@ -43,6 +45,7 @@ const ALL_NAV: NavGroup[] = [
     items: [
       { label: 'Dashboard', icon: LayoutDashboard },
       { label: 'Clients', icon: Building2 },
+      { label: 'Engagements', icon: Handshake },
       { label: 'Assignments', icon: BriefcaseBusiness },
       { label: 'My Tasks', icon: ListChecks },
     ],
@@ -65,6 +68,7 @@ const ROLE_NAV: Record<CompanyRole, readonly PageKey[]> = {
   founder: [
     'Dashboard',
     'Clients',
+    'Engagements',
     'Assignments',
     'My Tasks',
     'Team',
@@ -78,6 +82,7 @@ const ROLE_NAV: Record<CompanyRole, readonly PageKey[]> = {
   manager: [
     'Dashboard',
     'Clients',
+    'Engagements',
     'Assignments',
     'My Tasks',
     'Team',
@@ -112,6 +117,7 @@ const ROLE_NAV: Record<CompanyRole, readonly PageKey[]> = {
 export const MODULE_DESCRIPTIONS: Record<PageKey, string> = {
   Dashboard: '',
   Clients: 'Client identity, contacts, registrations, service history, documents, and communication in one record.',
+  Engagements: 'Engagement scope, fee terms, approval evidence, responsible leadership, and version history.',
   Assignments: 'Continuous monthly compliance schedules and ad-hoc client obligations with ownership, deadlines, and evidence.',
   'My Tasks': 'Personal reminders, delegated work, internal tasks, checklists, and due-time planning.',
   Team: 'Reporting lines, workload, capabilities, departments, and controlled access.',

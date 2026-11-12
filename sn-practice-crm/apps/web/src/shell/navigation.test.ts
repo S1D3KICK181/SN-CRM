@@ -8,6 +8,7 @@ describe('navigation', () => {
     expect(pages).toEqual<PageKey[]>([
       'Dashboard',
       'Clients',
+      'Engagements',
       'Assignments',
       'My Tasks',
       'Team',
@@ -25,6 +26,7 @@ describe('navigation', () => {
     expect(pages).toEqual<PageKey[]>([
       'Dashboard',
       'Clients',
+      'Engagements',
       'Assignments',
       'My Tasks',
       'Team',
@@ -38,6 +40,7 @@ describe('navigation', () => {
 
   it('returns the exact ordered pages for senior_staff', () => {
     const pages = getNavigationForRole('senior_staff').flatMap((group) => group.items.map((item) => item.label));
+    expect(pages).not.toContain('Engagements');
     expect(pages).toEqual<PageKey[]>([
       'Dashboard',
       'Clients',
@@ -52,6 +55,7 @@ describe('navigation', () => {
 
   it('returns the exact ordered pages for staff', () => {
     const pages = getNavigationForRole('staff').flatMap((group) => group.items.map((item) => item.label));
+    expect(pages).not.toContain('Engagements');
     expect(pages).toEqual<PageKey[]>([
       'Dashboard',
       'Clients',
@@ -65,6 +69,7 @@ describe('navigation', () => {
 
   it('returns the exact ordered pages for trainee', () => {
     const pages = getNavigationForRole('trainee').flatMap((group) => group.items.map((item) => item.label));
+    expect(pages).not.toContain('Engagements');
     expect(pages).toEqual<PageKey[]>([
       'Dashboard',
       'My Tasks',

@@ -42,6 +42,7 @@ import { ApplicationChrome } from './shell/application-chrome';
 import { MODULE_DESCRIPTIONS, type PageKey } from './shell/navigation';
 import { Card, Field, MoreButton, Status } from './ui/workspace-primitives';
 import { ClientsWorkspace } from './workspaces/clients/clients-workspace';
+import { EngagementsWorkspace } from './workspaces/engagements/engagements-workspace';
 import { BillingWorkspace } from './workspaces/billing/billing-workspace';
 import { TeamWorkspace } from './workspaces/team/team-workspace';
 import {
@@ -1435,6 +1436,7 @@ export function ModuleWorkspace({
           onToast={onToast}
         />
       ) : null}
+      {page === 'Engagements' ? <EngagementsWorkspace role={role} onToast={onToast} /> : null}
       {page === 'Assignments' ? (
         <AssignmentsWorkspace
           role={role}
@@ -1482,7 +1484,7 @@ export function ModuleWorkspace({
       ) : null}
       {page === 'Office Accounts' ? <AccountsWorkspace /> : null}
       {page === 'Team' ? <TeamWorkspace role={role} onToast={onToast} /> : null}
-      {!['Clients', 'Assignments', 'Billing & Collections', 'My Tasks', 'Office Accounts', 'Team'].includes(page) ? (
+      {!['Clients', 'Engagements', 'Assignments', 'Billing & Collections', 'My Tasks', 'Office Accounts', 'Team'].includes(page) ? (
         <ModuleFoundation page={page} />
       ) : null}
     </>

@@ -4101,3 +4101,116 @@ tbody tr:hover {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* Engagements workspace */
+.engagement-workspace {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.engagement-toolbar {
+  margin-bottom: 0;
+}
+
+.engagement-row {
+  cursor: pointer;
+}
+
+.engagement-status-active {
+  background: var(--success-soft);
+  color: var(--success);
+}
+
+.engagement-status-draft {
+  background: var(--canvas);
+  color: var(--ink-muted);
+}
+
+.engagement-status-ended {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.engagement-skeleton-row {
+  min-height: 52px;
+}
+
+.engagement-skeleton-row > span {
+  display: block;
+  width: 100%;
+  height: 14px;
+  border-radius: 6px;
+  background: var(--border);
+}
+
+.engagement-drawer .drawer-title-contain {
+  overflow-wrap: anywhere;
+}
+
+.engagement-drawer .drawer-card {
+  flex: 0 0 auto;
+  min-height: 96px;
+}
+
+.engagement-drawer .drawer-content {
+  min-height: 0;
+}
+
+.engagement-drawer p,
+.engagement-drawer h3 {
+  overflow-wrap: anywhere;
+}
+
+.engagement-drawer h3 {
+  color: var(--ink);
+}
+
+.engagement-skeleton-card {
+  min-height: 88px;
+}
+
+.engagement-skeleton-card-short {
+  max-width: 70%;
+}
+
+.engagement-skeleton-card-tall {
+  min-height: 180px;
+}
+
+.engagement-detail-grid {
+  gap: 16px;
+}
+
+.engagement-detail-grid-wide {
+  grid-column: 1 / -1;
+}
+
+.engagement-version-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.engagement-version-list li {
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--canvas);
+  overflow-wrap: anywhere;
+}
+
+.engagement-version-list li span {
+  display: block;
+  color: var(--ink-muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.engagement-detail-warning {
+  align-items: flex-start;
+  margin-top: -4px;
+}
