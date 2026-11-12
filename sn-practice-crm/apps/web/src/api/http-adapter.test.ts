@@ -46,6 +46,8 @@ const SAMPLE_DTO: AssignmentDto = {
   reviewNotes: null,
   dueAt: '2026-11-11T12:30:00.000Z',
   recurringScheduleId: '20000000-0000-4000-a000-000000000001',
+  engagementId: null,
+  engagementCode: null,
   createdById: '00000000-0000-4000-a000-000000000001',
   createdAt: '2026-10-01T04:30:00.000Z',
   updatedAt: '2026-10-29T09:15:00.000Z',

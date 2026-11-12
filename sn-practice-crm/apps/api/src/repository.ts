@@ -79,6 +79,7 @@ export interface CreateAssignmentRecord {
   readonly status: 'assigned' | 'draft'; // Literal legal initial status
   readonly dueAt: string; // ISO-8601 UTC
   readonly recurringScheduleId?: string | null;
+  readonly engagementId?: string | null; // RFC 4122 UUID; validated by the application, enforced by the database
   readonly periodStart?: string | null;
   readonly periodEnd?: string | null;
   readonly priority?: 'low' | 'normal' | 'high' | 'urgent';

@@ -1340,4 +1340,214 @@ describe('PostgresCrmRepository Integration Suite', () => {
       });
     });
   });
+
+  describe('ENG-02a Postgres Integration: Assignment engagement link', () => {
+    async function createActiveEngagement(repo: PostgresCrmRepository, clientId: string, serviceId: string, key: string) {
+      const founderCtx = { actorId: FOUNDER_ID };
+      const draft = await repo.mutateEngagement(founderCtx, {
+        kind: 'createDraft',
+        idempotencyKey: `${key}-create`,
+        clientId,
+        serviceId,
+        title: 'Linked Assignment Engagement',
+        scope: 'Scope for linked assignments',
+        responsiblePartnerId: FOUNDER_ID,
+        deliveryManagerId: MANAGER_ID,
+        feeModel: 'fixed',
+        agreedFeePaise: 1000000,
+        billingTerms: 'Terms',
+        startDate: '2026-11-01',
+      });
+      const versions = await repo.listEngagementVersions(founderCtx, draft.id);
+      return repo.mutateEngagement(founderCtx, {
+        kind: 'activate',
+        idempotencyKey: `${key}-activate`,
+        engagementId: draft.id,
+        versionId: versions[0]!.id,
+        expectedUpdatedAt: draft.updatedAt,
+      });
+    }
+
+    function assignmentRecord(
+      id: string,
+      client: { id: string; name: string },
+      service: { id: string; name: string },
+      engagementId?: string | null,
+    ) {
+      return {
+        id,
+        clientId: client.id,
+        clientName: client.name,
+        serviceId: service.id,
+        service: service.name,
+        title: 'Linked assignment',
+        ownerId: STAFF_ID,
+        reviewerIds: [],
+        status: 'assigned' as const,
+        dueAt: new Date(Date.now() + 86400000 * 7).toISOString(),
+        engagementId: engagementId ?? null,
+        createdById: FOUNDER_ID,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+    }
+
+    async function asFounder<T>(tx: postgres.TransactionSql, statement: (sp: postgres.TransactionSql) => Promise<T>) {
+      return tx.savepoint(async (sp) => {
+        await sp`SELECT set_config('request.jwt.claim.sub', ${FOUNDER_ID}, true)`;
+        await sp`SELECT set_config('request.jwt.claim.role', 'authenticated', true)`;
+        await sp`SELECT set_config('role', 'authenticated', true)`;
+        return statement(sp);
+      });
+    }
+
+    it('IT-22: a linked insert stores the engagement id and the engagement code', async () => {
+      await runIsolatedTest(async (repo, tx) => {
+        const founderCtx = { actorId: FOUNDER_ID };
+        const client = (await repo.listClientReferences(founderCtx))[0]!;
+        const service = (await repo.listServiceReferences(founderCtx))[0]!;
+        const engagement = await createActiveEngagement(repo, client.id, service.id, 'it-22');
+
+        const newId = '90000000-0000-4000-a000-0000000000a1';
+        const created = await repo.createAssignment(founderCtx, assignmentRecord(newId, client, service, engagement.id));
+        expect(created).toMatchObject({ engagementId: engagement.id, engagementCode: engagement.code });
+
+        const rawRows = await tx`SELECT engagement_id, engagement_code FROM public.assignments WHERE id = ${newId}::uuid`;
+        expect(rawRows[0]).toMatchObject({ engagement_id: engagement.id, engagement_code: engagement.code });
+
+        const unlinkedId = '90000000-0000-4000-a000-0000000000a2';
+        const unlinked = await repo.createAssignment(founderCtx, assignmentRecord(unlinkedId, client, service));
+        expect(unlinked).toMatchObject({ engagementId: null, engagementCode: null });
+      });
+    });
+
+    it('IT-23: the database rejects a cross-client link, a draft engagement and an unknown engagement', async () => {
+      await runIsolatedTest(async (repo) => {
+        const founderCtx = { actorId: FOUNDER_ID };
+        const clients = await repo.listClientReferences(founderCtx);
+        const service = (await repo.listServiceReferences(founderCtx))[0]!;
+        const clientA = clients[0]!;
+        const clientB = clients[1]!;
+        const engagementForB = await createActiveEngagement(repo, clientB.id, service.id, 'it-23');
+
+        await expect(
+          repo.createAssignment(founderCtx, assignmentRecord('90000000-0000-4000-a000-0000000000b1', clientA, service, engagementForB.id)),
+        ).rejects.toBeDefined();
+
+        const draft = await repo.mutateEngagement(founderCtx, {
+          kind: 'createDraft',
+          idempotencyKey: 'it-23-draft',
+          clientId: clientA.id,
+          serviceId: service.id,
+          title: 'Draft only',
+          scope: 'Scope',
+          responsiblePartnerId: FOUNDER_ID,
+          deliveryManagerId: MANAGER_ID,
+          feeModel: 'fixed',
+          agreedFeePaise: 1000000,
+          billingTerms: 'Terms',
+          startDate: '2026-11-01',
+        });
+        await expect(
+          repo.createAssignment(founderCtx, assignmentRecord('90000000-0000-4000-a000-0000000000b2', clientA, service, draft.id)),
+        ).rejects.toBeDefined();
+
+        await expect(
+          repo.createAssignment(
+            founderCtx,
+            assignmentRecord('90000000-0000-4000-a000-0000000000b3', clientA, service, '00000000-0000-4000-e000-999999999999'),
+          ),
+        ).rejects.toBeDefined();
+      });
+    });
+
+    it('IT-24: engagement_id, engagement_code and client_id cannot change after insert', async () => {
+      await runIsolatedTest(async (repo, tx) => {
+        const founderCtx = { actorId: FOUNDER_ID };
+        const clients = await repo.listClientReferences(founderCtx);
+        const service = (await repo.listServiceReferences(founderCtx))[0]!;
+        const client = clients[0]!;
+        const otherClient = clients[1]!;
+        const engagement = await createActiveEngagement(repo, client.id, service.id, 'it-24');
+        const otherEngagement = await createActiveEngagement(repo, client.id, service.id, 'it-24-other');
+
+        const linkedId = '90000000-0000-4000-a000-0000000000c1';
+        const unlinkedId = '90000000-0000-4000-a000-0000000000c2';
+        await repo.createAssignment(founderCtx, assignmentRecord(linkedId, client, service, engagement.id));
+        await repo.createAssignment(founderCtx, assignmentRecord(unlinkedId, client, service));
+
+        // Re-linking to another engagement
+        await expect(
+          asFounder(tx, (sp) => sp`UPDATE public.assignments SET engagement_id = ${otherEngagement.id}::uuid WHERE id = ${linkedId}::uuid`),
+        ).rejects.toThrow(/immutable/i);
+        // Clearing the link
+        await expect(
+          asFounder(tx, (sp) => sp`UPDATE public.assignments SET engagement_id = NULL, engagement_code = NULL WHERE id = ${linkedId}::uuid`),
+        ).rejects.toThrow(/immutable/i);
+        // Adding a link after creation
+        await expect(
+          asFounder(tx, (sp) => sp`UPDATE public.assignments SET engagement_id = ${engagement.id}::uuid, engagement_code = ${engagement.code} WHERE id = ${unlinkedId}::uuid`),
+        ).rejects.toThrow(/immutable/i);
+        // Changing the client of a linked assignment
+        await expect(
+          asFounder(tx, (sp) => sp`UPDATE public.assignments SET client_id = ${otherClient.id}::uuid WHERE id = ${linkedId}::uuid`),
+        ).rejects.toBeDefined();
+
+        const rawRows = await tx`SELECT engagement_id, engagement_code, client_id FROM public.assignments WHERE id = ${linkedId}::uuid`;
+        expect(rawRows[0]).toMatchObject({ engagement_id: engagement.id, engagement_code: engagement.code, client_id: client.id });
+      });
+    });
+
+    it('IT-25: a direct write to engagement_code is rejected on update and discarded on insert', async () => {
+      await runIsolatedTest(async (repo, tx) => {
+        const founderCtx = { actorId: FOUNDER_ID };
+        const client = (await repo.listClientReferences(founderCtx))[0]!;
+        const service = (await repo.listServiceReferences(founderCtx))[0]!;
+        const engagement = await createActiveEngagement(repo, client.id, service.id, 'it-25');
+
+        const linkedId = '90000000-0000-4000-a000-0000000000d1';
+        await repo.createAssignment(founderCtx, assignmentRecord(linkedId, client, service, engagement.id));
+
+        await expect(
+          asFounder(tx, (sp) => sp`UPDATE public.assignments SET engagement_code = 'ENG-999999' WHERE id = ${linkedId}::uuid`),
+        ).rejects.toThrow(/immutable/i);
+
+        // A forged code on insert is overwritten by the engagement's own code (or nulled when unlinked)
+        const forgedLinkedId = '90000000-0000-4000-a000-0000000000d2';
+        const forgedUnlinkedId = '90000000-0000-4000-a000-0000000000d3';
+        await asFounder(tx, async (sp) => {
+          await sp`
+            INSERT INTO public.assignments (id, client_id, service_id, title, owner_id, status, due_at, engagement_id, engagement_code, created_by)
+            VALUES (${forgedLinkedId}::uuid, ${client.id}::uuid, ${service.id}::uuid, 'Forged linked', ${STAFF_ID}::uuid, 'assigned', now() + interval '7 days', ${engagement.id}::uuid, 'ENG-999999', ${FOUNDER_ID}::uuid)`;
+          await sp`
+            INSERT INTO public.assignments (id, client_id, service_id, title, owner_id, status, due_at, engagement_code, created_by)
+            VALUES (${forgedUnlinkedId}::uuid, ${client.id}::uuid, ${service.id}::uuid, 'Forged unlinked', ${STAFF_ID}::uuid, 'assigned', now() + interval '7 days', 'ENG-999999', ${FOUNDER_ID}::uuid)`;
+        });
+        const rows = await tx`SELECT id, engagement_code FROM public.assignments WHERE id IN (${forgedLinkedId}::uuid, ${forgedUnlinkedId}::uuid)`;
+        const codeById = new Map(rows.map((row) => [String(row['id']), row['engagement_code']]));
+        expect(codeById.get(forgedLinkedId)).toBe(engagement.code);
+        expect(codeById.get(forgedUnlinkedId)).toBeNull();
+      });
+    });
+
+    it('IT-26: a Staff actor who can read the assignment sees engagementCode but cannot read the engagement', async () => {
+      await runIsolatedTest(async (repo) => {
+        const founderCtx = { actorId: FOUNDER_ID };
+        const staffCtx = { actorId: STAFF_ID };
+        const client = (await repo.listClientReferences(founderCtx))[0]!;
+        const service = (await repo.listServiceReferences(founderCtx))[0]!;
+        const engagement = await createActiveEngagement(repo, client.id, service.id, 'it-26');
+
+        const linkedId = '90000000-0000-4000-a000-0000000000e1';
+        await repo.createAssignment(founderCtx, assignmentRecord(linkedId, client, service, engagement.id));
+
+        const seen = await repo.getAssignment(staffCtx, linkedId);
+        expect(seen).toMatchObject({ engagementId: engagement.id, engagementCode: engagement.code });
+        expect((await repo.listAssignments(staffCtx)).find((a) => a.id === linkedId)).toMatchObject({
+          engagementCode: engagement.code,
+        });
+        expect(await repo.getEngagement(staffCtx, engagement.id)).toBeNull();
+      });
+    });
+  });
 });

@@ -100,6 +100,9 @@ describe('Contracts Single Status Truth & Runtime Tuples', () => {
     expectTypeOf<ClientDto>().toHaveProperty('gstinMasked').toBeNullable();
     expectTypeOf<ClientDto>().not.toHaveProperty('gstin');
     expectTypeOf<CreateAssignmentInput>().not.toHaveProperty('clientName');
+    expectTypeOf<AssignmentDto>().toHaveProperty('engagementId').toEqualTypeOf<string | null>();
+    expectTypeOf<AssignmentDto>().toHaveProperty('engagementCode').toEqualTypeOf<string | null>();
+    expectTypeOf<CreateAssignmentInput>().toHaveProperty('engagementId').toEqualTypeOf<string | null | undefined>();
     expectTypeOf<CreateRecurringScheduleInput>().not.toHaveProperty('clientName');
   });
 

@@ -319,6 +319,29 @@ export class CrmApplication {
     const owner = await this.getActiveEmployee(ctx, input.ownerId);
     requireAuthority({ action: 'assignment.assign', actor: asActor(actor), target: owner });
 
+    let engagementId: string | null = null;
+    if (input.engagementId) {
+      const engagement = await this.repository.getEngagement(ctx, input.engagementId);
+      if (!engagement) {
+        throw new ApiError(422, 'referenced_entity_not_found', 'Referenced engagement does not exist.');
+      }
+      if (engagement.clientId !== client.id) {
+        throw new ApiError(
+          422,
+          'engagement_client_mismatch',
+          'The engagement belongs to a different client than the Assignment.',
+        );
+      }
+      if (engagement.status !== 'active') {
+        throw new ApiError(
+          422,
+          'engagement_not_active',
+          'An Assignment can only be linked to an active engagement.',
+        );
+      }
+      engagementId = engagement.id;
+    }
+
     const reviewerIds = await this.validateReviewerIds(ctx, input.reviewerIds ?? []);
     const timestamp = this.now().toISOString();
 
@@ -335,6 +358,7 @@ export class CrmApplication {
       status: 'assigned',
       dueAt: input.dueAt,
       recurringScheduleId: input.recurringScheduleId ?? null,
+      engagementId,
       periodStart: input.periodStart ?? null,
       periodEnd: input.periodEnd ?? null,
       priority: input.priority ?? 'normal',

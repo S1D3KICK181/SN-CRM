@@ -268,6 +268,8 @@ describe('Recurring schedule mapping & date arithmetic', () => {
       reviewerIds: [],
       reviewerNames: [],
       recurringScheduleId: null,
+      engagementId: null,
+      engagementCode: null,
       deliveryNotes: null,
       reviewNotes: null,
       createdById: '00000000-0000-4000-a000-000000000001',

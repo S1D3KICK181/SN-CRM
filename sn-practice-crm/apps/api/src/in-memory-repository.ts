@@ -510,6 +510,21 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
   }
 
   async createAssignment(_ctx: RepositoryContext, record: CreateAssignmentRecord): Promise<AssignmentDto> {
+    // Mirrors guard_assignment_engagement_link: same client, active engagement, code copied from it
+    let engagementCode: string | null = null;
+    if (record.engagementId) {
+      const engagement = this.engagements.get(record.engagementId);
+      if (!engagement) {
+        throw new ApiError(422, 'referenced_entity_not_found', 'Referenced engagement does not exist.');
+      }
+      if (engagement.clientId !== record.clientId) {
+        throw new ApiError(422, 'engagement_client_mismatch', 'The engagement belongs to a different client than the Assignment.');
+      }
+      if (engagement.status !== 'active') {
+        throw new ApiError(422, 'engagement_not_active', 'An Assignment can only be linked to an active engagement.');
+      }
+      engagementCode = engagement.code;
+    }
     this.assignmentCounter += 1;
     const code = `AS-${String(this.assignmentCounter).padStart(6, '0')}`;
     const ownerName = this.employees.get(record.ownerId)?.name ?? 'Unassigned';
@@ -530,6 +545,8 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
       status: record.status,
       dueAt: record.dueAt,
       recurringScheduleId: record.recurringScheduleId ?? null,
+      engagementId: record.engagementId ?? null,
+      engagementCode,
       periodStart: record.periodStart ?? null,
       periodEnd: record.periodEnd ?? null,
       priority: record.priority ?? 'normal',
@@ -800,6 +817,8 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
             reviewNotes: null,
             dueAt: recurrenceDates.dueAt,
             recurringScheduleId: schedule.id,
+            engagementId: null,
+            engagementCode: null,
             periodStart: occurrence,
             periodEnd: recurrenceDates.periodEnd,
             priority: 'normal',

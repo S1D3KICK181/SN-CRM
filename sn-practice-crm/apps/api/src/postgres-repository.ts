@@ -502,6 +502,7 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
         coalesce(p.full_name, 'Unassigned') AS "ownerName",
         a.status, a.priority, a.period_start AS "periodStart", a.period_end AS "periodEnd",
         a.due_at AS "dueAt", a.recurring_schedule_id AS "recurringScheduleId",
+        a.engagement_id AS "engagementId", a.engagement_code AS "engagementCode",
         a.progress_percent AS "progressPercent",
         a.delivery_notes AS "deliveryNotes",
         a.review_notes AS "reviewNotes",
@@ -545,6 +546,8 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
       periodEnd: row['periodEnd'] ? (row['periodEnd'] as Date).toISOString().slice(0, 10) : null,
       dueAt: (row['dueAt'] as Date).toISOString(),
       recurringScheduleId: row['recurringScheduleId'] ? String(row['recurringScheduleId']) : null,
+      engagementId: row['engagementId'] ? String(row['engagementId']) : null,
+      engagementCode: row['engagementCode'] ? String(row['engagementCode']) : null,
       progressPercent: row['progressPercent'] !== null && row['progressPercent'] !== undefined ? Number(row['progressPercent']) : 0,
       deliveryNotes: row['deliveryNotes'] ? String(row['deliveryNotes']) : null,
       reviewNotes: row['reviewNotes'] ? String(row['reviewNotes']) : null,
@@ -582,6 +585,7 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
             coalesce(p.full_name, 'Unassigned') AS "ownerName",
             a.status, a.priority, a.period_start AS "periodStart", a.period_end AS "periodEnd",
             a.due_at AS "dueAt", a.recurring_schedule_id AS "recurringScheduleId",
+            a.engagement_id AS "engagementId", a.engagement_code AS "engagementCode",
             a.progress_percent AS "progressPercent",
             a.delivery_notes AS "deliveryNotes",
             a.review_notes AS "reviewNotes",
@@ -642,6 +646,8 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
           periodEnd: row['periodEnd'] ? (row['periodEnd'] as Date).toISOString().slice(0, 10) : null,
           dueAt: (row['dueAt'] as Date).toISOString(),
           recurringScheduleId: row['recurringScheduleId'] ? String(row['recurringScheduleId']) : null,
+          engagementId: row['engagementId'] ? String(row['engagementId']) : null,
+          engagementCode: row['engagementCode'] ? String(row['engagementCode']) : null,
           progressPercent: row['progressPercent'] !== null && row['progressPercent'] !== undefined ? Number(row['progressPercent']) : 0,
           deliveryNotes: row['deliveryNotes'] ? String(row['deliveryNotes']) : null,
           reviewNotes: row['reviewNotes'] ? String(row['reviewNotes']) : null,
@@ -669,7 +675,7 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
           INSERT INTO public.assignments (
             id, client_id, service_id, title, description, owner_id,
             status, priority, period_start, period_end, due_at,
-            recurring_schedule_id, created_by
+            recurring_schedule_id, engagement_id, created_by
           ) VALUES (
             ${record.id}::uuid, ${record.clientId}::uuid, ${record.serviceId}::uuid,
             ${record.title}, ${record.description ?? null}, ${record.ownerId}::uuid,
@@ -679,6 +685,7 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
             ${record.periodEnd ? record.periodEnd : null}::date,
             ${record.dueAt}::timestamptz,
             ${record.recurringScheduleId ? record.recurringScheduleId : null}::uuid,
+            ${record.engagementId ? record.engagementId : null}::uuid,
             ${ctx.actorId}::uuid
           );
         `;

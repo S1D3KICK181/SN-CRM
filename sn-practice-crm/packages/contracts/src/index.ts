@@ -68,6 +68,8 @@ export interface AssignmentDto {
   readonly status: AssignmentStatus;
   readonly dueAt: string; // ISO-8601 UTC
   readonly recurringScheduleId: string | null;
+  readonly engagementId: string | null; // RFC 4122 UUID references public.engagements(id); set at creation only
+  readonly engagementCode: string | null; // Output-only: ENG-xxxxxx, filled by the database from the engagement
   readonly periodStart?: string | null;
   readonly periodEnd?: string | null;
   readonly priority?: 'low' | 'normal' | 'high' | 'urgent';
@@ -97,6 +99,7 @@ export type CreateAssignmentInput = {
   readonly reviewerIds?: readonly string[]; // RFC 4122 UUIDs
   readonly dueAt: string; // ISO-8601 UTC
   readonly recurringScheduleId?: string | null;
+  readonly engagementId?: string | null; // RFC 4122 UUID of an active engagement for the same client
   readonly periodStart?: string | null;
   readonly periodEnd?: string | null;
   readonly priority?: 'low' | 'normal' | 'high' | 'urgent';

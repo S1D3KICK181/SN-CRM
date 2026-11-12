@@ -193,6 +193,7 @@ export const createAssignmentSchema = z
     ownerId: entityUuid,
     reviewerIds: z.array(entityUuid).max(5).optional(),
     dueAt: isoInstantSchema,
+    engagementId: entityUuid.nullable().optional(),
   })
   .strict()
   .refine(

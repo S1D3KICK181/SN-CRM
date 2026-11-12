@@ -648,3 +648,36 @@ test('migration 0006 defines ENG-01 operation receipts, actor isolation, and cle
   assert.ok(rcptDel < engDel, 'operation_receipts must be deleted before engagements');
   assert.match(removeRpc, /'operation_receipts',\s*v_operation_receipts_count/i, 'summary includes operation_receipts');
 });
+
+test('migration 0007 links assignments to engagements with a guarded, immutable, DB-derived code', () => {
+  const migration0007Path = new URL('../../supabase/migrations/20261112130000_eng02_assignment_engagement_link.sql', import.meta.url);
+  const sql0007 = readMigration(migration0007Path, 'Migration 0007');
+
+  // 1. Optional FK with restrict, index, and paired-nullness constraint
+  expectSql(sql0007, /add column engagement_id uuid references public\.engagements\(id\) on delete restrict/i, 'nullable restrict FK');
+  assert.doesNotMatch(sql0007, /engagement_id uuid[^,]*not null/i, 'engagement_id stays nullable');
+  expectSql(sql0007, /add column engagement_code text(?!\s+not null)/i, 'engagement_code nullable text');
+  expectSql(sql0007, /create index assignments_engagement_idx on public\.assignments \(engagement_id\);/i, 'engagement index');
+  expectSql(sql0007, /constraint assignment_engagement_code_pair check \(\s*\(engagement_id is null\) = \(engagement_code is null\)\s*\)/i, 'code null exactly when id null');
+
+  // 2. Guard function: security definer, pinned search_path, same-client + active + immutable rules
+  const guard = functionBlock(sql0007, 'guard_assignment_engagement_link');
+  assert.match(guard, /security definer/i);
+  assert.match(guard, /set search_path = public, pg_temp/i);
+  assert.match(guard, /The Engagement must belong to the same client as the Assignment/i);
+  assert.match(guard, /An Assignment can only be linked to an active Engagement/i);
+  assert.match(guard, /new\.engagement_code := v_engagement\.code;/i);
+  assert.match(guard, /The Assignment engagement link is immutable after creation/i);
+  assert.match(guard, /A linked Assignment cannot change client/i);
+
+  // 3. Trigger fires on insert and on update of the guarded columns
+  expectSql(
+    sql0007,
+    /create trigger guard_assignment_engagement_link\s+before insert or update of engagement_id, engagement_code, client_id on public\.assignments\s+for each row execute function public\.guard_assignment_engagement_link\(\);/i,
+    'guard trigger',
+  );
+
+  // 4. Additive only: schedules and the materializer are untouched
+  assert.doesNotMatch(sql0007, /recurring_schedules/i, 'no recurring schedule change');
+  assert.doesNotMatch(sql0007, /materialize_due_recurring_assignments/i, 'materializer untouched');
+});

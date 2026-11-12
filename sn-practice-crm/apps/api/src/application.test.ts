@@ -1696,4 +1696,145 @@ describe("CrmApplication authority and workflow rules", () => {
       expect(mutateSpy).not.toHaveBeenCalled();
     });
   });
+
+  describe("ENG-02a assignment engagement link", () => {
+    const CANONICAL_CLIENT_2 = "10000000-0000-4000-a000-000000000002";
+    const terms = {
+      title: "Annual compliance engagement",
+      scope: "Annual compliance filings",
+      responsiblePartnerId: DEMO_ACTOR_IDS.founder,
+      deliveryManagerId: DEMO_ACTOR_IDS.manager,
+      feeModel: "fixed" as const,
+      agreedFeePaise: 100000,
+      billingTerms: "Due on completion",
+      startDate: "2026-11-01",
+      endDate: "2027-03-31",
+    };
+    const assignmentInput = (engagementId?: string | null): CreateAssignmentInput => ({
+      clientId: CANONICAL_CLIENT_1,
+      title: "Annual return",
+      serviceId: CANONICAL_SERVICE_1,
+      ownerId: DEMO_ACTOR_IDS.staff,
+      dueAt: "2026-12-01T12:30:00.000Z",
+      ...(engagementId === undefined ? {} : { engagementId }),
+    });
+
+    async function prepareEngagement(
+      application: CrmApplication,
+      state: "draft" | "active" | "ended",
+      clientId = CANONICAL_CLIENT_1,
+    ) {
+      const founder = await application.requireActor(DEMO_ACTOR_IDS.founder);
+      const draft = await application.createEngagementDraft(
+        founder,
+        { clientId, serviceId: CANONICAL_SERVICE_1, ...terms },
+        `draft-${state}-${clientId}`,
+      );
+      if (state === "draft") return draft;
+      const version = (await application.listEngagementVersions(founder, draft.id))[0]!;
+      const active = await application.activateEngagement(
+        founder,
+        draft.id,
+        { versionId: version.id, expectedUpdatedAt: draft.updatedAt },
+        `activate-${state}-${clientId}`,
+      );
+      if (state === "active") return active;
+      return application.endEngagement(
+        founder,
+        draft.id,
+        { outcome: "completed", reason: "Work completed", expectedUpdatedAt: active.updatedAt },
+        `end-${state}-${clientId}`,
+      );
+    }
+
+    it("creates a linked Assignment that returns the engagement id and code", async () => {
+      const { application } = createFixture();
+      const manager = await application.requireActor(DEMO_ACTOR_IDS.manager);
+      const engagement = await prepareEngagement(application, "active");
+
+      const created = await application.createAssignment(manager, assignmentInput(engagement.id));
+      expect(created).toMatchObject({ engagementId: engagement.id, engagementCode: engagement.code });
+      expect(await application.listAssignments(manager)).toContainEqual(
+        expect.objectContaining({ id: created.id, engagementId: engagement.id, engagementCode: engagement.code }),
+      );
+    });
+
+    it("shows the engagement code to an employee involved in the Assignment", async () => {
+      const { application } = createFixture();
+      const manager = await application.requireActor(DEMO_ACTOR_IDS.manager);
+      const staff = await application.requireActor(DEMO_ACTOR_IDS.staff);
+      const engagement = await prepareEngagement(application, "active");
+      const created = await application.createAssignment(manager, assignmentInput(engagement.id));
+
+      expect(await application.listAssignments(staff)).toContainEqual(
+        expect.objectContaining({ id: created.id, engagementCode: engagement.code }),
+      );
+    });
+
+    it.each([[undefined], [null]])("gives null link fields when engagementId is %s", async (engagementId) => {
+      const { application } = createFixture();
+      const manager = await application.requireActor(DEMO_ACTOR_IDS.manager);
+      const created = await application.createAssignment(manager, assignmentInput(engagementId));
+      expect(created).toMatchObject({ engagementId: null, engagementCode: null });
+    });
+
+    it("rejects an engagement that belongs to another client with 422 engagement_client_mismatch", async () => {
+      const { application } = createFixture();
+      const manager = await application.requireActor(DEMO_ACTOR_IDS.manager);
+      const engagement = await prepareEngagement(application, "active", CANONICAL_CLIENT_2);
+      await expect(application.createAssignment(manager, assignmentInput(engagement.id))).rejects.toMatchObject({
+        status: 422,
+        code: "engagement_client_mismatch",
+      });
+    });
+
+    it.each([["draft"], ["ended"]] as const)("rejects a %s engagement with 422 engagement_not_active", async (state) => {
+      const { application } = createFixture();
+      const manager = await application.requireActor(DEMO_ACTOR_IDS.manager);
+      const engagement = await prepareEngagement(application, state);
+      await expect(application.createAssignment(manager, assignmentInput(engagement.id))).rejects.toMatchObject({
+        status: 422,
+        code: "engagement_not_active",
+      });
+    });
+
+    it("rejects an unknown engagement with 422 referenced_entity_not_found", async () => {
+      const { application } = createFixture();
+      const manager = await application.requireActor(DEMO_ACTOR_IDS.manager);
+      await expect(
+        application.createAssignment(manager, assignmentInput("00000000-0000-4000-e000-999999999999")),
+      ).rejects.toMatchObject({ status: 422, code: "referenced_entity_not_found" });
+    });
+
+    it("does not create an Assignment when the engagement is rejected", async () => {
+      const { application } = createFixture();
+      const manager = await application.requireActor(DEMO_ACTOR_IDS.manager);
+      const before = (await application.listAssignments(manager)).length;
+      const engagement = await prepareEngagement(application, "draft");
+      await expect(application.createAssignment(manager, assignmentInput(engagement.id))).rejects.toBeDefined();
+      expect(await application.listAssignments(manager)).toHaveLength(before);
+    });
+
+    it("leaves schedule-generated Assignments unlinked", async () => {
+      const { application } = createFixture();
+      const founder = await application.requireActor(DEMO_ACTOR_IDS.founder);
+      await prepareEngagement(application, "active");
+      const schedule = await application.createRecurringSchedule(founder, {
+        clientId: CANONICAL_CLIENT_1,
+        title: "Linked-free schedule",
+        serviceId: CANONICAL_SERVICE_1,
+        cadence: "monthly",
+        ownerId: DEMO_ACTOR_IDS.senior,
+        nextOccurrenceOn: "2026-10-31",
+        dueDay: 11,
+      });
+      const result = await application.generateDueAssignments(founder, { throughDate: "2026-11-05" });
+      const generatedIds = result.occurrences.filter((o) => o.scheduleId === schedule.id).map((o) => o.assignmentId);
+      expect(generatedIds.length).toBeGreaterThan(0);
+      const assignments = await application.listAssignments(founder);
+      for (const id of generatedIds) {
+        expect(assignments.find((a) => a.id === id)).toMatchObject({ engagementId: null, engagementCode: null });
+      }
+    });
+  });
 });
