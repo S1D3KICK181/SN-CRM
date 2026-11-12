@@ -1,12 +1,21 @@
 import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, ChevronRight, Plus, RotateCcw, Search } from "lucide-react";
 import type { CompanyRole } from "@sn/domain";
-import type { ClientDto, EngagementStatus, ReportingLineDto, ServiceCatalogItemDto, SessionActor } from "@sn/contracts";
+import type {
+  ClientDto,
+  EngagementDto,
+  EngagementStatus,
+  EngagementVersionDto,
+  ReportingLineDto,
+  ServiceCatalogItemDto,
+  SessionActor,
+} from "@sn/contracts";
 import { useEngagements } from "../../api/use-engagements";
 import { hasEngagementCapability, type EngagementsPort } from "../../api/engagements-types";
 import { Card } from "../../ui/workspace-primitives";
 import { EngagementDetailDrawer } from "./engagement-detail-drawer";
 import { CreateEngagementDraftDialog } from "./create-engagement-draft-dialog";
+import { ReviseEngagementDraftDialog } from "./revise-engagement-draft-dialog";
 import type { DraftOption } from "./engagement-draft-form-model";
 import { isValidUuid } from "./engagement-draft-form-model";
 import {
@@ -17,6 +26,7 @@ import {
   formatPeriod,
   humanFeeModel,
   missing,
+  currentTerms,
 } from "./engagement-view-model";
 export interface EngagementsWorkspaceProps {
   readonly role: CompanyRole;
@@ -48,6 +58,11 @@ export function EngagementsWorkspace({ role, port, onToast, currentActor, client
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState<"all" | EngagementStatus>("all");
   const [draftOpen, setDraftOpen] = useState(false);
+  const [revisionSnapshot, setRevisionSnapshot] = useState<{
+    engagement: EngagementDto;
+    version: EngagementVersionDto;
+  } | null>(null);
+  const revisionOpener = useRef<HTMLElement | null>(null);
   const draftOpener = useRef<HTMLElement | null>(null);
   const activatorRef = useRef<HTMLElement | null>(null);
   const previousRole = useRef(role);
@@ -60,9 +75,12 @@ export function EngagementsWorkspace({ role, port, onToast, currentActor, client
     activatorRef.current = null;
     draftOpener.current = null;
     setDraftOpen(false);
+    setRevisionSnapshot(null);
+    revisionOpener.current = null;
   }, [role, roleMismatch]);
   const model = useEngagements(role, { port, onToast, enabled: allowed });
   const canCreateDraft = hasEngagementCapability(role, "createDraft");
+  const canReviseDraft = hasEngagementCapability(role, "reviseDraft");
   const options = useMemo(() => buildEngagementOptions(currentActor, clients, teamLines, services), [currentActor, clients, teamLines, services]);
   const stats = useMemo(() => computeEngagementStats(model.items), [model.items]);
   const filtered = useMemo(
@@ -274,6 +292,24 @@ export function EngagementsWorkspace({ role, port, onToast, currentActor, client
           activator={activatorRef.current ?? undefined}
           onClose={model.clearSelection}
           onRetry={() => void model.selectEngagement(model.selectedEngagementId!)}
+          canRevise={
+            canReviseDraft &&
+            model.selectedDetail?.status === 'draft' &&
+            Boolean(currentTerms(model.selectedVersions, model.selectedDetail.approvedVersion)) &&
+            !model.detailLoading &&
+            !model.detailError
+          }
+          obscured={Boolean(revisionSnapshot)}
+          onRevise={(element) => {
+            const version = currentTerms(
+              model.selectedVersions,
+              model.selectedDetail?.approvedVersion,
+            );
+            if (model.selectedDetail && version) {
+              revisionOpener.current = element;
+              setRevisionSnapshot({ engagement: model.selectedDetail, version });
+            }
+          }}
         />
       ) : null}
       <CreateEngagementDraftDialog
@@ -287,6 +323,22 @@ export function EngagementsWorkspace({ role, port, onToast, currentActor, client
         onClose={() => setDraftOpen(false)}
         onCreate={(input) => model.createDraft(input)}
       />
+      {revisionSnapshot ? (
+        <ReviseEngagementDraftDialog
+          open
+          role={role}
+          engagement={revisionSnapshot.engagement}
+          version={revisionSnapshot.version}
+          partners={options.partners}
+          managers={options.managers}
+          opener={revisionOpener.current}
+          onClose={() => {
+            setRevisionSnapshot(null);
+            revisionOpener.current = null;
+          }}
+          onRevise={(input) => model.reviseDraft(revisionSnapshot.engagement.id, input)}
+        />
+      ) : null}
     </div>
   );
 }

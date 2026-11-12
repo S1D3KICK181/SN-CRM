@@ -49,6 +49,54 @@ const engagement: EngagementDto = {
 };
 
 describe("EngagementDetailDrawer", () => {
+  it("shows the revise activator only for a draft and passes its exact element", () => {
+    const onRevise = vi.fn();
+    render(<EngagementDetailDrawer engagement={{ ...engagement, status: "draft" }} versions={[version(1)]} canRevise onRevise={onRevise} onClose={vi.fn()} />);
+    const button = screen.getByRole("button", { name: "Revise draft" });
+    fireEvent.click(button);
+    expect(onRevise).toHaveBeenCalledWith(button);
+  });
+  it("hides revise for an active engagement", () => {
+    render(<EngagementDetailDrawer engagement={engagement} versions={[version(1)]} canRevise onRevise={vi.fn()} onClose={vi.fn()} />);
+    expect(screen.queryByRole("button", { name: "Revise draft" })).toBeNull();
+  });
+  it("hides revise for an ended engagement", () => {
+    render(<EngagementDetailDrawer engagement={{ ...engagement, status: "ended" }} versions={[version(1)]} canRevise onRevise={vi.fn()} onClose={vi.fn()} />);
+    expect(screen.queryByRole("button", { name: "Revise draft" })).toBeNull();
+  });
+  it("hides revise when retained data has an error", () => {
+    render(<EngagementDetailDrawer engagement={{ ...engagement, status: "draft" }} versions={[version(1)]} canRevise onRevise={vi.fn()} error={{ message: "safe", code: "network" } as never} onClose={vi.fn()} />);
+    expect(screen.queryByRole("button", { name: "Revise draft" })).toBeNull();
+  });
+  it("hides revise while loading", () => {
+    render(<EngagementDetailDrawer engagement={{ ...engagement, status: "draft" }} versions={[version(1)]} canRevise onRevise={vi.fn()} loading onClose={vi.fn()} />);
+    expect(screen.queryByRole("button", { name: "Revise draft" })).toBeNull();
+  });
+  it("hides revise when a draft has no current version", () => {
+    render(<EngagementDetailDrawer engagement={{ ...engagement, status: "draft", approvedVersion: null }} versions={[]} canRevise onRevise={vi.fn()} onClose={vi.fn()} />);
+    expect(screen.queryByRole("button", { name: "Revise draft" })).toBeNull();
+  });
+  it("hides revise when the actor cannot revise", () => {
+    render(<EngagementDetailDrawer engagement={{ ...engagement, status: "draft" }} versions={[version(1)]} onRevise={vi.fn()} onClose={vi.fn()} />);
+    expect(screen.queryByRole("button", { name: "Revise draft" })).toBeNull();
+  });
+  it("hides revise when no revise handler is supplied", () => {
+    render(<EngagementDetailDrawer engagement={{ ...engagement, status: "draft" }} versions={[version(1)]} canRevise onClose={vi.fn()} />);
+    expect(screen.queryByRole("button", { name: "Revise draft" })).toBeNull();
+  });
+  it("makes an obscured drawer inert and ignores its dismissal controls", () => {
+    const close = vi.fn();
+    render(<EngagementDetailDrawer engagement={{ ...engagement, status: "draft" }} versions={[version(1)]} canRevise obscured onRevise={vi.fn()} onClose={close} />);
+    const drawer = document.querySelector("aside")!;
+    expect(drawer.getAttribute("aria-hidden")).toBe("true");
+    expect(screen.getByTestId("engagement-drawer-backdrop").getAttribute("inert")).toBe("");
+    expect((within(drawer).getByRole("button", { name: "Close engagement details", hidden: true }) as HTMLButtonElement).disabled).toBe(true);
+    expect((within(drawer).getByRole("button", { name: "Close", hidden: true }) as HTMLButtonElement).disabled).toBe(true);
+    expect((within(drawer).getByRole("button", { name: "Revise draft", hidden: true }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.keyDown(window, { key: "Escape" });
+    fireEvent.mouseDown(screen.getByTestId("engagement-drawer-backdrop"));
+    expect(close).not.toHaveBeenCalled();
+  });
   it("shows latest terms while preserving approved evidence and ordered history", () => {
     render(
       <EngagementDetailDrawer

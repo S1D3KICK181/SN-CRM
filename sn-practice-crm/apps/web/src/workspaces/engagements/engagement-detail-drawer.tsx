@@ -20,6 +20,9 @@ export interface EngagementDetailDrawerProps {
   activator?: HTMLElement;
   onClose: () => void;
   onRetry?: () => void;
+  canRevise?: boolean;
+  obscured?: boolean;
+  onRevise?: (element: HTMLButtonElement) => void;
 }
 export function EngagementDetailDrawer({
   engagement,
@@ -29,6 +32,9 @@ export function EngagementDetailDrawer({
   activator,
   onClose,
   onRetry,
+  canRevise = false,
+  obscured = false,
+  onRevise,
 }: EngagementDetailDrawerProps) {
   const drawerRef = useRef<HTMLElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
@@ -41,7 +47,8 @@ export function EngagementDetailDrawer({
   }, [activator]);
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
+      if (obscured) return;
+      if (event.key === "Escape" && !obscured) onClose();
       if (event.key === "Tab") {
         if (!event.shiftKey && document.activeElement === footerCloseRef.current) {
           event.preventDefault();
@@ -54,7 +61,7 @@ export function EngagementDetailDrawer({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  }, [onClose, obscured]);
   const current = currentTerms(versions, engagement?.approvedVersion);
   return (
     <>
@@ -62,8 +69,9 @@ export function EngagementDetailDrawer({
         className="drawer-backdrop"
         aria-hidden="true"
         data-testid="engagement-drawer-backdrop"
+        inert={obscured || undefined}
         onMouseDown={(event) => {
-          if (event.target === event.currentTarget) onClose();
+          if (!obscured && event.target === event.currentTarget) onClose();
         }}
       />
       <aside
@@ -72,6 +80,8 @@ export function EngagementDetailDrawer({
         aria-modal="true"
         aria-labelledby="engagement-drawer-title"
         className="client-drawer engagement-drawer"
+        aria-hidden={obscured}
+        inert={obscured || undefined}
       >
         <div className="client-drawer-header">
           <div>
@@ -88,6 +98,7 @@ export function EngagementDetailDrawer({
             type="button"
             aria-label="Close engagement details"
             onClick={onClose}
+            disabled={obscured}
           >
             <X aria-hidden="true" />
           </button>
@@ -138,6 +149,18 @@ export function EngagementDetailDrawer({
                   {missing(engagement.clientName)} · {missing(engagement.serviceName)}
                 </p>
               </section>
+              {canRevise && !loading && !error && engagement.status === "draft" && current && onRevise ? (
+                <section className="drawer-card engagement-drawer-action-card">
+                  <button
+                    className="primary-button"
+                    type="button"
+                    onClick={(event) => onRevise(event.currentTarget)}
+                    disabled={obscured}
+                  >
+                    Revise draft
+                  </button>
+                </section>
+              ) : null}
               <section className="drawer-card">
                 <h3>Current terms</h3>
                 {current ? (
@@ -233,7 +256,7 @@ export function EngagementDetailDrawer({
           ) : null}
         </div>
         <div className="drawer-footer">
-          <button ref={footerCloseRef} className="soft-button" type="button" onClick={onClose}>
+          <button ref={footerCloseRef} className="soft-button" type="button" onClick={onClose} disabled={obscured}>
             Close
           </button>
         </div>

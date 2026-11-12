@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import type { ClientDto, EngagementDto, ReportingLineDto, ServiceCatalogItemDto, SessionActor } from "@sn/contracts";
+import type { ClientDto, EngagementDto, EngagementVersionDto, ReportingLineDto, ServiceCatalogItemDto, SessionActor } from "@sn/contracts";
 import { buildEngagementOptions, EngagementsWorkspace } from "./engagements-workspace";
 import { TestEngagementsAdapter } from "../../api/test-engagements-adapter";
 
@@ -28,6 +28,14 @@ const engagement = (id: string, status: EngagementDto["status"] = "active"): Eng
 });
 
 describe("EngagementsWorkspace", () => {
+  it.each(["active", "ended"] as const)("does not expose revise for %s engagements", async (status) => {
+    const port = new TestEngagementsAdapter();
+    port.seed([engagement("1", status)]);
+    render(<EngagementsWorkspace role="founder" port={port} />);
+    await waitFor(() => expect(screen.getByText("Client 1")).toBeTruthy());
+    fireEvent.click(screen.getByText("Client 1"));
+    await waitFor(() => expect(screen.queryByRole("button", { name: /revise draft/i })).toBeNull());
+  });
   const actor = (id: string, role: SessionActor["role"], name = role): SessionActor => ({ id, name, role, reportsToId: null });
   const client = (id: string, name: string, status: ClientDto["status"] = "active"): ClientDto => ({ id, code: "CL-000001", displayName: name, legalName: null, gstinMasked: null, panMasked: null, email: null, phone: null, relationshipOwnerId: null, relationshipOwnerName: null, status, notes: null, activeAssignmentsCount: 0, createdById: id, createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z" });
   const service = (id: string, name: string): ServiceCatalogItemDto => ({ id, name });
@@ -242,5 +250,94 @@ describe("EngagementsWorkspace", () => {
     view.rerender(<EngagementsWorkspace role="staff" port={new TestEngagementsAdapter()} currentActor={staff} />);
     view.rerender(<EngagementsWorkspace role="founder" port={new TestEngagementsAdapter()} currentActor={founder} />);
     expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it.each([founder, manager] as const)("revises the seeded draft through the adapter for %s", async (currentActor) => {
+    const draftId = "77777777-7777-4777-8777-777777777777";
+    const versionId = "88888888-8888-4888-8888-888888888888";
+    const draft = engagement(draftId, "draft");
+    const version: EngagementVersionDto = {
+      id: versionId,
+      engagementId: draftId,
+      versionNumber: 1,
+      title: "Original title",
+      scope: "Original scope",
+      exclusions: null,
+      responsiblePartnerId: founder.id,
+      responsiblePartnerName: "Founder",
+      deliveryManagerId: manager.id,
+      deliveryManagerName: "Manager",
+      feeModel: "fixed",
+      agreedFeePaise: 125000,
+      billingTerms: "Monthly",
+      startDate: "2026-01-01",
+      endDate: null,
+      approvedAt: null,
+      approvedById: null,
+      createdById: founder.id,
+      createdAt: "2026-01-01T00:00:00Z",
+    };
+    const port = new TestEngagementsAdapter().seed([draft], new Map([[draftId, [version]]]));
+    render(<EngagementsWorkspace role={currentActor.role} port={port} currentActor={currentActor} teamLines={lines} />);
+    await waitFor(() => expect(screen.getByText(`Client ${draftId}`)).toBeTruthy());
+    fireEvent.click(screen.getByText(`Client ${draftId}`));
+    await screen.findByRole("button", { name: "Revise draft" });
+    fireEvent.click(screen.getByRole("button", { name: "Revise draft" }));
+    expect(screen.getAllByRole("dialog")).toHaveLength(1);
+    const drawer = document.querySelector<HTMLElement>('aside[role="dialog"]');
+    expect(drawer).not.toBeNull();
+    if (!drawer) throw new Error("Expected the engagement drawer to be present");
+    expect(drawer.getAttribute("aria-hidden")).toBe("true");
+    expect(drawer?.getAttribute("inert")).toBe("");
+    fireEvent.change(screen.getByLabelText("Title"), { target: { value: "Revised title" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save revision" }));
+    await waitFor(async () => {
+      const versions = await port.listVersions(currentActor.role, draftId);
+      expect(versions).toHaveLength(2);
+      expect(versions[1]?.versionNumber).toBe(2);
+      expect(versions[1]?.title).toBe("Revised title");
+      expect(screen.queryByRole("dialog", { name: "Revise draft engagement" })).toBeNull();
+      expect(screen.getByRole("dialog", { name: draft.code })).toBeTruthy();
+      expect(screen.getAllByText("Revised title")).toHaveLength(2);
+      expect(screen.getByText("Original title")).toBeTruthy();
+      expect(screen.getByRole("region", { name: "Engagement metrics" }).textContent).toContain("Draft1");
+      expect(screen.getAllByText(draft.code)).toHaveLength(3);
+    });
+  });
+
+  it("does not retain the revision modal across founder to staff to founder transition", async () => {
+    const draftId = "99999999-9999-4999-8999-999999999999";
+    const version: EngagementVersionDto = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      engagementId: draftId,
+      versionNumber: 1,
+      title: "Transition title",
+      scope: "Transition scope",
+      exclusions: null,
+      responsiblePartnerId: founder.id,
+      responsiblePartnerName: "Founder",
+      deliveryManagerId: manager.id,
+      deliveryManagerName: "Manager",
+      feeModel: "fixed",
+      agreedFeePaise: 100000,
+      billingTerms: "Monthly",
+      startDate: "2026-01-01",
+      endDate: null,
+      approvedAt: null,
+      approvedById: null,
+      createdById: founder.id,
+      createdAt: "2026-01-01T00:00:00Z",
+    };
+    const port = new TestEngagementsAdapter().seed([engagement(draftId, "draft")], new Map([[draftId, [version]]]));
+    const view = render(<EngagementsWorkspace role="founder" port={port} currentActor={founder} teamLines={lines} />);
+    await waitFor(() => expect(screen.getByText(`Client ${draftId}`)).toBeTruthy());
+    fireEvent.click(screen.getByText(`Client ${draftId}`));
+    fireEvent.click(await screen.findByRole("button", { name: "Revise draft" }));
+    expect(screen.getByRole("dialog", { name: "Revise draft engagement" })).toBeTruthy();
+    view.rerender(<EngagementsWorkspace role="staff" port={port} currentActor={staff} teamLines={lines} />);
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(screen.queryByRole("button", { name: "Revise draft" })).toBeNull();
+    view.rerender(<EngagementsWorkspace role="founder" port={port} currentActor={founder} teamLines={lines} />);
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   });
 });
