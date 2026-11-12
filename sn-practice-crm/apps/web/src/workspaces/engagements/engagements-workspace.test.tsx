@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import type { EngagementDto } from "@sn/contracts";
-import { EngagementsWorkspace } from "./engagements-workspace";
+import type { ClientDto, EngagementDto, ReportingLineDto, ServiceCatalogItemDto, SessionActor } from "@sn/contracts";
+import { buildEngagementOptions, EngagementsWorkspace } from "./engagements-workspace";
 import { TestEngagementsAdapter } from "../../api/test-engagements-adapter";
 
 afterEach(cleanup);
@@ -28,6 +28,13 @@ const engagement = (id: string, status: EngagementDto["status"] = "active"): Eng
 });
 
 describe("EngagementsWorkspace", () => {
+  const actor = (id: string, role: SessionActor["role"], name = role): SessionActor => ({ id, name, role, reportsToId: null });
+  const client = (id: string, name: string, status: ClientDto["status"] = "active"): ClientDto => ({ id, code: "CL-000001", displayName: name, legalName: null, gstinMasked: null, panMasked: null, email: null, phone: null, relationshipOwnerId: null, relationshipOwnerName: null, status, notes: null, activeAssignmentsCount: 0, createdById: id, createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z" });
+  const service = (id: string, name: string): ServiceCatalogItemDto => ({ id, name });
+  const founder = actor("11111111-1111-4111-8111-111111111111", "founder");
+  const manager = actor("22222222-2222-4222-8222-222222222222", "manager");
+  const staff = actor("33333333-3333-4333-8333-333333333333", "staff");
+  const lines: ReportingLineDto[] = [{ employee: founder, manager: null }, { employee: manager, manager: founder }, { employee: staff, manager }];
   it("renders founder metrics, search/status filters, and selection", async () => {
     const port = new TestEngagementsAdapter();
     port.seed([engagement("1"), engagement("2", "draft")]);
@@ -163,5 +170,77 @@ describe("EngagementsWorkspace", () => {
     render(<EngagementsWorkspace role="founder" port={port} />);
     await waitFor(() => expect(screen.getByText("Client 1")).toBeTruthy());
     expect(document.body.textContent).not.toContain("00000000-0000-0000-0000-000000000000");
+  });
+
+  it.each(["founder", "manager"] as const)("shows New engagement for %s", async (role) => {
+    render(<EngagementsWorkspace role={role} port={new TestEngagementsAdapter()} currentActor={actor("44444444-4444-4444-8444-444444444444", role)} />);
+    await waitFor(() => expect(screen.getByRole("button", { name: /new engagement/i })).toBeTruthy());
+  });
+
+  it("does not list for senior, staff, or trainee and has no action", () => {
+    for (const role of ["senior_staff", "staff", "trainee"] as const) {
+      const port = new TestEngagementsAdapter();
+      const list = vi.spyOn(port, "list");
+      const view = render(<EngagementsWorkspace role={role} port={port} />);
+      expect(screen.queryByRole("button", { name: /new engagement/i })).toBeNull();
+      expect(list).not.toHaveBeenCalled();
+      view.unmount();
+    }
+  });
+
+  it("builds filtered, deduped, sorted role-aware options and includes the actor", () => {
+    const options = buildEngagementOptions(manager, [client("bad", "Bad"), client(founder.id, "Zulu"), client(founder.id, "Alpha")], lines, [service(staff.id, "Tax"), service("bad", "Bad")]);
+    expect(options.clients).toEqual([{ id: founder.id, label: "Alpha" }]);
+    expect(options.services).toEqual([{ id: staff.id, label: "Tax" }]);
+    expect(options.partners.map((item) => item.id)).toEqual([founder.id]);
+    expect(options.managers.map((item) => item.id)).toEqual([founder.id, manager.id]);
+  });
+
+  it("excludes on-hold, archived, and invalid-UUID clients while keeping active valid clients", () => {
+    const options = buildEngagementOptions(undefined, [
+      client("44444444-4444-4444-8444-444444444444", "Active"),
+      client("55555555-5555-4555-8555-555555555555", "On hold", "on_hold"),
+      client("66666666-6666-4666-8666-666666666666", "Archived", "archived"),
+      client("invalid", "Invalid"),
+    ]);
+    expect(options.clients).toEqual([{ id: "44444444-4444-4444-8444-444444444444", label: "Active" }]);
+  });
+
+  it.each([
+    [founder, [founder.id], [founder.id]],
+    [manager, [], [manager.id]],
+  ] as const)("includes an actor absent from team lines according to role", (currentActor, partnerIds, managerIds) => {
+    const options = buildEngagementOptions(currentActor);
+    expect(options.partners.map((item) => item.id)).toEqual(partnerIds);
+    expect(options.managers.map((item) => item.id)).toEqual(managerIds);
+  });
+
+  it("uses the current actor for duplicate UUIDs and includes it once with current eligibility", () => {
+    const staleDirectoryLine: ReportingLineDto = { employee: { ...founder, name: "Stale name", role: "staff" }, manager: null };
+    const currentActor = { ...founder, name: "Current name", role: "founder" as const };
+    const options = buildEngagementOptions(currentActor, [], [staleDirectoryLine]);
+    expect(options.partners).toEqual([{ id: founder.id, label: "Current name", role: "founder" }]);
+    expect(options.managers).toEqual([{ id: founder.id, label: "Current name", role: "founder" }]);
+  });
+
+  it("creates a draft through the adapter and updates metrics with its generated code", async () => {
+    const port = new TestEngagementsAdapter();
+    const create = vi.spyOn(port, "createDraft");
+    render(<EngagementsWorkspace role="founder" port={port} currentActor={founder} clients={[client(founder.id, "Client")]} teamLines={lines} services={[service(staff.id, "Tax")]} />);
+    fireEvent.click(await screen.findByRole("button", { name: /new engagement/i }));
+    for (const [label, value] of [["Client", founder.id], ["Service", staff.id], ["Responsible partner", founder.id], ["Delivery manager", manager.id], ["Title", "New title"], ["Scope", "A scope"], ["Agreed fee (₹)", "10"], ["Billing terms", "Monthly"], ["Start date", "2026-01-01"]] as const) fireEvent.change(screen.getByLabelText(label), { target: { value } });
+    fireEvent.click(screen.getByRole("button", { name: /create draft/i }));
+    await waitFor(() => expect(screen.getByText(/ENG-/)).toBeTruthy());
+    expect(create.mock.calls[0]?.[1]).not.toHaveProperty("code");
+    expect(screen.getByRole("region", { name: "Engagement metrics" }).textContent).toContain("Draft1");
+  });
+
+  it("does not reopen the create dialog across founder to staff to founder", async () => {
+    const view = render(<EngagementsWorkspace role="founder" port={new TestEngagementsAdapter()} currentActor={founder} />);
+    fireEvent.click(await screen.findByRole("button", { name: /new engagement/i }));
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    view.rerender(<EngagementsWorkspace role="staff" port={new TestEngagementsAdapter()} currentActor={staff} />);
+    view.rerender(<EngagementsWorkspace role="founder" port={new TestEngagementsAdapter()} currentActor={founder} />);
+    expect(screen.queryByRole("dialog")).toBeNull();
   });
 });

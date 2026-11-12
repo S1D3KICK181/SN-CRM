@@ -1,11 +1,14 @@
-import { useMemo, useRef, useState } from "react";
-import { AlertTriangle, ChevronRight, RotateCcw, Search } from "lucide-react";
+import { useLayoutEffect, useMemo, useRef, useState } from "react";
+import { AlertTriangle, ChevronRight, Plus, RotateCcw, Search } from "lucide-react";
 import type { CompanyRole } from "@sn/domain";
-import type { EngagementStatus } from "@sn/contracts";
+import type { ClientDto, EngagementStatus, ReportingLineDto, ServiceCatalogItemDto, SessionActor } from "@sn/contracts";
 import { useEngagements } from "../../api/use-engagements";
 import { hasEngagementCapability, type EngagementsPort } from "../../api/engagements-types";
 import { Card } from "../../ui/workspace-primitives";
 import { EngagementDetailDrawer } from "./engagement-detail-drawer";
+import { CreateEngagementDraftDialog } from "./create-engagement-draft-dialog";
+import type { DraftOption } from "./engagement-draft-form-model";
+import { isValidUuid } from "./engagement-draft-form-model";
 import {
   computeEngagementStats,
   filterEngagements,
@@ -19,23 +22,51 @@ export interface EngagementsWorkspaceProps {
   readonly role: CompanyRole;
   readonly port?: EngagementsPort;
   readonly onToast?: (message: string) => void;
+  readonly currentActor?: SessionActor;
+  readonly clients?: readonly ClientDto[];
+  readonly teamLines?: readonly ReportingLineDto[];
+  readonly services?: readonly ServiceCatalogItemDto[];
 }
-export function EngagementsWorkspace({ role, port, onToast }: EngagementsWorkspaceProps) {
+export function buildEngagementOptions(currentActor: SessionActor | undefined, clients: readonly ClientDto[] = [], teamLines: readonly ReportingLineDto[] = [], services: readonly ServiceCatalogItemDto[] = []) {
+  const unique = (items: readonly DraftOption[]) => [...new Map(items.filter((item) => isValidUuid(item.id)).map((item) => [item.id, item])).values()].sort((a, b) => a.label.localeCompare(b.label));
+  const people = new Map(teamLines
+    .filter((line) => isValidUuid(line.employee.id))
+    .map((line) => [line.employee.id, { id: line.employee.id, label: line.employee.name, role: line.employee.role }]));
+  if (currentActor && isValidUuid(currentActor.id)) {
+    people.set(currentActor.id, { id: currentActor.id, label: currentActor.name, role: currentActor.role });
+  }
+  const validPeople = [...people.values()];
+  return {
+    clients: unique(clients.filter((item) => item.status === 'active').map((item) => ({ id: item.id, label: item.displayName }))),
+    services: unique(services.map((item) => ({ id: item.id, label: item.name }))),
+    partners: unique(validPeople.filter((person) => person.role === 'founder')),
+    managers: unique(validPeople.filter((person) => person.role === 'founder' || person.role === 'manager')),
+  };
+}
+export function EngagementsWorkspace({ role, port, onToast, currentActor, clients = [], teamLines = [], services = [] }: EngagementsWorkspaceProps) {
   const allowed = hasEngagementCapability(role, "read");
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState<"all" | EngagementStatus>("all");
+  const [draftOpen, setDraftOpen] = useState(false);
+  const draftOpener = useRef<HTMLElement | null>(null);
   const activatorRef = useRef<HTMLElement | null>(null);
   const previousRole = useRef(role);
-  if (previousRole.current !== role) {
+  const roleMismatch = previousRole.current !== role;
+  useLayoutEffect(() => {
+    if (!roleMismatch) return;
     previousRole.current = role;
     setSearch("");
     setStatus("all");
     activatorRef.current = null;
-  }
+    draftOpener.current = null;
+    setDraftOpen(false);
+  }, [role, roleMismatch]);
   const model = useEngagements(role, { port, onToast, enabled: allowed });
+  const canCreateDraft = hasEngagementCapability(role, "createDraft");
+  const options = useMemo(() => buildEngagementOptions(currentActor, clients, teamLines, services), [currentActor, clients, teamLines, services]);
   const stats = useMemo(() => computeEngagementStats(model.items), [model.items]);
   const filtered = useMemo(
-    () => filterEngagements(model.items, search, status),
+    () => filterEngagements(model.items, roleMismatch ? "" : search, roleMismatch ? "all" : status),
     [model.items, search, status],
   );
   const initialLoading = model.loading && !model.hasLiveSnapshot;
@@ -97,6 +128,7 @@ export function EngagementsWorkspace({ role, port, onToast }: EngagementsWorkspa
           />
         </div>
         <div className="client-filter-group">
+          {canCreateDraft ? <button className="primary-button" type="button" onClick={(event) => { draftOpener.current = event.currentTarget; setDraftOpen(true); }}><Plus size={15} /> New engagement</button> : null}
           <select
             className="client-select"
             aria-label="Filter engagements by status"
@@ -244,6 +276,17 @@ export function EngagementsWorkspace({ role, port, onToast }: EngagementsWorkspa
           onRetry={() => void model.selectEngagement(model.selectedEngagementId!)}
         />
       ) : null}
+      <CreateEngagementDraftDialog
+        open={draftOpen}
+        role={role}
+        clients={options.clients}
+        services={options.services}
+        partners={options.partners}
+        managers={options.managers}
+        opener={draftOpener.current}
+        onClose={() => setDraftOpen(false)}
+        onCreate={(input) => model.createDraft(input)}
+      />
     </div>
   );
 }

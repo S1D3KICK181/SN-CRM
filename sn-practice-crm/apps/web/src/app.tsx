@@ -31,7 +31,7 @@ import {
   X,
 } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
-import type { SessionActor } from '@sn/contracts';
+import type { ClientDto, ReportingLineDto, ServiceCatalogItemDto, SessionActor } from '@sn/contracts';
 import { authorize, type CompanyRole } from '@sn/domain';
 import { SessionClient } from './api/auth/session-client';
 import { SessionManager } from './api/auth/session-manager';
@@ -652,6 +652,9 @@ function AuthenticatedApp({
           page={activePage}
           role={role}
           currentActor={actor}
+          directoryClients={directoryClients}
+          directoryLines={directoryLines}
+          services={services}
           clients={clients}
           schedules={schedules}
           assignments={assignments}
@@ -1352,6 +1355,9 @@ export function ModuleWorkspace({
   page,
   role,
   currentActor,
+  directoryClients,
+  directoryLines,
+  services,
   clients,
   schedules,
   assignments,
@@ -1377,6 +1383,9 @@ export function ModuleWorkspace({
   page: PageKey;
   role: CompanyRole;
   currentActor?: SessionActor;
+  directoryClients?: readonly ClientDto[];
+  directoryLines?: readonly ReportingLineDto[];
+  services?: readonly ServiceCatalogItemDto[];
   clients: ClientRecord[];
   schedules: RecurringScheduleRecord[];
   assignments: AssignmentRow[];
@@ -1436,7 +1445,16 @@ export function ModuleWorkspace({
           onToast={onToast}
         />
       ) : null}
-      {page === 'Engagements' ? <EngagementsWorkspace role={role} onToast={onToast} /> : null}
+      {page === 'Engagements' ? (
+        <EngagementsWorkspace
+          role={role}
+          onToast={onToast}
+          currentActor={currentActor}
+          clients={directoryClients}
+          teamLines={directoryLines}
+          services={services}
+        />
+      ) : null}
       {page === 'Assignments' ? (
         <AssignmentsWorkspace
           role={role}
