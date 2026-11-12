@@ -15,7 +15,7 @@ import { hasEngagementCapability, type EngagementsPort } from "../../api/engagem
 import { Card } from "../../ui/workspace-primitives";
 import { EngagementDetailDrawer } from "./engagement-detail-drawer";
 import { CreateEngagementDraftDialog } from "./create-engagement-draft-dialog";
-import { ReviseEngagementDraftDialog } from "./revise-engagement-draft-dialog";
+import { EngagementTermsDialog } from "./engagement-terms-dialog";
 import { ActivateEngagementDialog } from "./activate-engagement-dialog";
 import type { DraftOption } from "./engagement-draft-form-model";
 import { isValidUuid } from "./engagement-draft-form-model";
@@ -64,6 +64,11 @@ export function EngagementsWorkspace({ role, port, onToast, currentActor, client
     version: EngagementVersionDto;
   } | null>(null);
   const revisionOpener = useRef<HTMLElement | null>(null);
+  const amendmentOpener = useRef<HTMLElement | null>(null);
+  const [amendmentSnapshot, setAmendmentSnapshot] = useState<{
+    engagement: EngagementDto;
+    version: EngagementVersionDto;
+  } | null>(null);
   const activationOpener = useRef<HTMLElement | null>(null);
   const [activationSnapshot, setActivationSnapshot] = useState<{
     engagement: EngagementDto;
@@ -83,6 +88,8 @@ export function EngagementsWorkspace({ role, port, onToast, currentActor, client
     setDraftOpen(false);
     setRevisionSnapshot(null);
     revisionOpener.current = null;
+    amendmentOpener.current = null;
+    setAmendmentSnapshot(null);
     activationOpener.current = null;
     setActivationSnapshot(null);
   }, [role, roleMismatch]);
@@ -307,9 +314,11 @@ export function EngagementsWorkspace({ role, port, onToast, currentActor, client
             !model.detailLoading &&
             !model.detailError
           }
-          obscured={Boolean(revisionSnapshot || activationSnapshot)}
+          obscured={Boolean(revisionSnapshot || activationSnapshot || amendmentSnapshot)}
           canActivate={
-            hasEngagementCapability(role, "activate") && !revisionSnapshot && !activationSnapshot
+            hasEngagementCapability(role, "activate") &&
+            !revisionSnapshot &&
+            !amendmentSnapshot
           }
           onActivate={(element) => {
             const version = currentTerms(
@@ -331,6 +340,19 @@ export function EngagementsWorkspace({ role, port, onToast, currentActor, client
               setRevisionSnapshot({ engagement: model.selectedDetail, version });
             }
           }}
+          canAmend={
+            hasEngagementCapability(role, "amend") &&
+            !revisionSnapshot &&
+            !activationSnapshot
+          }
+          onAmend={(element) => {
+            const engagement = model.selectedDetail;
+            const version = engagement?.approvedVersion;
+            if (engagement?.status === "active" && version) {
+              amendmentOpener.current = element;
+              setAmendmentSnapshot({ engagement, version });
+            }
+          }}
         />
       ) : null}
       <CreateEngagementDraftDialog
@@ -345,7 +367,7 @@ export function EngagementsWorkspace({ role, port, onToast, currentActor, client
         onCreate={(input) => model.createDraft(input)}
       />
       {revisionSnapshot ? (
-        <ReviseEngagementDraftDialog
+        <EngagementTermsDialog
           open
           role={role}
           engagement={revisionSnapshot.engagement}
@@ -357,7 +379,25 @@ export function EngagementsWorkspace({ role, port, onToast, currentActor, client
             setRevisionSnapshot(null);
             revisionOpener.current = null;
           }}
-          onRevise={(input) => model.reviseDraft(revisionSnapshot.engagement.id, input)}
+          mode="reviseDraft"
+          onSave={(input) => model.reviseDraft(revisionSnapshot.engagement.id, input)}
+        />
+      ) : null}
+      {amendmentSnapshot ? (
+        <EngagementTermsDialog
+          open
+          mode="amendActive"
+          role={role}
+          engagement={amendmentSnapshot.engagement}
+          version={amendmentSnapshot.version}
+          partners={options.partners}
+          managers={options.managers}
+          opener={amendmentOpener.current}
+          onClose={() => {
+            setAmendmentSnapshot(null);
+            amendmentOpener.current = null;
+          }}
+          onSave={(input) => model.amend(amendmentSnapshot.engagement.id, input)}
         />
       ) : null}
       {activationSnapshot ? (

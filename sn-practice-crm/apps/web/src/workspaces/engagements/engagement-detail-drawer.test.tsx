@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import type { EngagementDto, EngagementVersionDto } from "@sn/contracts";
 import { EngagementOperationError } from "../../api/engagements-types";
-import { EngagementDetailDrawer } from "./engagement-detail-drawer";
+import { EngagementDetailDrawer, type EngagementDetailDrawerProps } from "./engagement-detail-drawer";
 
 afterEach(cleanup);
 
@@ -48,6 +48,15 @@ const engagement: EngagementDto = {
   createdAt: "2026-01-01T00:00:00Z",
   updatedAt: "2026-02-01T00:00:00Z",
 };
+type AmendmentOmitOptions = {
+  status?: EngagementDto["status"];
+  approvedVersion?: EngagementDto["approvedVersion"];
+  versions?: EngagementDetailDrawerProps["versions"];
+  canAmend?: EngagementDetailDrawerProps["canAmend"];
+  onAmend?: EngagementDetailDrawerProps["onAmend"];
+  loading?: EngagementDetailDrawerProps["loading"];
+  error?: EngagementDetailDrawerProps["error"];
+};
 
 describe("EngagementDetailDrawer", () => {
   it("shows the revise activator only for a draft and passes its exact element", () => {
@@ -60,6 +69,98 @@ describe("EngagementDetailDrawer", () => {
   it("hides revise for an active engagement", () => {
     render(<EngagementDetailDrawer engagement={engagement} versions={[version(1)]} canRevise onRevise={vi.fn()} onClose={vi.fn()} />);
     expect(screen.queryByRole("button", { name: "Revise draft" })).toBeNull();
+  });
+  it("shows the amendment activator for the current active terms and passes its exact element", () => {
+    const onAmend = vi.fn();
+    render(
+      <EngagementDetailDrawer
+        engagement={engagement}
+        versions={[version(1, engagement.approvedAt)]}
+        canAmend
+        onAmend={onAmend}
+        onClose={vi.fn()}
+      />,
+    );
+    const button = screen.getByRole("button", { name: "Amend terms" });
+    fireEvent.click(button);
+    expect(onAmend).toHaveBeenCalledWith(button);
+  });
+  const amendmentOmitCases: ReadonlyArray<readonly [string, AmendmentOmitOptions]> = [
+    ["draft", { status: "draft" as const }],
+    ["ended", { status: "ended" as const }],
+    ["loading", { loading: true }],
+    ["retained error", { error: { name: "network", message: "safe", code: "network" } }],
+    ["no current version", { approvedVersion: null, versions: [] }],
+    ["cannot amend", { canAmend: false }],
+    ["missing amendment handler", { onAmend: undefined }],
+  ];
+  it.each(amendmentOmitCases)("omits amendment for %s", (_name, options) => {
+    render(
+      <EngagementDetailDrawer
+        engagement={{ ...engagement, ...options }}
+        versions={options.versions ?? [version(1, engagement.approvedAt)]}
+        canAmend={options.canAmend ?? true}
+        onAmend={options.onAmend === undefined && _name === "missing amendment handler" ? undefined : vi.fn()}
+        loading={options.loading}
+        error={options.error}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(screen.queryByRole("button", { name: "Amend terms" })).toBeNull();
+  });
+  it("disables an obscured amendment and does not call back", () => {
+    const onAmend = vi.fn();
+    render(
+      <EngagementDetailDrawer
+        engagement={engagement}
+        versions={[version(1, engagement.approvedAt)]}
+        canAmend
+        onAmend={onAmend}
+        obscured
+        onClose={vi.fn()}
+      />,
+    );
+    const button = screen.getByRole("button", { name: "Amend terms", hidden: true }) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    fireEvent.click(button);
+    expect(onAmend).not.toHaveBeenCalled();
+  });
+  it("keeps amendment independent from draft revision and activation gates", () => {
+    const onRevise = vi.fn();
+    const onActivate = vi.fn();
+    const onAmend = vi.fn();
+    const { rerender } = render(
+      <EngagementDetailDrawer
+        engagement={{ ...engagement, status: "draft", approvedVersion: version(1) }}
+        versions={[version(1)]}
+        canRevise
+        onRevise={onRevise}
+        canActivate
+        onActivate={onActivate}
+        canAmend
+        onAmend={onAmend}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole("button", { name: "Revise draft" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Approve & activate" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Amend terms" })).toBeNull();
+    rerender(
+      <EngagementDetailDrawer
+        engagement={engagement}
+        versions={[version(1, engagement.approvedAt)]}
+        canRevise
+        onRevise={onRevise}
+        canActivate
+        onActivate={onActivate}
+        canAmend
+        onAmend={onAmend}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole("button", { name: "Amend terms" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Revise draft" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Approve & activate" })).toBeNull();
   });
   it("hides revise for an ended engagement", () => {
     render(<EngagementDetailDrawer engagement={{ ...engagement, status: "ended" }} versions={[version(1)]} canRevise onRevise={vi.fn()} onClose={vi.fn()} />);

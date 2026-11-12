@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatPaiseAsRupee, parseRupeeToPaise, prefillEngagementTerms, toCreateEngagementDraftInput, toReviseEngagementDraftInput, validateEngagementDraft, validateEngagementTerms, type DraftValues } from './engagement-draft-form-model';
+import { formatPaiseAsRupee, parseRupeeToPaise, prefillEngagementTerms, toAmendActiveEngagementInput, toCreateEngagementDraftInput, toReviseEngagementDraftInput, validateEngagementDraft, validateEngagementTerms, type DraftValues } from './engagement-draft-form-model';
 import type { EngagementVersionDto } from '@sn/contracts';
 const id = '11111111-1111-4111-8111-111111111111';
 const values: DraftValues = { clientId: id, serviceId: id, title: 'Tax', scope: 'Scope', exclusions: '', responsiblePartnerId: id, deliveryManagerId: id, feeModel: 'fixed', agreedFee: '10.05', billingTerms: 'Monthly', startDate: '2026-02-28', endDate: '' };
@@ -30,6 +30,11 @@ describe('engagement draft model', () => {
     const payload = toReviseEngagementDraftInput(id, '2026-01-01T00:00:00Z', values);
     expect(payload).toEqual({ engagementId: id, expectedUpdatedAt: '2026-01-01T00:00:00Z', title: 'Tax', scope: 'Scope', exclusions: null, responsiblePartnerId: id, deliveryManagerId: id, feeModel: 'fixed', agreedFeePaise: 1005, billingTerms: 'Monthly', startDate: '2026-02-28', endDate: null });
     for (const key of ['clientId', 'serviceId', 'code', 'versionId', 'clientName', 'serviceName', 'responsiblePartnerName', 'deliveryManagerName', 'agreedFee']) expect(payload).not.toHaveProperty(key);
+  });
+  it('emits exactly the amendment contract and no server-owned fields', () => {
+    const payload = toAmendActiveEngagementInput(id, '2026-01-01T00:00:00Z', values);
+    expect(payload).toEqual({ engagementId: id, expectedUpdatedAt: '2026-01-01T00:00:00Z', title: 'Tax', scope: 'Scope', exclusions: null, responsiblePartnerId: id, deliveryManagerId: id, feeModel: 'fixed', agreedFeePaise: 1005, billingTerms: 'Monthly', startDate: '2026-02-28', endDate: null });
+    for (const key of ['clientId', 'serviceId', 'status', 'version', 'versionNumber', 'createdAt', 'updatedAt', 'approvedAt', 'approvedById']) expect(payload).not.toHaveProperty(key);
   });
   it('constructs the exact contract payload', () => { const payload = toCreateEngagementDraftInput(values); expect(payload).toEqual({ clientId: id, serviceId: id, title: 'Tax', scope: 'Scope', exclusions: null, responsiblePartnerId: id, deliveryManagerId: id, feeModel: 'fixed', agreedFeePaise: 1005, billingTerms: 'Monthly', startDate: '2026-02-28', endDate: null }); expect(payload).not.toHaveProperty('agreedFee'); });
   it.each([['1', 100], ['1.2', 120], ['1.20', 120], ['999999', 99999900]])('converts fee %s exactly', (input, expected) => expect(parseRupeeToPaise(input)).toBe(expected));

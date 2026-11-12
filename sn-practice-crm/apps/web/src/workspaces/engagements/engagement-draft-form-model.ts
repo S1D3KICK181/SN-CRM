@@ -4,6 +4,7 @@
   type EngagementFeeModel,
   type EngagementVersionDto,
   type ReviseEngagementDraftInput,
+  type AmendActiveEngagementInput,
 } from '@sn/contracts';
 
 export type DraftOption = {
@@ -31,6 +32,7 @@ export type EngagementTermsErrors = Partial<Record<keyof EngagementTermsValues |
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 export const SAFE_ERROR = 'Unable to create the engagement draft. Please try again.';
 export const SAFE_REVISE_ERROR = 'Unable to revise the engagement draft. Please try again.';
+export const SAFE_AMEND_ERROR = 'Unable to approve the engagement amendment. Please try again.';
 export function isValidUuid(value: string): boolean {
   return UUID.test(value);
 }
@@ -117,11 +119,26 @@ export function toCreateEngagementDraftInput(input: DraftValues): CreateEngageme
     endDate: input.endDate || null,
   };
 }
-export function toReviseEngagementDraftInput(
+type EngagementTermsInputFields = {
+  engagementId: string;
+  expectedUpdatedAt: string;
+  title: string;
+  scope: string;
+  exclusions: string | null;
+  responsiblePartnerId: string;
+  deliveryManagerId: string;
+  feeModel: EngagementFeeModel;
+  agreedFeePaise: number;
+  billingTerms: string;
+  startDate: string;
+  endDate: string | null;
+};
+
+function toEngagementTermsInput(
   engagementId: string,
   expectedUpdatedAt: string,
   input: EngagementTermsValues,
-): ReviseEngagementDraftInput {
+): EngagementTermsInputFields {
   const agreedFeePaise = parseRupeeToPaise(input.agreedFee);
   if (
     agreedFeePaise === null ||
@@ -143,4 +160,20 @@ export function toReviseEngagementDraftInput(
     startDate: input.startDate,
     endDate: input.endDate || null,
   };
+}
+
+export function toReviseEngagementDraftInput(
+  engagementId: string,
+  expectedUpdatedAt: string,
+  input: EngagementTermsValues,
+): ReviseEngagementDraftInput {
+  return toEngagementTermsInput(engagementId, expectedUpdatedAt, input);
+}
+
+export function toAmendActiveEngagementInput(
+  engagementId: string,
+  expectedUpdatedAt: string,
+  input: EngagementTermsValues,
+): AmendActiveEngagementInput {
+  return toEngagementTermsInput(engagementId, expectedUpdatedAt, input);
 }

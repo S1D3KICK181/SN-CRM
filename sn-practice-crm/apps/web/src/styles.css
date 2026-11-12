@@ -4231,11 +4231,11 @@ tbody tr:hover {
 .dialog-validation-summary { display: flex; gap: 8px; align-items: center; margin-bottom: 16px; padding: 10px 12px; border: 1px solid var(--signal); border-radius: var(--radius-md); color: var(--signal); background: color-mix(in srgb, var(--signal) 8%, var(--surface)); }
 .field select[aria-invalid='true'] { border-color: var(--danger); }
 .field select[aria-invalid='true']:focus { border-color: var(--danger); box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 12%, transparent); }
-.revision-dialog-layer {
+.engagement-terms-dialog-layer {
   z-index: 110;
 }
 
-.revise-engagement-dialog .revision-context {
+.engagement-terms-dialog .engagement-terms-context {
   display: flex;
   gap: 10px;
   align-items: baseline;
@@ -4245,9 +4245,18 @@ tbody tr:hover {
   font-size: 11px;
 }
 
-.revise-engagement-dialog .revision-context strong {
+.engagement-terms-dialog .engagement-terms-context strong {
   color: var(--ink-strong);
   font-size: 12px;
+}
+
+.engagement-amend-note {
+  margin: 0 0 16px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--ink-muted);
+  background: var(--canvas);
 }
 
 .engagement-drawer-action-card {
@@ -4308,8 +4317,8 @@ tbody tr:hover {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .revision-dialog-layer,
-  .revision-dialog-layer .dialog {
+  .engagement-terms-dialog-layer,
+  .engagement-terms-dialog-layer .dialog {
     animation: none;
   }
 }

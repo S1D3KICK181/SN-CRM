@@ -316,8 +316,11 @@ describe("EngagementsWorkspace", () => {
     render(<EngagementsWorkspace role="founder" port={port} currentActor={founder} teamLines={lines} />);
     await waitFor(() => expect(screen.getByText(`Client ${draftId}`)).toBeTruthy());
     fireEvent.click(screen.getByText(`Client ${draftId}`));
-    fireEvent.click(await screen.findByRole("button", { name: "Approve & activate" }));
+    const activationButton = await screen.findByRole("button", { name: "Approve & activate" });
+    fireEvent.click(activationButton);
     fireEvent.click(screen.getByRole("button", { name: "Approve & activate" }));
+    expect(activationButton.isConnected).toBe(true);
+    expect((activationButton as HTMLButtonElement).disabled).toBe(true);
     await waitFor(() => expect(activate).toHaveBeenCalledTimes(1));
     expect(activate).toHaveBeenCalledWith(
       "founder",
@@ -404,9 +407,11 @@ describe("EngagementsWorkspace", () => {
     const view = render(<EngagementsWorkspace role="founder" port={port} currentActor={founder} teamLines={lines} />);
     await waitFor(() => expect(screen.getByText(`Client ${draftId}`)).toBeTruthy());
     fireEvent.click(screen.getByText(`Client ${draftId}`));
-    fireEvent.click(await screen.findByRole("button", { name: "Approve & activate" }));
+    const activationButton = await screen.findByRole("button", { name: "Approve & activate" });
+    fireEvent.click(activationButton);
     expect(screen.getByRole("dialog", { name: "Approve engagement" })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Approve & activate", hidden: true })).toBeTruthy();
+    expect(activationButton.isConnected).toBe(true);
+    expect((activationButton as HTMLButtonElement).disabled).toBe(true);
     view.rerender(<EngagementsWorkspace role="manager" port={port} currentActor={manager} teamLines={lines} />);
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "Approve engagement" })).toBeNull());
     expect(screen.queryByRole("button", { name: "Approve & activate" })).toBeNull();
@@ -414,6 +419,135 @@ describe("EngagementsWorkspace", () => {
     expect(screen.queryByRole("dialog", { name: "Approve engagement" })).toBeNull();
     view.rerender(<EngagementsWorkspace role="founder" port={port} currentActor={founder} teamLines={lines} />);
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "Approve engagement" })).toBeNull());
+  });
+
+  it("amends active terms through the real adapter for a founder", async () => {
+    const engagementId = "12121212-1212-4121-8121-121212121212";
+    const versionId = "13131313-1313-4131-8131-131313131313";
+    const active = {
+      ...engagement(engagementId, "active"),
+      approvedVersionId: versionId,
+      approvedAt: "2026-04-02T00:00:00Z",
+      approvedById: founder.id,
+      updatedAt: "2026-04-02T00:00:00Z",
+    };
+    const approvedV1: EngagementVersionDto = {
+      id: versionId,
+      engagementId,
+      versionNumber: 1,
+      title: "Approved v1",
+      scope: "Approved scope",
+      exclusions: null,
+      responsiblePartnerId: founder.id,
+      responsiblePartnerName: "Founder",
+      deliveryManagerId: manager.id,
+      deliveryManagerName: "Manager",
+      feeModel: "fixed",
+      agreedFeePaise: 100000,
+      billingTerms: "Monthly",
+      startDate: "2026-01-01",
+      endDate: null,
+      approvedAt: active.approvedAt,
+      approvedById: founder.id,
+      createdById: founder.id,
+      createdAt: "2026-04-01T00:00:00Z",
+    };
+    active.approvedVersion = approvedV1;
+    const port = new TestEngagementsAdapter().seed([active], new Map([[engagementId, [approvedV1]]]));
+    const amend = vi.spyOn(port, "amend");
+    render(
+      <EngagementsWorkspace
+        role="founder"
+        port={port}
+        currentActor={founder}
+        teamLines={lines}
+      />,
+    );
+    await waitFor(() => expect(screen.getByText(`Client ${engagementId}`)).toBeTruthy());
+    fireEvent.click(screen.getByText(`Client ${engagementId}`));
+    const amendmentButton = await screen.findByRole("button", { name: "Amend terms" });
+    fireEvent.click(amendmentButton);
+    expect(screen.getByRole("dialog", { name: "Approve amendment" })).toBeTruthy();
+    expect(amendmentButton.isConnected).toBe(true);
+    expect((amendmentButton as HTMLButtonElement).disabled).toBe(true);
+    const drawer = document.querySelector<HTMLElement>('aside[role="dialog"]');
+    expect(drawer?.getAttribute("inert")).toBe("");
+    fireEvent.change(screen.getByLabelText("Title"), { target: { value: "Approved amendment v2" } });
+    fireEvent.click(screen.getByRole("button", { name: "Approve amendment" }));
+    await waitFor(() => expect(amend).toHaveBeenCalledTimes(1));
+    expect(amend).toHaveBeenCalledWith(
+      "founder",
+      engagementId,
+      {
+        engagementId,
+        expectedUpdatedAt: active.updatedAt,
+        title: "Approved amendment v2",
+        scope: approvedV1.scope,
+        exclusions: approvedV1.exclusions,
+        responsiblePartnerId: founder.id,
+        deliveryManagerId: manager.id,
+        feeModel: approvedV1.feeModel,
+        agreedFeePaise: approvedV1.agreedFeePaise,
+        billingTerms: approvedV1.billingTerms,
+        startDate: approvedV1.startDate,
+        endDate: approvedV1.endDate,
+      },
+      expect.stringMatching(/^[0-9a-f-]{36}$/),
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+    const updated = (await port.list("founder")).find((item) => item.id === engagementId);
+    expect(updated).toMatchObject({ status: "active", approvedVersion: { versionNumber: 2, title: "Approved amendment v2" } });
+    const versions = await port.listVersions("founder", engagementId);
+    expect(versions).toHaveLength(2);
+    expect(versions[0]).toMatchObject({ id: versionId, title: "Approved v1", versionNumber: 1 });
+    expect(versions.every((version) => version.approvedAt)).toBeTruthy();
+    expect(screen.getByRole("dialog", { name: active.code })).toBeTruthy();
+    await waitFor(() => expect(document.activeElement).toBe(amendmentButton));
+    expect(screen.getAllByText("Approved amendment v2")).toHaveLength(2);
+    const history = screen.getByText("Version history").parentElement;
+    expect(history?.textContent).toContain("Approved amendment v2");
+    expect(history?.textContent).toContain("Approved v1");
+    expect(screen.getByRole("region", { name: "Engagement metrics" }).textContent).toContain("Active1");
+    expect(screen.getByRole("region", { name: "Engagement metrics" }).textContent).toContain("Draft0");
+    expect(screen.getByRole("button", { name: "Amend terms" })).toBeTruthy();
+  });
+
+  it("does not expose amendment to a manager", async () => {
+    const id = "14141414-1414-4141-8141-141414141414";
+    const active = { ...engagement(id, "active"), approvedVersionId: "15151515-1515-4151-8151-151515151515" };
+    const approved = { ...versionForWorkspace(id, founder.id, manager.id, "Manager active"), id: active.approvedVersionId, approvedAt: "2026-04-02T00:00:00Z", approvedById: founder.id };
+    active.approvedAt = approved.approvedAt;
+    active.approvedById = founder.id;
+    active.approvedVersion = approved;
+    const port = new TestEngagementsAdapter().seed([active], new Map([[id, [approved]]]));
+    const amend = vi.spyOn(port, "amend");
+    render(<EngagementsWorkspace role="manager" port={port} currentActor={manager} teamLines={lines} />);
+    await waitFor(() => expect(screen.getByText(`Client ${id}`)).toBeTruthy());
+    fireEvent.click(screen.getByText(`Client ${id}`));
+    expect(await screen.findByRole("dialog", { name: active.code })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Amend terms" })).toBeNull();
+    expect(amend).not.toHaveBeenCalled();
+  });
+
+  it("clears the amendment modal across role transitions", async () => {
+    const id = "16161616-1616-4161-8161-161616161616";
+    const active = { ...engagement(id, "active"), approvedVersionId: "17171717-1717-4171-8171-171717171717" };
+    const approved = { ...versionForWorkspace(id, founder.id, manager.id, "Transition active"), id: active.approvedVersionId, approvedAt: "2026-04-02T00:00:00Z", approvedById: founder.id };
+    active.approvedAt = approved.approvedAt;
+    active.approvedById = founder.id;
+    active.approvedVersion = approved;
+    const port = new TestEngagementsAdapter().seed([active], new Map([[id, [approved]]]));
+    const view = render(<EngagementsWorkspace role="founder" port={port} currentActor={founder} teamLines={lines} />);
+    await waitFor(() => expect(screen.getByText(`Client ${id}`)).toBeTruthy());
+    fireEvent.click(screen.getByText(`Client ${id}`));
+    fireEvent.click(await screen.findByRole("button", { name: "Amend terms" }));
+    expect(screen.getByRole("dialog", { name: "Approve amendment" })).toBeTruthy();
+    view.rerender(<EngagementsWorkspace role="manager" port={port} currentActor={manager} teamLines={lines} />);
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Approve amendment" })).toBeNull());
+    view.rerender(<EngagementsWorkspace role="staff" port={port} currentActor={staff} teamLines={lines} />);
+    expect(screen.queryByRole("dialog", { name: "Approve amendment" })).toBeNull();
+    view.rerender(<EngagementsWorkspace role="founder" port={port} currentActor={founder} teamLines={lines} />);
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Approve amendment" })).toBeNull());
   });
 });
 

@@ -25,6 +25,8 @@ export interface EngagementDetailDrawerProps {
   onRevise?: (element: HTMLButtonElement) => void;
   canActivate?: boolean;
   onActivate?: (element: HTMLButtonElement) => void;
+  canAmend?: boolean;
+  onAmend?: (element: HTMLButtonElement) => void;
 }
 export function EngagementDetailDrawer({
   engagement,
@@ -39,6 +41,8 @@ export function EngagementDetailDrawer({
   onRevise,
   canActivate = false,
   onActivate,
+  canAmend = false,
+  onAmend,
 }: EngagementDetailDrawerProps) {
   const drawerRef = useRef<HTMLElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
@@ -59,6 +63,13 @@ export function EngagementDetailDrawer({
     engagement?.status === "draft" &&
     current &&
     Boolean(onActivate);
+  const showAmend =
+    canAmend &&
+    !loading &&
+    !error &&
+    engagement?.status === "active" &&
+    current &&
+    Boolean(onAmend);
   useEffect(() => {
     previousFocus.current = activator ?? previousFocus.current;
     closeRef.current?.focus();
@@ -167,7 +178,7 @@ export function EngagementDetailDrawer({
                   {missing(engagement.clientName)} · {missing(engagement.serviceName)}
                 </p>
               </section>
-              {showRevise || showActivate ? (
+              {showRevise || showActivate || showAmend ? (
                 <section className="drawer-card engagement-drawer-action-card">
                   <div className="engagement-drawer-action-group">
                     {showRevise ? (
@@ -188,6 +199,16 @@ export function EngagementDetailDrawer({
                         disabled={obscured}
                       >
                         Approve &amp; activate
+                      </button>
+                    ) : null}
+                    {showAmend ? (
+                      <button
+                        className="soft-button"
+                        type="button"
+                        onClick={(event) => onAmend?.(event.currentTarget)}
+                        disabled={obscured}
+                      >
+                        Amend terms
                       </button>
                     ) : null}
                   </div>
