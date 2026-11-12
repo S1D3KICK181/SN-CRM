@@ -17,6 +17,7 @@ import { EngagementDetailDrawer } from "./engagement-detail-drawer";
 import { CreateEngagementDraftDialog } from "./create-engagement-draft-dialog";
 import { EngagementTermsDialog } from "./engagement-terms-dialog";
 import { ActivateEngagementDialog } from "./activate-engagement-dialog";
+import { EndEngagementDialog } from "./end-engagement-dialog";
 import type { DraftOption } from "./engagement-draft-form-model";
 import { isValidUuid } from "./engagement-draft-form-model";
 import {
@@ -74,6 +75,11 @@ export function EngagementsWorkspace({ role, port, onToast, currentActor, client
     engagement: EngagementDto;
     version: EngagementVersionDto;
   } | null>(null);
+  const endOpener = useRef<HTMLElement | null>(null);
+  const [endSnapshot, setEndSnapshot] = useState<{
+    engagement: EngagementDto;
+    version: EngagementVersionDto | null;
+  } | null>(null);
   const draftOpener = useRef<HTMLElement | null>(null);
   const activatorRef = useRef<HTMLElement | null>(null);
   const previousRole = useRef(role);
@@ -92,6 +98,8 @@ export function EngagementsWorkspace({ role, port, onToast, currentActor, client
     setAmendmentSnapshot(null);
     activationOpener.current = null;
     setActivationSnapshot(null);
+    endOpener.current = null;
+    setEndSnapshot(null);
   }, [role, roleMismatch]);
   const model = useEngagements(role, { port, onToast, enabled: allowed });
   const canCreateDraft = hasEngagementCapability(role, "createDraft");
@@ -314,11 +322,12 @@ export function EngagementsWorkspace({ role, port, onToast, currentActor, client
             !model.detailLoading &&
             !model.detailError
           }
-          obscured={Boolean(revisionSnapshot || activationSnapshot || amendmentSnapshot)}
+          obscured={Boolean(revisionSnapshot || activationSnapshot || amendmentSnapshot || endSnapshot)}
           canActivate={
             hasEngagementCapability(role, "activate") &&
             !revisionSnapshot &&
-            !amendmentSnapshot
+            !amendmentSnapshot &&
+            !endSnapshot
           }
           onActivate={(element) => {
             const version = currentTerms(
@@ -343,7 +352,8 @@ export function EngagementsWorkspace({ role, port, onToast, currentActor, client
           canAmend={
             hasEngagementCapability(role, "amend") &&
             !revisionSnapshot &&
-            !activationSnapshot
+            !activationSnapshot &&
+            !endSnapshot
           }
           onAmend={(element) => {
             const engagement = model.selectedDetail;
@@ -351,6 +361,19 @@ export function EngagementsWorkspace({ role, port, onToast, currentActor, client
             if (engagement?.status === "active" && version) {
               amendmentOpener.current = element;
               setAmendmentSnapshot({ engagement, version });
+            }
+          }}
+          canEnd={
+            hasEngagementCapability(role, "end") &&
+            !revisionSnapshot &&
+            !activationSnapshot &&
+            !amendmentSnapshot
+          }
+          onEnd={(element) => {
+            const engagement = model.selectedDetail;
+            if (engagement?.status === "active") {
+              endOpener.current = element;
+              setEndSnapshot({ engagement, version: engagement.approvedVersion ?? null });
             }
           }}
         />
@@ -412,6 +435,20 @@ export function EngagementsWorkspace({ role, port, onToast, currentActor, client
             activationOpener.current = null;
           }}
           onActivate={(input) => model.activate(activationSnapshot.engagement.id, input)}
+        />
+      ) : null}
+      {endSnapshot ? (
+        <EndEngagementDialog
+          open
+          role={role}
+          engagement={endSnapshot.engagement}
+          version={endSnapshot.version}
+          opener={endOpener.current}
+          onClose={() => {
+            setEndSnapshot(null);
+            endOpener.current = null;
+          }}
+          onEnd={(input) => model.end(endSnapshot.engagement.id, input)}
         />
       ) : null}
     </div>

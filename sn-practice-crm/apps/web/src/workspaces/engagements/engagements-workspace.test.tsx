@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { ClientDto, EngagementDto, EngagementVersionDto, ReportingLineDto, ServiceCatalogItemDto, SessionActor } from "@sn/contracts";
 import { buildEngagementOptions, EngagementsWorkspace } from "./engagements-workspace";
 import { TestEngagementsAdapter } from "../../api/test-engagements-adapter";
@@ -548,6 +548,82 @@ describe("EngagementsWorkspace", () => {
     expect(screen.queryByRole("dialog", { name: "Approve amendment" })).toBeNull();
     view.rerender(<EngagementsWorkspace role="founder" port={port} currentActor={founder} teamLines={lines} />);
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "Approve amendment" })).toBeNull());
+  });
+
+  const seedActive = (id: string) => {
+    const active = { ...engagement(id, "active"), approvedVersionId: `${id}-version`, approvedAt: "2026-04-02T00:00:00Z", approvedById: founder.id, updatedAt: "2026-04-02T00:00:00Z" };
+    const approved = { ...versionForWorkspace(id, founder.id, manager.id, "End active"), id: active.approvedVersionId, approvedAt: active.approvedAt, approvedById: founder.id };
+    active.approvedVersion = approved;
+    return new TestEngagementsAdapter().seed([active], new Map([[id, [approved]]]));
+  };
+  const openDrawer = async (id: string) => {
+    await waitFor(() => expect(screen.getByText(`Client ${id}`)).toBeTruthy());
+    fireEvent.click(screen.getByText(`Client ${id}`));
+    return screen.findByRole("button", { name: "End engagement" });
+  };
+
+  it("ends an active engagement as Completed for a founder", async () => {
+    const id = "18181818-1818-4181-8181-181818181818";
+    render(<EngagementsWorkspace role="founder" port={seedActive(id)} currentActor={founder} teamLines={lines} />);
+    fireEvent.click(await openDrawer(id));
+    const dialog = screen.getByRole("dialog", { name: "End engagement" });
+    fireEvent.click(within(dialog).getByLabelText(/Completed/));
+    fireEvent.change(within(dialog).getByLabelText("Reason"), { target: { value: "Delivered in full" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "End engagement" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "End engagement" })).toBeNull());
+    await waitFor(() => expect(screen.getByText(/Ended:.*Completed.*Delivered in full/)).toBeTruthy());
+    expect(screen.queryByRole("button", { name: "End engagement" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Amend terms" })).toBeNull();
+    const metrics = screen.getByRole("region", { name: "Engagement metrics" }).textContent;
+    expect(metrics).toContain("Active0");
+    expect(metrics).toContain("Ended1");
+    const drawer = document.querySelector<HTMLElement>('aside[role="dialog"]')!;
+    await waitFor(() => expect(drawer.contains(document.activeElement)).toBe(true));
+  });
+
+  it("returns focus to the same End button when the dialog is cancelled", async () => {
+    const id = "19191919-1919-4191-8191-191919191919";
+    render(<EngagementsWorkspace role="founder" port={seedActive(id)} currentActor={founder} teamLines={lines} />);
+    const endButton = await openDrawer(id);
+    fireEvent.click(endButton);
+    expect(endButton.isConnected).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "End engagement" })).toBeNull());
+    expect(endButton.isConnected).toBe(true);
+    expect(document.activeElement).toBe(endButton);
+  });
+
+  it("does not expose End to a manager", async () => {
+    const id = "20202020-2020-4202-8202-202020202020";
+    render(<EngagementsWorkspace role="manager" port={seedActive(id)} currentActor={manager} teamLines={lines} />);
+    await waitFor(() => expect(screen.getByText(`Client ${id}`)).toBeTruthy());
+    fireEvent.click(screen.getByText(`Client ${id}`));
+    expect(await screen.findByRole("dialog", { name: `ENG-${id}` })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "End engagement" })).toBeNull();
+  });
+
+  it("clears the End dialog across role transitions", async () => {
+    const id = "21212121-2121-4212-8212-212121212121";
+    const port = seedActive(id);
+    const view = render(<EngagementsWorkspace role="founder" port={port} currentActor={founder} teamLines={lines} />);
+    fireEvent.click(await openDrawer(id));
+    expect(screen.getByRole("dialog", { name: "End engagement" })).toBeTruthy();
+    view.rerender(<EngagementsWorkspace role="manager" port={port} currentActor={manager} teamLines={lines} />);
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "End engagement" })).toBeNull());
+    view.rerender(<EngagementsWorkspace role="founder" port={port} currentActor={founder} teamLines={lines} />);
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "End engagement" })).toBeNull());
+  });
+
+  it("hides Amend while the End dialog is open and End while the Amend dialog is open", async () => {
+    const id = "23232323-2323-4232-8232-232323232323";
+    render(<EngagementsWorkspace role="founder" port={seedActive(id)} currentActor={founder} teamLines={lines} />);
+    fireEvent.click(await openDrawer(id));
+    expect(screen.queryByRole("button", { name: "Amend terms", hidden: true })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "End engagement" })).toBeNull());
+    fireEvent.click(await screen.findByRole("button", { name: "Amend terms" }));
+    expect(screen.getByRole("dialog", { name: "Approve amendment" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "End engagement", hidden: true })).toBeNull();
   });
 });
 

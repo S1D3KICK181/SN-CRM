@@ -383,4 +383,52 @@ describe("EngagementDetailDrawer", () => {
     expect(screen.getByText(/Ended:.*Completed/)).toBeTruthy();
     expect(screen.queryByText("End outcome: Not ended")).toBeNull();
   });
+  const endCases: ReadonlyArray<readonly [string, Partial<EngagementDto>, Partial<EngagementDetailDrawerProps>]> = [
+    ["draft", { status: "draft" }, {}],
+    ["ended", { status: "ended" }, {}],
+    ["loading", {}, { loading: true }],
+    ["retained error", {}, { error: new EngagementOperationError({ message: "safe", code: "network" }) }],
+    ["cannot end", {}, { canEnd: false }],
+    ["missing handler", {}, { onEnd: undefined }],
+  ];
+  it.each(endCases)("omits End for %s", (_name, patch, extra) => {
+    render(<EngagementDetailDrawer engagement={{ ...engagement, ...patch }} versions={[version(1, engagement.approvedAt)]} canEnd onEnd={vi.fn()} onClose={vi.fn()} {...extra} />);
+    expect(screen.queryByRole("button", { name: "End engagement" })).toBeNull();
+  });
+  it("shows End for an active engagement after Amend terms and passes its element", () => {
+    const onEnd = vi.fn();
+    render(<EngagementDetailDrawer engagement={engagement} versions={[version(1, engagement.approvedAt)]} canAmend onAmend={vi.fn()} canEnd onEnd={onEnd} onClose={vi.fn()} />);
+    const names = screen.getAllByRole("button").map((b) => b.textContent);
+    expect(names.indexOf("End engagement")).toBe(names.indexOf("Amend terms") + 1);
+    const button = screen.getByRole("button", { name: "End engagement" });
+    expect(button.className).toContain("engagement-end-button");
+    fireEvent.click(button);
+    expect(onEnd).toHaveBeenCalledWith(button);
+  });
+  it("disables an obscured End button", () => {
+    const onEnd = vi.fn();
+    render(<EngagementDetailDrawer engagement={engagement} versions={[]} canEnd onEnd={onEnd} obscured onClose={vi.fn()} />);
+    const button = screen.getByRole("button", { name: "End engagement", hidden: true }) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    fireEvent.click(button);
+    expect(onEnd).not.toHaveBeenCalled();
+  });
+  it("moves focus to the header close when un-obscured with focus outside the drawer", () => {
+    const outside = document.createElement("button");
+    document.body.append(outside);
+    const view = render(<EngagementDetailDrawer engagement={engagement} versions={[]} obscured onClose={vi.fn()} />);
+    outside.focus();
+    view.rerender(<EngagementDetailDrawer engagement={engagement} versions={[]} onClose={vi.fn()} />);
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Close engagement details" }));
+    outside.remove();
+  });
+  it("leaves focus alone when un-obscured with focus inside the drawer", () => {
+    const view = render(<EngagementDetailDrawer engagement={engagement} versions={[]} obscured onClose={vi.fn()} />);
+    const inside = document.createElement("div");
+    inside.tabIndex = -1;
+    document.querySelector("aside")!.append(inside);
+    inside.focus();
+    view.rerender(<EngagementDetailDrawer engagement={engagement} versions={[]} onClose={vi.fn()} />);
+    expect(document.activeElement).toBe(inside);
+  });
 });

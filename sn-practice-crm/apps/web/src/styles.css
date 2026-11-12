@@ -4226,9 +4226,9 @@ tbody tr:hover {
 .engagement-draft-dialog select[aria-invalid="true"],
 .engagement-draft-dialog input[aria-invalid="true"],
 .engagement-draft-dialog textarea[aria-invalid="true"] {
-  border-color: var(--signal);
+  border-color: var(--danger);
 }
-.dialog-validation-summary { display: flex; gap: 8px; align-items: center; margin-bottom: 16px; padding: 10px 12px; border: 1px solid var(--signal); border-radius: var(--radius-md); color: var(--signal); background: color-mix(in srgb, var(--signal) 8%, var(--surface)); }
+.dialog-validation-summary { display: flex; gap: 8px; align-items: center; margin-bottom: 16px; padding: 10px 12px; border: 1px solid var(--danger); border-radius: var(--radius-md); color: var(--danger); background: color-mix(in srgb, var(--danger) 8%, var(--surface)); }
 .field select[aria-invalid='true'] { border-color: var(--danger); }
 .field select[aria-invalid='true']:focus { border-color: var(--danger); box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 12%, transparent); }
 .engagement-terms-dialog-layer {
@@ -4305,13 +4305,128 @@ tbody tr:hover {
 .activation-note {
   margin: 0;
   padding: 12px;
-  border-left: 3px solid var(--signal);
-  background: color-mix(in srgb, var(--signal) 7%, var(--surface));
+  border-left: 3px solid var(--danger);
+  background: color-mix(in srgb, var(--danger) 7%, var(--surface));
+}
+
+.end-engagement-dialog-layer {
+  z-index: 120;
+}
+
+.end-engagement-dialog {
+  width: min(680px, calc(100vw - 32px));
+}
+
+.end-engagement-fields {
+  display: grid;
+  gap: 16px;
+  padding: 0 24px 20px;
+}
+
+.end-engagement-fields .dialog-validation-summary {
+  margin-bottom: 0;
+}
+
+.end-engagement-outcome {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.end-engagement-outcome legend {
+  margin-bottom: 8px;
+  padding: 0;
+  color: var(--ink-strong);
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.end-engagement-radio {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  font-size: 12px;
+}
+
+.end-engagement-radio strong {
+  color: var(--ink-strong);
+  font-weight: 750;
+}
+
+.end-engagement-radio span {
+  color: var(--ink-muted);
+}
+
+.end-engagement-dialog .field {
+  display: grid;
+  gap: 6px;
+}
+
+.end-engagement-dialog .field label {
+  color: var(--ink-strong);
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.end-engagement-dialog .field textarea {
+  width: 100%;
+  min-height: 86px;
+  padding: 11px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--surface);
+  color: var(--ink-strong);
+  font-size: 12px;
+  font-weight: 500;
+  resize: vertical;
+  transition: border 140ms var(--ease-out), box-shadow 140ms var(--ease-out);
+}
+
+.end-engagement-dialog .field textarea:focus {
+  border-color: color-mix(in srgb, var(--brand) 60%, var(--border));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand) 9%, transparent);
+  outline: 0;
+}
+
+.end-engagement-dialog .field small {
+  color: var(--ink-muted);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.end-engagement-dialog .field .field-error-text,
+.end-engagement-outcome .field-error-text {
+  color: var(--danger);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.engagement-end-button {
+  border: 1px solid var(--danger);
+  background: var(--surface);
+  color: var(--danger);
+}
+
+.engagement-end-button:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--danger) 8%, var(--surface));
+  color: var(--danger);
+}
+
+.engagement-end-confirm,
+.engagement-end-confirm:hover:not(:disabled) {
+  background: var(--danger);
+  color: var(--surface);
+  box-shadow: 0 8px 18px color-mix(in srgb, var(--danger) 20%, transparent);
 }
 
 @media (prefers-reduced-motion: reduce) {
   .activation-dialog-layer,
-  .activation-dialog-layer .dialog {
+  .activation-dialog-layer .dialog,
+  .end-engagement-dialog-layer,
+  .end-engagement-dialog-layer .dialog {
     animation: none;
   }
 }
