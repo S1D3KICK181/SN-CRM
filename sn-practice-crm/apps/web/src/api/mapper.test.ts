@@ -320,4 +320,62 @@ describe('Recurring schedule mapping & date arithmetic', () => {
       expect(row.tone).toBe('default');
     });
   });
+
+  describe('engagement link mapping', () => {
+    const cmd = {
+      clientId: '10000000-0000-4000-a000-000000000001',
+      title: 'Statutory Audit',
+      ownerId: '00000000-0000-4000-a000-000000000002',
+      serviceId: '20000000-0000-4000-a000-000000000001',
+      dueDate: '20/11/2026',
+    };
+    const engId = '50000000-0000-4000-a000-000000000001';
+
+    it('passes a valid engagementId through', () => {
+      expect(mapCommandToCreateInput({ ...cmd, engagementId: engId }).engagementId).toBe(engId);
+    });
+
+    it('leaves out empty, null or undefined engagementId', () => {
+      for (const v of ['', null, undefined]) {
+        const input = mapCommandToCreateInput({ ...cmd, engagementId: v });
+        expect('engagementId' in input).toBe(false);
+      }
+    });
+
+    it('throws a validation error for an invalid engagementId', () => {
+      expect(() => mapCommandToCreateInput({ ...cmd, engagementId: 'not-a-uuid' })).toThrow(
+        expect.objectContaining({ code: 'validation' }),
+      );
+    });
+
+    it('mapDtoToAssignmentRow carries engagementId and engagementCode', () => {
+      const row = mapDtoToAssignmentRow({
+        id: '30000000-0000-4000-a000-000000000001',
+        code: 'ASN-001',
+        title: 'Tax Audit',
+        description: null,
+        clientId: cmd.clientId,
+        clientName: 'Aster Foods Private Limited',
+        serviceId: cmd.serviceId,
+        service: 'Statutory Audit',
+        ownerId: cmd.ownerId,
+        ownerName: 'Priya Desai',
+        reviewerIds: [],
+        reviewerNames: [],
+        recurringScheduleId: null,
+        engagementId: engId,
+        engagementCode: 'ENG-000404',
+        deliveryNotes: null,
+        reviewNotes: null,
+        createdById: '00000000-0000-4000-a000-000000000001',
+        status: 'assigned',
+        progressPercent: 0,
+        dueAt: '2026-11-20T12:00:00.000Z',
+        createdAt: '2026-11-01T00:00:00.000Z',
+        updatedAt: '2026-11-01T00:00:00.000Z',
+      });
+      expect(row.engagementId).toBe(engId);
+      expect(row.engagementCode).toBe('ENG-000404');
+    });
+  });
 });

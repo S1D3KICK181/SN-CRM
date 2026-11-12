@@ -373,4 +373,135 @@ describe('CreateAssignmentDialog', () => {
     expect(submitBtn.hasAttribute('disabled')).toBe(true);
     expect(onCreateAssignment).not.toHaveBeenCalled();
   });
+
+  describe('engagement link', () => {
+    const engagements = [
+      {
+        id: '50000000-0000-4000-a000-000000000001',
+        code: 'ENG-000404',
+        clientId: '10000000-0000-4000-a000-000000000001',
+        title: 'Annual GST retainer',
+      },
+      {
+        id: '50000000-0000-4000-a000-000000000002',
+        code: 'ENG-000405',
+        clientId: '10000000-0000-4000-a000-000000000002',
+        title: 'Statutory audit',
+      },
+    ];
+
+    function renderDialog(extra: Partial<React.ComponentProps<typeof CreateAssignmentDialog>> = {}) {
+      const onCreateAssignment = vi.fn().mockResolvedValue(true);
+      const utils = render(
+        <CreateAssignmentDialog
+          isOpen={true}
+          role="founder"
+          clients={clients}
+          teamMembers={staff}
+          services={services}
+          engagements={engagements}
+          onClose={vi.fn()}
+          onCreateAssignment={onCreateAssignment}
+          onCreateSchedule={vi.fn()}
+          {...extra}
+        />,
+      );
+      return { ...utils, onCreateAssignment };
+    }
+
+    function fillAndSubmit(container: HTMLElement) {
+      fireEvent.change(screen.getByLabelText(/Assignment Title/i), { target: { value: 'Q2 filing' } });
+      fireEvent.change(screen.getByLabelText(/Target Due Date/i), { target: { value: '2026-11-20' } });
+      fireEvent.submit(container.querySelector('form')!);
+    }
+
+    it('shows the field on the One-Off tab and hides it on the Recurring Schedule tab', () => {
+      renderDialog();
+      expect(screen.getByLabelText('Engagement')).toBeDefined();
+      fireEvent.click(screen.getByRole('button', { name: /Recurring Schedule/i }));
+      expect(screen.queryByLabelText('Engagement')).toBeNull();
+    });
+
+    it('lists only the selected client engagements as code and title, without UUIDs', () => {
+      renderDialog();
+      const select = screen.getByLabelText('Engagement') as HTMLSelectElement;
+      expect(Array.from(select.options).map((o) => o.textContent)).toEqual([
+        'No engagement',
+        'ENG-000404 · Annual GST retainer',
+      ]);
+      expect(select.value).toBe('');
+      expect(select.textContent).not.toMatch(/[0-9a-f]{8}-[0-9a-f]{4}-/i);
+    });
+
+    it('resets the selection and swaps options when the client changes', () => {
+      renderDialog();
+      const select = screen.getByLabelText('Engagement') as HTMLSelectElement;
+      fireEvent.change(select, { target: { value: '50000000-0000-4000-a000-000000000001' } });
+      expect(select.value).toBe('50000000-0000-4000-a000-000000000001');
+
+      fireEvent.change(screen.getByLabelText(/Client Entity/i), {
+        target: { value: '10000000-0000-4000-a000-000000000002' },
+      });
+      expect(select.value).toBe('');
+      expect(Array.from(select.options).map((o) => o.textContent)).toEqual([
+        'No engagement',
+        'ENG-000405 · Statutory audit',
+      ]);
+    });
+
+    it('submits the selected engagementId', async () => {
+      const { container, onCreateAssignment } = renderDialog();
+      fireEvent.change(screen.getByLabelText('Engagement'), {
+        target: { value: '50000000-0000-4000-a000-000000000001' },
+      });
+      fillAndSubmit(container);
+      await waitFor(() => expect(onCreateAssignment).toHaveBeenCalledTimes(1));
+      expect(onCreateAssignment.mock.calls[0]![0].engagementId).toBe(
+        '50000000-0000-4000-a000-000000000001',
+      );
+    });
+
+    it('omits engagementId when none is selected', async () => {
+      const { container, onCreateAssignment } = renderDialog();
+      fillAndSubmit(container);
+      await waitFor(() => expect(onCreateAssignment).toHaveBeenCalledTimes(1));
+      expect('engagementId' in onCreateAssignment.mock.calls[0]![0]).toBe(false);
+    });
+
+    it('disables the select with a hint when the client has no active engagement', () => {
+      renderDialog({ engagements: [] });
+      expect((screen.getByLabelText('Engagement') as HTMLSelectElement).disabled).toBe(true);
+      expect(screen.getByText('This client has no active engagement.')).toBeDefined();
+    });
+
+    it('shows the optional hint when the client has engagements', () => {
+      renderDialog();
+      expect(
+        screen.getByText('Optional. Links this work to the agreed scope and fee. Cannot be changed later.'),
+      ).toBeDefined();
+    });
+
+    it('shows the unavailable hint when engagements could not be loaded', () => {
+      renderDialog({ engagements: [], engagementsUnavailable: true });
+      expect(
+        screen.getByText('Engagements could not be loaded. You can still create the assignment without one.'),
+      ).toBeDefined();
+    });
+
+    it('shows a loading hint and disables the select while engagements load', () => {
+      renderDialog({ engagementsLoading: true });
+      expect(screen.getByText('Loading engagements…')).toBeDefined();
+      expect(screen.queryByText('This client has no active engagement.')).toBeNull();
+      expect((screen.getByLabelText('Engagement') as HTMLSelectElement).disabled).toBe(true);
+    });
+
+    it('uses the Assignment Title label and the one-off description', () => {
+      renderDialog();
+      expect(screen.getByLabelText(/Assignment Title/i)).toBeDefined();
+      expect(screen.queryByText(/Engagement Title/i)).toBeNull();
+      expect(
+        screen.getByText('Create a one-off assignment with an owner, reviewer and due date.'),
+      ).toBeDefined();
+    });
+  });
 });

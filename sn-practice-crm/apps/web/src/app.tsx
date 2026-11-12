@@ -33,6 +33,7 @@ import {
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import type { ClientDto, ReportingLineDto, ServiceCatalogItemDto, SessionActor } from '@sn/contracts';
 import { authorize, type CompanyRole } from '@sn/domain';
+import { useEngagements } from './api/use-engagements';
 import { SessionClient } from './api/auth/session-client';
 import { SessionManager } from './api/auth/session-manager';
 import type { AuthSessionSource } from './api/auth/types';
@@ -68,6 +69,7 @@ import { AssignmentsWorkspace } from './workspaces/assignments/assignments-works
 import {
   CreateAssignmentDialog,
   type DialogClientOption,
+  type DialogEngagementOption,
   type DialogStaffOption,
 } from './workspaces/assignments/create-assignment-dialog';
 import {
@@ -182,6 +184,27 @@ function AuthenticatedApp({
     isGeneratingDue,
     markAssignmentBilled,
   } = useAssignments(role, { onToast: setToast });
+  const assignmentDialogOpen =
+    (dialog === 'assignment' || dialog === 'schedule') && (role === 'founder' || role === 'manager');
+  const {
+    items: engagementItems,
+    listError: engagementsListError,
+    hasLiveSnapshot: engagementsLoaded,
+  } = useEngagements(role, {
+    enabled: assignmentDialogOpen,
+  });
+  const engagementOptions = useMemo<readonly DialogEngagementOption[]>(
+    () =>
+      engagementItems
+        .filter((e) => e.status === 'active')
+        .map((e) => ({
+          id: e.id,
+          code: e.code,
+          clientId: e.clientId,
+          title: e.approvedVersion?.title ?? e.serviceName ?? e.code,
+        })),
+    [engagementItems],
+  );
   const { items: directoryClients } = useClients(role);
   const { lines: directoryLines } = useTeamDirectory(role);
 
@@ -581,9 +604,12 @@ function AuthenticatedApp({
             />
           ) : null}
           <CreateAssignmentDialog
-            isOpen={(dialog === 'assignment' || dialog === 'schedule') && (role === 'founder' || role === 'manager')}
+            isOpen={assignmentDialogOpen}
             role={role}
             clients={clientOptions}
+            engagements={engagementOptions}
+            engagementsUnavailable={Boolean(engagementsListError)}
+            engagementsLoading={!engagementsLoaded && !engagementsListError}
             teamMembers={staffOptions}
             services={services}
             onClose={() => setDialog(null)}

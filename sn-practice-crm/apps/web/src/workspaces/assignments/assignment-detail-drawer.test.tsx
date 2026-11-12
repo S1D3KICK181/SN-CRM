@@ -287,4 +287,30 @@ describe('AssignmentDetailDrawer component', () => {
     expect(screen.getByText('Billed')).toBeDefined();
     expect(screen.getByText('INV-2026-0099')).toBeDefined();
   });
+
+  it('shows the linked engagement code, or Not linked', () => {
+    const props = {
+      leadership: true,
+      role: 'founder' as const,
+      teamMembers: customTeamMembers,
+      onClose: vi.fn(),
+      onToast: vi.fn(),
+      onUpdateAssignment: vi.fn(),
+    };
+    const { unmount } = render(
+      <AssignmentDetailDrawer
+        {...props}
+        assignment={{
+          ...sampleAssignment,
+          engagementId: '50000000-0000-4000-a000-000000000001',
+          engagementCode: 'ENG-000404',
+        }}
+      />,
+    );
+    expect(screen.getByText('Engagement: ENG-000404')).toBeDefined();
+    unmount();
+
+    render(<AssignmentDetailDrawer {...props} assignment={sampleAssignment} />);
+    expect(screen.getByText('Engagement: Not linked')).toBeDefined();
+  });
 });

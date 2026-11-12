@@ -74,6 +74,7 @@ export interface CreateAssignmentCommand {
   clientId?: string;
   clientName?: string;
   client?: string;
+  engagementId?: string | null;
   serviceId?: string;
   service?: string;
   title: string;

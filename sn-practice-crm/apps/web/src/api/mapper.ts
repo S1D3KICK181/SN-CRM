@@ -209,6 +209,8 @@ export function mapDtoToAssignmentRow(dto: AssignmentDto): AssignmentRow {
     reviewerIds: dto.reviewerIds ? [...dto.reviewerIds] : undefined,
     reviewerNames: dto.reviewerNames ? [...dto.reviewerNames] : undefined,
     recurringScheduleId: dto.recurringScheduleId ?? null,
+    engagementId: dto.engagementId ?? null,
+    engagementCode: dto.engagementCode ?? null,
     expectedUpdatedAt: dto.updatedAt,
     status: displayStatus,
     progress,
@@ -281,6 +283,15 @@ export function mapCommandToCreateInput(command: CreateAssignmentCommand): Creat
     });
   }
 
+  const rawEngagementId = command.engagementId?.trim();
+  if (rawEngagementId && !isValidUuid(rawEngagementId)) {
+    throw new AssignmentOperationError({
+      code: 'validation',
+      message: 'Invalid engagement reference.',
+    });
+  }
+  const engagementFields = rawEngagementId ? { engagementId: rawEngagementId } : {};
+
   const rawDue = command.dueDate ?? command.due;
   const dueAt = parseDisplayDateToIso(rawDue);
   const description = command.description?.trim() || command.scope?.trim() || undefined;
@@ -297,6 +308,7 @@ export function mapCommandToCreateInput(command: CreateAssignmentCommand): Creat
       ownerId,
       reviewerIds,
       dueAt,
+      ...engagementFields,
     };
   } else if (hasService) {
     return {
@@ -307,6 +319,7 @@ export function mapCommandToCreateInput(command: CreateAssignmentCommand): Creat
       ownerId,
       reviewerIds,
       dueAt,
+      ...engagementFields,
     };
   } else {
     throw new AssignmentOperationError({

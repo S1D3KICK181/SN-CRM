@@ -345,6 +345,7 @@ export function AssignmentDetailDrawer({
                 {assignment.client}
                 {!displayCode ? ` · ${assignment.service}` : ''}
               </p>
+              <p>Engagement: {assignment.engagementCode ?? 'Not linked'}</p>
             </div>
           </div>
           <div className="drawer-header-actions">

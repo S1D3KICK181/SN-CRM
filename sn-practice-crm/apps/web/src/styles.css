@@ -2484,6 +2484,10 @@ tbody tr:hover {
   line-height: 1.4;
 }
 
+.field > small.assignment-engagement-hint {
+  font-size: 12px;
+}
+
 .field-error-text {
   color: var(--danger);
   font-size: 9px;

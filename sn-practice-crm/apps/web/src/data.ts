@@ -45,6 +45,8 @@ export interface AssignmentRow {
   scope?: string;
   description?: string | null;
   recurringScheduleId?: string | null;
+  engagementId?: string | null;
+  engagementCode?: string | null;
   milestones?: AssignmentMilestone[];
   deliveryNotes?: string | null;
   reviewNotes?: string | null;

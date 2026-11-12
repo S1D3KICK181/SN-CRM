@@ -19,6 +19,13 @@ export interface DialogClientOption {
   readonly name: string;
 }
 
+export interface DialogEngagementOption {
+  readonly id: string;
+  readonly code: string;
+  readonly clientId: string;
+  readonly title: string;
+}
+
 export interface DialogStaffOption {
   readonly id: string;
   readonly name: string;
@@ -31,6 +38,9 @@ export interface CreateAssignmentDialogProps {
   readonly clients?: readonly DialogClientOption[];
   readonly teamMembers?: readonly DialogStaffOption[];
   readonly services?: readonly ServiceCatalogItemDto[];
+  readonly engagements?: readonly DialogEngagementOption[];
+  readonly engagementsUnavailable?: boolean;
+  readonly engagementsLoading?: boolean;
   readonly onClose: () => void;
   readonly onCreateAssignment: (command: CreateAssignmentCommand) => Promise<boolean>;
   readonly onCreateSchedule?: (command: CreateRecurringScheduleCommand) => Promise<boolean>;
@@ -40,6 +50,7 @@ export interface CreateAssignmentDialogProps {
 const EMPTY_CLIENTS: readonly DialogClientOption[] = [];
 const EMPTY_TEAM: readonly DialogStaffOption[] = [];
 const EMPTY_SERVICES: readonly ServiceCatalogItemDto[] = [];
+const EMPTY_ENGAGEMENTS: readonly DialogEngagementOption[] = [];
 
 export function CreateAssignmentDialog({
   isOpen,
@@ -47,6 +58,9 @@ export function CreateAssignmentDialog({
   clients = EMPTY_CLIENTS,
   teamMembers = EMPTY_TEAM,
   services = EMPTY_SERVICES,
+  engagements = EMPTY_ENGAGEMENTS,
+  engagementsUnavailable = false,
+  engagementsLoading = false,
   onClose,
   onCreateAssignment,
   onCreateSchedule,
@@ -61,6 +75,7 @@ export function CreateAssignmentDialog({
 
   // Form Fields
   const [clientId, setClientId] = useState('');
+  const [engagementId, setEngagementId] = useState('');
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [selectedServiceId, setSelectedServiceId] = useState('');
@@ -98,6 +113,7 @@ export function CreateAssignmentDialog({
       setSubmitting(false);
       setTab('assignment');
       setClientId(clients[0]?.id ?? '');
+      setEngagementId('');
       setTitle('');
       setDescription('');
       setSelectedServiceId(availableServices[0]?.id ?? '');
@@ -165,6 +181,15 @@ export function CreateAssignmentDialog({
 
   if (!isOpen || !isLeadership) return null;
 
+  const clientEngagements = engagements.filter((e) => e.clientId === clientId);
+  const engagementHint = engagementsUnavailable
+    ? 'Engagements could not be loaded. You can still create the assignment without one.'
+    : engagementsLoading
+      ? 'Loading engagements…'
+      : clientEngagements.length === 0
+      ? 'This client has no active engagement.'
+      : 'Optional. Links this work to the agreed scope and fee. Cannot be changed later.';
+
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     if (submitting) return;
@@ -222,6 +247,7 @@ export function CreateAssignmentDialog({
           ownerNameOrId: ownerId,
           reviewerNameOrId: reviewerId || undefined,
           dueDate: dueDate.trim(),
+          ...(engagementId ? { engagementId } : {}),
         });
 
         if (success) {
@@ -309,7 +335,7 @@ export function CreateAssignmentDialog({
               </h2>
               <p id="create-assignment-description">
                 {tab === 'assignment'
-                  ? 'Create a practice-level engagement with designated custody and review gates.'
+                  ? 'Create a one-off assignment with an owner, reviewer and due date.'
                   : 'Establish a statutory cadence rule that automatically materializes recurring work.'}
               </p>
             </div>
@@ -391,7 +417,10 @@ export function CreateAssignmentDialog({
                 id="assign-client"
                 ref={initialFocusRef}
                 value={clientId}
-                onChange={(e) => setClientId(e.target.value)}
+                onChange={(e) => {
+                  setClientId(e.target.value);
+                  setEngagementId('');
+                }}
                 required
                 disabled={submitting || clients.length === 0}
               >
@@ -407,10 +436,34 @@ export function CreateAssignmentDialog({
               </select>
             </div>
 
+            {/* Engagement link (one-off only) */}
+            {tab === 'assignment' ? (
+              <div className="field is-full">
+                <label htmlFor="assign-engagement">
+                  <span>Engagement</span>
+                </label>
+                <select
+                  id="assign-engagement"
+                  value={engagementId}
+                  onChange={(e) => setEngagementId(e.target.value)}
+                  aria-describedby="assign-engagement-hint"
+                  disabled={submitting || engagementsLoading || clientEngagements.length === 0}
+                >
+                  <option value="">No engagement</option>
+                  {clientEngagements.map((e) => (
+                    <option key={e.id} value={e.id}>
+                      {e.code} · {e.title}
+                    </option>
+                  ))}
+                </select>
+                <small id="assign-engagement-hint" className="assignment-engagement-hint">{engagementHint}</small>
+              </div>
+            ) : null}
+
             {/* Title */}
             <div className="field is-full">
               <label htmlFor="assign-title">
-                <span>Engagement Title *</span>
+                <span>Assignment Title *</span>
               </label>
               <input
                 id="assign-title"
