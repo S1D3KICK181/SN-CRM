@@ -319,28 +319,7 @@ export class CrmApplication {
     const owner = await this.getActiveEmployee(ctx, input.ownerId);
     requireAuthority({ action: 'assignment.assign', actor: asActor(actor), target: owner });
 
-    let engagementId: string | null = null;
-    if (input.engagementId) {
-      const engagement = await this.repository.getEngagement(ctx, input.engagementId);
-      if (!engagement) {
-        throw new ApiError(422, 'referenced_entity_not_found', 'Referenced engagement does not exist.');
-      }
-      if (engagement.clientId !== client.id) {
-        throw new ApiError(
-          422,
-          'engagement_client_mismatch',
-          'The engagement belongs to a different client than the Assignment.',
-        );
-      }
-      if (engagement.status !== 'active') {
-        throw new ApiError(
-          422,
-          'engagement_not_active',
-          'An Assignment can only be linked to an active engagement.',
-        );
-      }
-      engagementId = engagement.id;
-    }
+    const engagementId = await this.resolveEngagementLink(ctx, input.engagementId, client.id, 'Assignment');
 
     const reviewerIds = await this.validateReviewerIds(ctx, input.reviewerIds ?? []);
     const timestamp = this.now().toISOString();
@@ -610,10 +589,13 @@ export class CrmApplication {
     const owner = await this.getActiveEmployee(ctx, input.ownerId);
     requireAuthority({ action: 'assignment.assign', actor: asActor(actor), target: owner });
 
+    const engagementId = await this.resolveEngagementLink(ctx, input.engagementId, client.id, 'Recurring Schedule');
+
     const reviewerIds = await this.validateReviewerIds(ctx, input.reviewerIds ?? []);
 
     return await this.repository.createRecurringSchedule(ctx, {
       ...input,
+      engagementId,
       id: this.createId('sch'),
       createdById: actor.id,
       clientName: client.name,
@@ -630,6 +612,20 @@ export class CrmApplication {
   ): Promise<RecurringScheduleDto> {
     const ctx: RepositoryContext = { actorId: actor.id };
     requireAuthority({ action: 'schedule.manage', actor: asActor(actor) });
+    if (patch.active === true) {
+      const schedule = await this.repository.getRecurringSchedule(ctx, scheduleId);
+      if (!schedule) throw notFound('Recurring schedule');
+      if (schedule.engagementId) {
+        const engagement = await this.repository.getEngagement(ctx, schedule.engagementId);
+        if (engagement?.status !== 'active') {
+          throw new ApiError(
+            422,
+            'engagement_not_active',
+            "This schedule's engagement has ended, so the schedule cannot be restarted.",
+          );
+        }
+      }
+    }
     return await this.repository.updateRecurringSchedule(ctx, scheduleId, patch);
   }
 
@@ -896,6 +892,36 @@ export class CrmApplication {
     const assignment = await this.repository.getAssignment(ctx, id);
     if (!assignment) throw notFound('Assignment');
     return assignment;
+  }
+
+  // Shared by Assignment and Recurring Schedule creation: the engagement must exist, belong to the
+  // same client and be active. Returns the engagement id to store, or null when no link was asked for.
+  private async resolveEngagementLink(
+    ctx: RepositoryContext,
+    engagementId: string | null | undefined,
+    clientId: string,
+    subjectLabel: 'Assignment' | 'Recurring Schedule',
+  ): Promise<string | null> {
+    if (!engagementId) return null;
+    const engagement = await this.repository.getEngagement(ctx, engagementId);
+    if (!engagement) {
+      throw new ApiError(422, 'referenced_entity_not_found', 'Referenced engagement does not exist.');
+    }
+    if (engagement.clientId !== clientId) {
+      throw new ApiError(
+        422,
+        'engagement_client_mismatch',
+        `The engagement belongs to a different client than the ${subjectLabel}.`,
+      );
+    }
+    if (engagement.status !== 'active') {
+      throw new ApiError(
+        422,
+        'engagement_not_active',
+        `${subjectLabel === 'Assignment' ? 'An Assignment' : 'A Recurring Schedule'} can only be linked to an active engagement.`,
+      );
+    }
+    return engagement.id;
   }
 
   private async validateReviewerIds(ctx: RepositoryContext, ids: readonly string[]): Promise<string[]> {

@@ -15,6 +15,7 @@ import {
   validateAmendActiveEngagementInput,
   validateEndEngagementInput,
   type AssignmentDto,
+  type RecurringScheduleDto,
   type ClientDto,
   type ClientStatus,
   type WorkItemDto,
@@ -104,6 +105,9 @@ describe('Contracts Single Status Truth & Runtime Tuples', () => {
     expectTypeOf<AssignmentDto>().toHaveProperty('engagementCode').toEqualTypeOf<string | null>();
     expectTypeOf<CreateAssignmentInput>().toHaveProperty('engagementId').toEqualTypeOf<string | null | undefined>();
     expectTypeOf<CreateRecurringScheduleInput>().not.toHaveProperty('clientName');
+    expectTypeOf<RecurringScheduleDto>().toHaveProperty('engagementId').toEqualTypeOf<string | null>();
+    expectTypeOf<RecurringScheduleDto>().toHaveProperty('engagementCode').toEqualTypeOf<string | null>();
+    expectTypeOf<CreateRecurringScheduleInput>().toHaveProperty('engagementId').toEqualTypeOf<string | null | undefined>();
   });
 
   it('exports ENGAGEMENT_STATUSES matching exactly 3 PostgreSQL enum states', () => {

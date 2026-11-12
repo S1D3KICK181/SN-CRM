@@ -2479,13 +2479,9 @@ tbody tr:hover {
 
 .field > small {
   color: var(--ink-muted);
-  font-size: 8px;
+  font-size: 12px;
   font-weight: 500;
   line-height: 1.4;
-}
-
-.field > small.assignment-engagement-hint {
-  font-size: 12px;
 }
 
 .field-error-text {

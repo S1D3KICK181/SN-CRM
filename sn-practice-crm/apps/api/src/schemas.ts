@@ -303,6 +303,7 @@ export const createRecurringScheduleSchema = z
     reviewerIds: z.array(entityUuid).max(5).optional(),
     nextOccurrenceOn: localDate,
     dueDay: z.number().int().min(1).max(31),
+    engagementId: entityUuid.nullable().optional(),
   })
   .strict();
 

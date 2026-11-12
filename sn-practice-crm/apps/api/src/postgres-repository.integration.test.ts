@@ -1550,4 +1550,254 @@ describe('PostgresCrmRepository Integration Suite', () => {
       });
     });
   });
+
+  describe('ENG-02c Postgres Integration: Recurring Schedule engagement link', () => {
+    async function createActiveEngagement(repo: PostgresCrmRepository, clientId: string, serviceId: string, key: string) {
+      const founderCtx = { actorId: FOUNDER_ID };
+      const draft = await repo.mutateEngagement(founderCtx, {
+        kind: 'createDraft',
+        idempotencyKey: `${key}-create`,
+        clientId,
+        serviceId,
+        title: 'Linked Schedule Engagement',
+        scope: 'Scope for linked schedules',
+        responsiblePartnerId: FOUNDER_ID,
+        deliveryManagerId: MANAGER_ID,
+        feeModel: 'fixed',
+        agreedFeePaise: 1000000,
+        billingTerms: 'Terms',
+        startDate: '2026-11-01',
+      });
+      const versions = await repo.listEngagementVersions(founderCtx, draft.id);
+      return repo.mutateEngagement(founderCtx, {
+        kind: 'activate',
+        idempotencyKey: `${key}-activate`,
+        engagementId: draft.id,
+        versionId: versions[0]!.id,
+        expectedUpdatedAt: draft.updatedAt,
+      });
+    }
+
+    function endEngagement(repo: PostgresCrmRepository, engagementId: string, expectedUpdatedAt: string, key: string) {
+      return repo.mutateEngagement({ actorId: FOUNDER_ID }, {
+        kind: 'end',
+        idempotencyKey: `${key}-end`,
+        engagementId,
+        outcome: 'completed',
+        reason: 'Work completed',
+        expectedUpdatedAt,
+      });
+    }
+
+    // The materializer is granted to the service role only and, in production, runs in its own
+    // transaction outside any user context. Inside one isolated test transaction the earlier
+    // user-context calls leave the role set to `authenticated`, so restore the server's own role first.
+    async function asServerRole(tx: postgres.TransactionSql) {
+      await tx`RESET ROLE`;
+      await tx`SELECT set_config('request.jwt.claim.sub', '', true)`;
+      await tx`SELECT set_config('request.jwt.claim.role', '', true)`;
+    }
+
+    function scheduleRecord(
+      id: string,
+      client: { id: string; name: string },
+      service: { id: string; name: string },
+      engagementId?: string | null,
+    ) {
+      return {
+        id,
+        clientId: client.id,
+        clientName: client.name,
+        serviceId: service.id,
+        service: service.name,
+        title: 'Linked schedule',
+        cadence: 'monthly' as const,
+        ownerId: STAFF_ID,
+        reviewerIds: [],
+        nextOccurrenceOn: '2026-11-01',
+        dueDay: 10,
+        engagementId: engagementId ?? null,
+        createdById: FOUNDER_ID,
+      };
+    }
+
+    async function asFounder<T>(tx: postgres.TransactionSql, statement: (sp: postgres.TransactionSql) => Promise<T>) {
+      return tx.savepoint(async (sp) => {
+        await sp`SELECT set_config('request.jwt.claim.sub', ${FOUNDER_ID}, true)`;
+        await sp`SELECT set_config('request.jwt.claim.role', 'authenticated', true)`;
+        await sp`SELECT set_config('role', 'authenticated', true)`;
+        return statement(sp);
+      });
+    }
+
+    it('IT-27: a linked schedule insert stores the engagement id and code', async () => {
+      await runIsolatedTest(async (repo, tx) => {
+        const founderCtx = { actorId: FOUNDER_ID };
+        const client = (await repo.listClientReferences(founderCtx))[0]!;
+        const service = (await repo.listServiceReferences(founderCtx))[0]!;
+        const engagement = await createActiveEngagement(repo, client.id, service.id, 'it-27');
+
+        const linkedId = '90000000-0000-4000-a000-0000000000f1';
+        const created = await repo.createRecurringSchedule(founderCtx, scheduleRecord(linkedId, client, service, engagement.id));
+        expect(created).toMatchObject({ engagementId: engagement.id, engagementCode: engagement.code });
+        expect((await repo.listRecurringSchedules(founderCtx)).find((s) => s.id === linkedId)).toMatchObject({
+          engagementId: engagement.id,
+          engagementCode: engagement.code,
+        });
+        const rawRows = await tx`SELECT engagement_id, engagement_code FROM public.recurring_schedules WHERE id = ${linkedId}::uuid`;
+        expect(rawRows[0]).toMatchObject({ engagement_id: engagement.id, engagement_code: engagement.code });
+
+        const unlinked = await repo.createRecurringSchedule(
+          founderCtx,
+          scheduleRecord('90000000-0000-4000-a000-0000000000f2', client, service),
+        );
+        expect(unlinked).toMatchObject({ engagementId: null, engagementCode: null });
+      });
+    });
+
+    it('IT-28: the database rejects a cross-client link, a draft or ended engagement and an unknown engagement', async () => {
+      await runIsolatedTest(async (repo) => {
+        const founderCtx = { actorId: FOUNDER_ID };
+        const clients = await repo.listClientReferences(founderCtx);
+        const service = (await repo.listServiceReferences(founderCtx))[0]!;
+        const clientA = clients[0]!;
+        const clientB = clients[1]!;
+        const engagementForB = await createActiveEngagement(repo, clientB.id, service.id, 'it-28');
+
+        await expect(
+          repo.createRecurringSchedule(founderCtx, scheduleRecord('90000000-0000-4000-a000-000000000101', clientA, service, engagementForB.id)),
+        ).rejects.toBeDefined();
+
+        const draft = await repo.mutateEngagement(founderCtx, {
+          kind: 'createDraft',
+          idempotencyKey: 'it-28-draft',
+          clientId: clientA.id,
+          serviceId: service.id,
+          title: 'Draft only',
+          scope: 'Scope',
+          responsiblePartnerId: FOUNDER_ID,
+          deliveryManagerId: MANAGER_ID,
+          feeModel: 'fixed',
+          agreedFeePaise: 1000000,
+          billingTerms: 'Terms',
+          startDate: '2026-11-01',
+        });
+        await expect(
+          repo.createRecurringSchedule(founderCtx, scheduleRecord('90000000-0000-4000-a000-000000000102', clientA, service, draft.id)),
+        ).rejects.toBeDefined();
+
+        const toEnd = await createActiveEngagement(repo, clientA.id, service.id, 'it-28-ended');
+        const ended = await endEngagement(repo, toEnd.id, toEnd.updatedAt, 'it-28-ended');
+        await expect(
+          repo.createRecurringSchedule(founderCtx, scheduleRecord('90000000-0000-4000-a000-000000000103', clientA, service, ended.id)),
+        ).rejects.toBeDefined();
+
+        await expect(
+          repo.createRecurringSchedule(
+            founderCtx,
+            scheduleRecord('90000000-0000-4000-a000-000000000104', clientA, service, '00000000-0000-4000-e000-999999999999'),
+          ),
+        ).rejects.toBeDefined();
+      });
+    });
+
+    it('IT-29: a generated assignment inherits the schedule engagement id and code', async () => {
+      await runIsolatedTest(async (repo, tx) => {
+        const founderCtx = { actorId: FOUNDER_ID };
+        const client = (await repo.listClientReferences(founderCtx))[0]!;
+        const service = (await repo.listServiceReferences(founderCtx))[0]!;
+        const engagement = await createActiveEngagement(repo, client.id, service.id, 'it-29');
+        const scheduleId = '90000000-0000-4000-a000-000000000111';
+        await repo.createRecurringSchedule(founderCtx, scheduleRecord(scheduleId, client, service, engagement.id));
+
+        await asServerRole(tx);
+        const result = await repo.materializeDueAssignments(founderCtx, '2026-11-05');
+        const generated = result.occurrences.filter((o) => o.scheduleId === scheduleId);
+        expect(generated.length).toBe(1);
+        const rows = await tx`SELECT engagement_id, engagement_code FROM public.assignments WHERE id = ${generated[0]!.assignmentId}::uuid`;
+        expect(rows[0]).toMatchObject({ engagement_id: engagement.id, engagement_code: engagement.code });
+      });
+    });
+
+    it('IT-30: ending the engagement deactivates its schedules and the materializer skips them', async () => {
+      await runIsolatedTest(async (repo, tx) => {
+        const founderCtx = { actorId: FOUNDER_ID };
+        const client = (await repo.listClientReferences(founderCtx))[0]!;
+        const service = (await repo.listServiceReferences(founderCtx))[0]!;
+        const engagement = await createActiveEngagement(repo, client.id, service.id, 'it-30');
+        const linkedId = '90000000-0000-4000-a000-000000000121';
+        const unlinkedId = '90000000-0000-4000-a000-000000000122';
+        await repo.createRecurringSchedule(founderCtx, scheduleRecord(linkedId, client, service, engagement.id));
+        await repo.createRecurringSchedule(founderCtx, scheduleRecord(unlinkedId, client, service));
+
+        await endEngagement(repo, engagement.id, engagement.updatedAt, 'it-30');
+
+        const rows = await tx`SELECT id, is_active FROM public.recurring_schedules WHERE id IN (${linkedId}::uuid, ${unlinkedId}::uuid)`;
+        const activeById = new Map(rows.map((row) => [String(row['id']), row['is_active']]));
+        expect(activeById.get(linkedId)).toBe(false);
+        expect(activeById.get(unlinkedId)).toBe(true);
+
+        await asServerRole(tx);
+        const result = await repo.materializeDueAssignments(founderCtx, '2026-11-05');
+        expect(result.occurrences.some((o) => o.scheduleId === linkedId)).toBe(false);
+        expect(result.occurrences.some((o) => o.scheduleId === unlinkedId)).toBe(true);
+      });
+    });
+
+    it('IT-31: a schedule linked to an ended engagement cannot be reactivated', async () => {
+      await runIsolatedTest(async (repo, tx) => {
+        const founderCtx = { actorId: FOUNDER_ID };
+        const client = (await repo.listClientReferences(founderCtx))[0]!;
+        const service = (await repo.listServiceReferences(founderCtx))[0]!;
+        const engagement = await createActiveEngagement(repo, client.id, service.id, 'it-31');
+        const linkedId = '90000000-0000-4000-a000-000000000131';
+        await repo.createRecurringSchedule(founderCtx, scheduleRecord(linkedId, client, service, engagement.id));
+        await endEngagement(repo, engagement.id, engagement.updatedAt, 'it-31');
+
+        await expect(
+          asFounder(tx, (sp) => sp`UPDATE public.recurring_schedules SET is_active = true WHERE id = ${linkedId}::uuid`),
+        ).rejects.toThrow(/cannot be reactivated/i);
+        await expect(repo.updateRecurringSchedule(founderCtx, linkedId, { active: true })).rejects.toBeDefined();
+
+        const rows = await tx`SELECT is_active FROM public.recurring_schedules WHERE id = ${linkedId}::uuid`;
+        expect(rows[0]).toMatchObject({ is_active: false });
+      });
+    });
+
+    it('IT-32: engagement_id, engagement_code and client_id cannot change after insert', async () => {
+      await runIsolatedTest(async (repo, tx) => {
+        const founderCtx = { actorId: FOUNDER_ID };
+        const clients = await repo.listClientReferences(founderCtx);
+        const service = (await repo.listServiceReferences(founderCtx))[0]!;
+        const client = clients[0]!;
+        const otherClient = clients[1]!;
+        const engagement = await createActiveEngagement(repo, client.id, service.id, 'it-32');
+        const otherEngagement = await createActiveEngagement(repo, client.id, service.id, 'it-32-other');
+
+        const linkedId = '90000000-0000-4000-a000-000000000141';
+        const unlinkedId = '90000000-0000-4000-a000-000000000142';
+        await repo.createRecurringSchedule(founderCtx, scheduleRecord(linkedId, client, service, engagement.id));
+        await repo.createRecurringSchedule(founderCtx, scheduleRecord(unlinkedId, client, service));
+
+        await expect(
+          asFounder(tx, (sp) => sp`UPDATE public.recurring_schedules SET engagement_id = ${otherEngagement.id}::uuid WHERE id = ${linkedId}::uuid`),
+        ).rejects.toThrow(/immutable/i);
+        await expect(
+          asFounder(tx, (sp) => sp`UPDATE public.recurring_schedules SET engagement_id = NULL, engagement_code = NULL WHERE id = ${linkedId}::uuid`),
+        ).rejects.toThrow(/immutable/i);
+        await expect(
+          asFounder(tx, (sp) => sp`UPDATE public.recurring_schedules SET engagement_id = ${engagement.id}::uuid, engagement_code = ${engagement.code} WHERE id = ${unlinkedId}::uuid`),
+        ).rejects.toThrow(/immutable/i);
+        await expect(
+          asFounder(tx, (sp) => sp`UPDATE public.recurring_schedules SET engagement_code = 'ENG-999999' WHERE id = ${linkedId}::uuid`),
+        ).rejects.toThrow(/immutable/i);
+        await expect(
+          asFounder(tx, (sp) => sp`UPDATE public.recurring_schedules SET client_id = ${otherClient.id}::uuid WHERE id = ${linkedId}::uuid`),
+        ).rejects.toBeDefined();
+
+        const rawRows = await tx`SELECT engagement_id, engagement_code, client_id FROM public.recurring_schedules WHERE id = ${linkedId}::uuid`;
+        expect(rawRows[0]).toMatchObject({ engagement_id: engagement.id, engagement_code: engagement.code, client_id: client.id });
+      });
+    });
+  });
 });

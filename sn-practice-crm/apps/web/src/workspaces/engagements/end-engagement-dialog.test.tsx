@@ -33,7 +33,7 @@ describe("EndEngagementDialog", () => {
   it("shows code, client, service and current terms without UUIDs", () => {
     render(<EndEngagementDialog {...props()} />);
     const body = document.body.textContent ?? "";
-    for (const value of ["ENG-01-A3e", "Acme Client", "Tax advisory", "v2 · Annual compliance", "01/04/2026", "Ending is permanent."]) expect(body).toContain(value);
+    for (const value of ["ENG-01-A3e", "Acme Client", "Tax advisory", "v2 · Annual compliance", "01/04/2026", "Ending is permanent.", "Any recurring schedules linked to this engagement stop creating new assignments."]) expect(body).toContain(value);
     for (const id of [engagement.id, version.id, engagement.clientId, engagement.serviceId]) expect(body).not.toContain(id);
     expect(screen.getByRole("dialog", { name: "End engagement" })).toBeTruthy();
   });

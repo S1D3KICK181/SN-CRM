@@ -392,6 +392,7 @@ describe('CreateAssignmentDialog', () => {
 
     function renderDialog(extra: Partial<React.ComponentProps<typeof CreateAssignmentDialog>> = {}) {
       const onCreateAssignment = vi.fn().mockResolvedValue(true);
+      const onCreateSchedule = vi.fn().mockResolvedValue(true);
       const utils = render(
         <CreateAssignmentDialog
           isOpen={true}
@@ -402,11 +403,19 @@ describe('CreateAssignmentDialog', () => {
           engagements={engagements}
           onClose={vi.fn()}
           onCreateAssignment={onCreateAssignment}
-          onCreateSchedule={vi.fn()}
+          onCreateSchedule={onCreateSchedule}
           {...extra}
         />,
       );
-      return { ...utils, onCreateAssignment };
+      return { ...utils, onCreateAssignment, onCreateSchedule };
+    }
+
+    function fillAndSubmitSchedule(container: HTMLElement) {
+      fireEvent.click(screen.getByRole('button', { name: /Recurring Schedule/i }));
+      fireEvent.change(screen.getByLabelText(/Title/i), { target: { value: 'TDS Monthly Filing' } });
+      fireEvent.change(screen.getByLabelText(/Due offset/i), { target: { value: '20' } });
+      fireEvent.change(screen.getByLabelText(/First Occurrence/i), { target: { value: '2026-12-01' } });
+      fireEvent.submit(container.querySelector('form')!);
     }
 
     function fillAndSubmit(container: HTMLElement) {
@@ -415,11 +424,52 @@ describe('CreateAssignmentDialog', () => {
       fireEvent.submit(container.querySelector('form')!);
     }
 
-    it('shows the field on the One-Off tab and hides it on the Recurring Schedule tab', () => {
+    it('shows the field on both the One-Off and Recurring Schedule tabs', () => {
       renderDialog();
       expect(screen.getByLabelText('Engagement')).toBeDefined();
       fireEvent.click(screen.getByRole('button', { name: /Recurring Schedule/i }));
-      expect(screen.queryByLabelText('Engagement')).toBeNull();
+      expect(screen.getByLabelText('Engagement')).toBeDefined();
+    });
+
+    it('shows a tab-specific optional hint', () => {
+      renderDialog();
+      expect(
+        screen.getByText('Optional. Links this work to the agreed scope and fee. Cannot be changed later.'),
+      ).toBeDefined();
+      fireEvent.click(screen.getByRole('button', { name: /Recurring Schedule/i }));
+      expect(
+        screen.getByText('Optional. Every assignment this schedule creates is linked to it. Cannot be changed later.'),
+      ).toBeDefined();
+      expect(screen.queryByText(/Links this work to the agreed scope and fee/)).toBeNull();
+    });
+
+    it('submits the selected engagementId with a recurring schedule', async () => {
+      const { container, onCreateSchedule } = renderDialog();
+      fireEvent.click(screen.getByRole('button', { name: /Recurring Schedule/i }));
+      fireEvent.change(screen.getByLabelText('Engagement'), {
+        target: { value: '50000000-0000-4000-a000-000000000001' },
+      });
+      fillAndSubmitSchedule(container);
+      await waitFor(() => expect(onCreateSchedule).toHaveBeenCalledTimes(1));
+      expect(onCreateSchedule.mock.calls[0]![0].engagementId).toBe('50000000-0000-4000-a000-000000000001');
+    });
+
+    it('omits engagementId from the schedule command when no engagement is selected', async () => {
+      const { container, onCreateSchedule } = renderDialog();
+      fillAndSubmitSchedule(container);
+      await waitFor(() => expect(onCreateSchedule).toHaveBeenCalledTimes(1));
+      expect('engagementId' in onCreateSchedule.mock.calls[0]![0]).toBe(false);
+    });
+
+    it('resets the selection when the client changes on the schedule tab', () => {
+      renderDialog();
+      fireEvent.click(screen.getByRole('button', { name: /Recurring Schedule/i }));
+      const select = screen.getByLabelText('Engagement') as HTMLSelectElement;
+      fireEvent.change(select, { target: { value: '50000000-0000-4000-a000-000000000001' } });
+      fireEvent.change(screen.getByLabelText(/Client Entity/i), {
+        target: { value: '10000000-0000-4000-a000-000000000002' },
+      });
+      expect(select.value).toBe('');
     });
 
     it('lists only the selected client engagements as code and title, without UUIDs', () => {

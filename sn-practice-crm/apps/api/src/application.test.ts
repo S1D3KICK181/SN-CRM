@@ -1836,5 +1836,137 @@ describe("CrmApplication authority and workflow rules", () => {
         expect(assignments.find((a) => a.id === id)).toMatchObject({ engagementId: null, engagementCode: null });
       }
     });
+
+    describe("ENG-02c schedule engagement link", () => {
+      const scheduleInput = (engagementId?: string | null): CreateRecurringScheduleInput => ({
+        clientId: CANONICAL_CLIENT_1,
+        title: "Linked schedule",
+        serviceId: CANONICAL_SERVICE_1,
+        cadence: "monthly",
+        ownerId: DEMO_ACTOR_IDS.senior,
+        nextOccurrenceOn: "2026-10-31",
+        dueDay: 11,
+        ...(engagementId === undefined ? {} : { engagementId }),
+      });
+
+      it("creates a linked schedule that returns the engagement id and code", async () => {
+        const { application } = createFixture();
+        const founder = await application.requireActor(DEMO_ACTOR_IDS.founder);
+        const engagement = await prepareEngagement(application, "active");
+        const created = await application.createRecurringSchedule(founder, scheduleInput(engagement.id));
+        expect(created).toMatchObject({ engagementId: engagement.id, engagementCode: engagement.code });
+        expect(await application.listRecurringSchedules(founder)).toContainEqual(
+          expect.objectContaining({ id: created.id, engagementId: engagement.id, engagementCode: engagement.code }),
+        );
+      });
+
+      it.each([[undefined], [null]])("gives null link fields when engagementId is %s", async (engagementId) => {
+        const { application } = createFixture();
+        const founder = await application.requireActor(DEMO_ACTOR_IDS.founder);
+        const created = await application.createRecurringSchedule(founder, scheduleInput(engagementId));
+        expect(created).toMatchObject({ engagementId: null, engagementCode: null });
+      });
+
+      it("rejects an engagement that belongs to another client with 422 engagement_client_mismatch", async () => {
+        const { application } = createFixture();
+        const founder = await application.requireActor(DEMO_ACTOR_IDS.founder);
+        const engagement = await prepareEngagement(application, "active", CANONICAL_CLIENT_2);
+        await expect(application.createRecurringSchedule(founder, scheduleInput(engagement.id))).rejects.toMatchObject({
+          status: 422,
+          code: "engagement_client_mismatch",
+        });
+      });
+
+      it.each([["draft"], ["ended"]] as const)("rejects a %s engagement with 422 engagement_not_active", async (state) => {
+        const { application } = createFixture();
+        const founder = await application.requireActor(DEMO_ACTOR_IDS.founder);
+        const engagement = await prepareEngagement(application, state);
+        await expect(application.createRecurringSchedule(founder, scheduleInput(engagement.id))).rejects.toMatchObject({
+          status: 422,
+          code: "engagement_not_active",
+        });
+      });
+
+      it("rejects an unknown engagement with 422 referenced_entity_not_found", async () => {
+        const { application } = createFixture();
+        const founder = await application.requireActor(DEMO_ACTOR_IDS.founder);
+        await expect(
+          application.createRecurringSchedule(founder, scheduleInput("00000000-0000-4000-e000-999999999999")),
+        ).rejects.toMatchObject({ status: 422, code: "referenced_entity_not_found" });
+      });
+
+      it("gives every generated Assignment the schedule engagement id and code", async () => {
+        const { application } = createFixture();
+        const founder = await application.requireActor(DEMO_ACTOR_IDS.founder);
+        const engagement = await prepareEngagement(application, "active");
+        const schedule = await application.createRecurringSchedule(founder, scheduleInput(engagement.id));
+        const result = await application.generateDueAssignments(founder, { throughDate: "2026-11-05" });
+        const generatedIds = result.occurrences.filter((o) => o.scheduleId === schedule.id).map((o) => o.assignmentId);
+        expect(generatedIds.length).toBeGreaterThan(0);
+        const assignments = await application.listAssignments(founder);
+        for (const id of generatedIds) {
+          expect(assignments.find((a) => a.id === id)).toMatchObject({
+            engagementId: engagement.id,
+            engagementCode: engagement.code,
+          });
+        }
+      });
+
+      it("deactivates linked schedules when the engagement ends and leaves unlinked schedules alone", async () => {
+        const { application } = createFixture();
+        const founder = await application.requireActor(DEMO_ACTOR_IDS.founder);
+        const engagement = await prepareEngagement(application, "active");
+        const linked = await application.createRecurringSchedule(founder, scheduleInput(engagement.id));
+        const unlinked = await application.createRecurringSchedule(founder, scheduleInput());
+        await application.endEngagement(
+          founder,
+          engagement.id,
+          { outcome: "completed", reason: "Work completed", expectedUpdatedAt: engagement.updatedAt },
+          "end-linked-schedules",
+        );
+        const schedules = await application.listRecurringSchedules(founder);
+        expect(schedules.find((s) => s.id === linked.id)).toMatchObject({ active: false });
+        expect(schedules.find((s) => s.id === unlinked.id)).toMatchObject({ active: true });
+
+        const result = await application.generateDueAssignments(founder, { throughDate: "2026-11-05" });
+        expect(result.occurrences.some((o) => o.scheduleId === linked.id)).toBe(false);
+        expect(result.occurrences.some((o) => o.scheduleId === unlinked.id)).toBe(true);
+      });
+
+      it("rejects reactivating a schedule whose engagement has ended with 422 engagement_not_active", async () => {
+        const { application } = createFixture();
+        const founder = await application.requireActor(DEMO_ACTOR_IDS.founder);
+        const engagement = await prepareEngagement(application, "active");
+        const linked = await application.createRecurringSchedule(founder, scheduleInput(engagement.id));
+        await application.endEngagement(
+          founder,
+          engagement.id,
+          { outcome: "completed", reason: "Work completed", expectedUpdatedAt: engagement.updatedAt },
+          "end-reactivate",
+        );
+        await expect(application.updateRecurringSchedule(founder, linked.id, { active: true })).rejects.toMatchObject({
+          status: 422,
+          code: "engagement_not_active",
+          message: "This schedule's engagement has ended, so the schedule cannot be restarted.",
+        });
+      });
+
+      it("returns 404 when reactivating an unknown schedule", async () => {
+        const { application } = createFixture();
+        const founder = await application.requireActor(DEMO_ACTOR_IDS.founder);
+        await expect(
+          application.updateRecurringSchedule(founder, "00000000-0000-4000-e000-999999999999", { active: true }),
+        ).rejects.toMatchObject({ status: 404 });
+      });
+
+      it("still lets an unlinked schedule be paused and restarted", async () => {
+        const { application } = createFixture();
+        const founder = await application.requireActor(DEMO_ACTOR_IDS.founder);
+        const created = await application.createRecurringSchedule(founder, scheduleInput());
+        await application.updateRecurringSchedule(founder, created.id, { active: false });
+        const restarted = await application.updateRecurringSchedule(founder, created.id, { active: true });
+        expect(restarted.active).toBe(true);
+      });
+    });
   });
 });

@@ -294,20 +294,13 @@ function AuthenticatedApp({
     }
   }
 
+  // Errors propagate to the schedule drawer, which reports them and stays open.
   async function handleUpdateSchedule(updated: RecurringScheduleRecord) {
-    try {
-      const nextDate = normalizeDisplayDateToIso(updated.nextRunDate);
-      const res = await updateScheduleLive(updated.id, {
-        active: updated.status !== 'Paused',
-        nextOccurrenceOn: nextDate || undefined,
-      });
-      if (res) {
-        setToast(`Updated ${updated.title} (${updated.clientName})`);
-      }
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : 'Failed to update recurring schedule';
-      setToast(message);
-    }
+    const nextDate = normalizeDisplayDateToIso(updated.nextRunDate);
+    await updateScheduleLive(updated.id, {
+      active: updated.status !== 'Paused',
+      nextOccurrenceOn: nextDate || undefined,
+    });
   }
 
   async function handleCreateAssignment(newAssignment: AssignmentRow): Promise<boolean> {

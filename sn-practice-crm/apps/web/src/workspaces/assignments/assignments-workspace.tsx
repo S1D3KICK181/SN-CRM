@@ -28,6 +28,7 @@ import {
 import { AssignmentsTable } from './assignments-table';
 import { CadenceTracker } from './cadence-tracker';
 import { isValidUuid } from '../../api/metadata-safety';
+import { AssignmentOperationError } from '../../api/types';
 
 type DialogMode = 'assignment' | 'personal' | 'delegated' | 'client' | 'schedule' | 'invoice' | 'receipt' | null;
 
@@ -645,8 +646,16 @@ function ScheduleDetailDrawer({
       await onUpdateSchedule(updated);
       onToast(`Schedule settings saved (${isActive ? 'Active' : 'Paused'})`);
       onClose();
-    } catch {
-      onToast('Failed to update schedule settings.');
+    } catch (err: unknown) {
+      // The server refused the change, so show the schedule's real state again.
+      setIsActive(schedule.status === 'Active');
+      onToast(
+        err instanceof AssignmentOperationError && err.serverCode === 'engagement_not_active'
+          ? "This schedule's engagement has ended, so the schedule cannot be restarted."
+          : err instanceof Error
+            ? err.message
+            : 'Failed to update schedule settings.',
+      );
     } finally {
       setIsSubmitting(false);
     }
@@ -756,6 +765,10 @@ function ScheduleDetailDrawer({
                 <div className="drawer-item">
                   <span className="drawer-label">Service</span>
                   <span className="drawer-val">{schedule.service || schedule.category}</span>
+                </div>
+                <div className="drawer-item">
+                  <span className="drawer-label">Engagement</span>
+                  <span className="drawer-val">{schedule.engagementCode ?? 'Not linked'}</span>
                 </div>
                 <div className="drawer-item">
                   <span className="drawer-label">Cadence</span>

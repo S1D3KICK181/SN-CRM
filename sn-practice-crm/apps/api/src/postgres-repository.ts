@@ -1078,6 +1078,7 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
         coalesce(p.full_name, 'Unassigned') AS "ownerName",
         rs.next_occurrence_date AS "nextOccurrenceOn",
         rs.due_offset_days AS "dueDay",
+        rs.engagement_id AS "engagementId", rs.engagement_code AS "engagementCode",
         rs.is_active AS "active",
         rs.created_by AS "createdById",
         rs.created_at AS "createdAt",
@@ -1116,6 +1117,8 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
         ? (row['nextOccurrenceOn'] as Date).toISOString().slice(0, 10)
         : '',
       dueDay: Number(row['dueDay']),
+      engagementId: row['engagementId'] ? String(row['engagementId']) : null,
+      engagementCode: row['engagementCode'] ? String(row['engagementCode']) : null,
       active: Boolean(row['active']),
       createdById: String(row['createdById']),
       createdAt: (row['createdAt'] as Date).toISOString(),
@@ -1150,6 +1153,7 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
             coalesce(p.full_name, 'Unassigned') AS "ownerName",
             rs.next_occurrence_date AS "nextOccurrenceOn",
             rs.due_offset_days AS "dueDay",
+            rs.engagement_id AS "engagementId", rs.engagement_code AS "engagementCode",
             rs.is_active AS "active",
             rs.created_by AS "createdById",
             rs.created_at AS "createdAt",
@@ -1205,6 +1209,8 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
             ? (row['nextOccurrenceOn'] as Date).toISOString().slice(0, 10)
             : '',
           dueDay: Number(row['dueDay']),
+          engagementId: row['engagementId'] ? String(row['engagementId']) : null,
+          engagementCode: row['engagementCode'] ? String(row['engagementCode']) : null,
           active: Boolean(row['active']),
           createdById: String(row['createdById']),
           createdAt: (row['createdAt'] as Date).toISOString(),
@@ -1229,14 +1235,15 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
           INSERT INTO public.recurring_schedules (
             id, client_id, service_id, title, cadence, interval_months,
             due_offset_days, start_date, next_occurrence_date,
-            default_owner_id, priority, is_active, created_by
+            default_owner_id, priority, is_active, engagement_id, created_by
           ) VALUES (
             ${input.id}::uuid, ${input.clientId}::uuid,
             ${input.serviceId ? input.serviceId : null}::uuid,
             ${input.title}, ${input.cadence}::public.recurrence_cadence,
             ${intervalMonths}, ${input.dueDay}, ${input.nextOccurrenceOn}::date,
             ${input.nextOccurrenceOn}::date, ${input.ownerId}::uuid,
-            'normal'::public.work_priority, true, ${ctx.actorId}::uuid
+            'normal'::public.work_priority, true,
+            ${input.engagementId ? input.engagementId : null}::uuid, ${ctx.actorId}::uuid
           );
         `;
 

@@ -736,6 +736,22 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
       throw new ApiError(422, 'referenced_entity_not_found', 'Referenced service does not exist in catalog.');
     }
 
+    // Mirrors guard_recurring_schedule_engagement_link: same client, active engagement, code copied from it
+    let engagementCode: string | null = null;
+    if (input.engagementId) {
+      const engagement = this.engagements.get(input.engagementId);
+      if (!engagement) {
+        throw new ApiError(422, 'referenced_entity_not_found', 'Referenced engagement does not exist.');
+      }
+      if (engagement.clientId !== input.clientId) {
+        throw new ApiError(422, 'engagement_client_mismatch', 'The engagement belongs to a different client than the Recurring Schedule.');
+      }
+      if (engagement.status !== 'active') {
+        throw new ApiError(422, 'engagement_not_active', 'A Recurring Schedule can only be linked to an active engagement.');
+      }
+      engagementCode = engagement.code;
+    }
+
     const schedule: RecurringScheduleDto = {
       id: input.id,
       code,
@@ -751,6 +767,8 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
       reviewerNames,
       nextOccurrenceOn: input.nextOccurrenceOn,
       dueDay: input.dueDay,
+      engagementId: input.engagementId ?? null,
+      engagementCode,
       active: true,
       createdById: input.createdById,
       createdAt: now,
@@ -769,6 +787,16 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
     if (!existing) {
       throw new ApiError(404, 'schedule_not_found', 'Recurring schedule was not found.');
     }
+    // Mirrors the reactivation guard: a schedule linked to a non-active engagement cannot be restarted
+    if (input.active === true && !existing.active && existing.engagementId) {
+      if (this.engagements.get(existing.engagementId)?.status !== 'active') {
+        throw new ApiError(
+          422,
+          'engagement_not_active',
+          "This schedule's engagement has ended, so the schedule cannot be restarted.",
+        );
+      }
+    }
     const updated: RecurringScheduleDto = {
       ...existing,
       active: input.active !== undefined ? input.active : existing.active,
@@ -786,6 +814,8 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
     const generated: Array<{ scheduleId: string; assignmentId: string; occurrenceDate: string }> = [];
     for (const schedule of this.schedules.values()) {
       if (!schedule.active) continue;
+      // Defence in depth: schedules whose engagement is not active never generate work
+      if (schedule.engagementId && this.engagements.get(schedule.engagementId)?.status !== 'active') continue;
       let occurrence = schedule.nextOccurrenceOn;
       while (occurrence <= throughDate) {
         // Idempotency: skip if occurrence for (scheduleId, periodStart) already exists
@@ -817,8 +847,8 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
             reviewNotes: null,
             dueAt: recurrenceDates.dueAt,
             recurringScheduleId: schedule.id,
-            engagementId: null,
-            engagementCode: null,
+            engagementId: schedule.engagementId,
+            engagementCode: schedule.engagementCode,
             periodStart: occurrence,
             periodEnd: recurrenceDates.periodEnd,
             priority: 'normal',
@@ -1274,6 +1304,13 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
         };
 
         this.engagements.set(existing.id, copy(updatedEngagement));
+
+        // Mirrors stop_engagement_recurring_schedules: ending an engagement stops its schedules
+        for (const schedule of this.schedules.values()) {
+          if (schedule.engagementId === existing.id && schedule.active) {
+            this.schedules.set(schedule.id, { ...schedule, active: false, updatedAt: now });
+          }
+        }
         result = this.enrichEngagementDto(updatedEngagement);
         break;
       }

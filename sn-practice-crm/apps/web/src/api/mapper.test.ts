@@ -65,6 +65,8 @@ describe('Recurring schedule mapping & date arithmetic', () => {
       reviewerNames: ['S. Narayanan'],
       nextOccurrenceOn: '2026-12-01',
       dueDay: 20,
+      engagementId: null,
+      engagementCode: null,
       active: true,
       createdById: '00000000-0000-4000-a000-000000000001',
       createdAt: '2026-11-01T04:00:00.000Z',
@@ -93,6 +95,20 @@ describe('Recurring schedule mapping & date arithmetic', () => {
       expect(record.currentStatus).toBeUndefined();
       expect(record.checklistTemplate).toBeUndefined();
       expect(record.history).toBeUndefined();
+    });
+
+    it('carries engagementId and engagementCode through', () => {
+      const unlinked = mapDtoToRecurringScheduleRecord(sampleDto);
+      expect(unlinked.engagementId).toBeNull();
+      expect(unlinked.engagementCode).toBeNull();
+
+      const linked = mapDtoToRecurringScheduleRecord({
+        ...sampleDto,
+        engagementId: '50000000-0000-4000-a000-000000000001',
+        engagementCode: 'ENG-000404',
+      });
+      expect(linked.engagementId).toBe('50000000-0000-4000-a000-000000000001');
+      expect(linked.engagementCode).toBe('ENG-000404');
     });
 
     it('truthfully maps paused status when active is false', () => {
@@ -235,6 +251,27 @@ describe('Recurring schedule mapping & date arithmetic', () => {
       expect(input.cadence).toBe('quarterly');
       expect(input.dueDay).toBe(15);
       expect(input.nextOccurrenceOn).toBe('2026-12-01');
+    });
+
+    describe('engagement link', () => {
+      const engId = '50000000-0000-4000-a000-000000000001';
+
+      it('passes a valid engagementId through, trimmed', () => {
+        expect(mapScheduleCommandToCreateInput({ ...validScheduleCommand, engagementId: `  ${engId} ` }).engagementId).toBe(engId);
+      });
+
+      it('leaves out empty, null or undefined engagementId', () => {
+        for (const v of ['', '   ', null, undefined]) {
+          const input = mapScheduleCommandToCreateInput({ ...validScheduleCommand, engagementId: v });
+          expect('engagementId' in input).toBe(false);
+        }
+      });
+
+      it('throws a validation error for an invalid engagementId', () => {
+        expect(() => mapScheduleCommandToCreateInput({ ...validScheduleCommand, engagementId: 'not-a-uuid' })).toThrow(
+          expect.objectContaining({ code: 'validation' }),
+        );
+      });
     });
 
     it('fails closed on invalid dueDay (must be integer 1..31)', () => {

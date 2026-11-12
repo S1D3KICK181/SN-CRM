@@ -231,6 +231,8 @@ export interface RecurringScheduleDto {
   readonly reviewerNames: readonly string[]; // Denormalized display names
   readonly nextOccurrenceOn: string; // YYYY-MM-DD
   readonly dueDay: number;
+  readonly engagementId: string | null; // RFC 4122 UUID references public.engagements(id); set at creation only
+  readonly engagementCode: string | null; // Output-only: ENG-xxxxxx, filled by the database from the engagement
   readonly active: boolean;
   readonly createdById: string; // RFC 4122 UUID
   readonly createdAt: string; // ISO-8601 UTC
@@ -252,6 +254,7 @@ export interface CreateRecurringScheduleInput {
   readonly reviewerIds?: readonly string[];
   readonly nextOccurrenceOn: string;
   readonly dueDay: number;
+  readonly engagementId?: string | null; // RFC 4122 UUID of an active engagement for the same client
 }
 
 export interface UpdateRecurringScheduleInput {

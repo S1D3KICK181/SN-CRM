@@ -520,6 +520,8 @@ export interface RecurringScheduleRecord {
   defaultOwner: string;
   nextRunDate: string;
   nextDueDate: string;
+  engagementId?: string | null;
+  engagementCode?: string | null;
   status: 'Active' | 'Needs attention' | 'Paused';
   exceptionReason?: string;
   bankRecStatus?: 'Completed' | 'In progress' | 'Awaited' | 'Not applicable';

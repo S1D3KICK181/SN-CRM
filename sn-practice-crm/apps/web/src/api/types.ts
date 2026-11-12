@@ -120,6 +120,7 @@ export interface CreateRecurringScheduleCommand {
   readonly reviewerIds?: readonly string[];
   readonly nextOccurrenceOn: string;
   readonly dueDay: number;
+  readonly engagementId?: string | null;
 }
 
 export interface UpdateRecurringSchedulePatch {

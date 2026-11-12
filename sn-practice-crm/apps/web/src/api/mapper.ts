@@ -283,14 +283,7 @@ export function mapCommandToCreateInput(command: CreateAssignmentCommand): Creat
     });
   }
 
-  const rawEngagementId = command.engagementId?.trim();
-  if (rawEngagementId && !isValidUuid(rawEngagementId)) {
-    throw new AssignmentOperationError({
-      code: 'validation',
-      message: 'Invalid engagement reference.',
-    });
-  }
-  const engagementFields = rawEngagementId ? { engagementId: rawEngagementId } : {};
+  const engagementFields = mapEngagementReference(command.engagementId);
 
   const rawDue = command.dueDate ?? command.due;
   const dueAt = parseDisplayDateToIso(rawDue);
@@ -428,6 +421,19 @@ export function computeRecurringNextDueDate(
   return `${dd}/${mm}/${yyyy}`;
 }
 
+// Optional engagement link shared by the assignment and schedule create commands: trimmed, a valid UUID is
+// passed through, blank is omitted, anything else is a validation error.
+function mapEngagementReference(engagementId: string | null | undefined): { engagementId?: string } {
+  const raw = engagementId?.trim();
+  if (raw && !isValidUuid(raw)) {
+    throw new AssignmentOperationError({
+      code: 'validation',
+      message: 'Invalid engagement reference.',
+    });
+  }
+  return raw ? { engagementId: raw } : {};
+}
+
 export function mapDtoToRecurringScheduleRecord(dto: RecurringScheduleDto): RecurringScheduleRecord {
   const cadenceDisplay =
     dto.cadence === 'monthly'
@@ -451,6 +457,8 @@ export function mapDtoToRecurringScheduleRecord(dto: RecurringScheduleDto): Recu
     defaultOwner,
     nextRunDate: dto.nextOccurrenceOn ? formatIsoToDisplayDate(dto.nextOccurrenceOn) : '—',
     nextDueDate: computeRecurringNextDueDate(dto.nextOccurrenceOn, dto.dueDay),
+    engagementId: dto.engagementId ?? null,
+    engagementCode: dto.engagementCode ?? null,
     status: (dto.active ? 'Active' : 'Paused') as RecurringScheduleRecord['status'],
   };
 }
@@ -638,5 +646,6 @@ export function mapScheduleCommandToCreateInput(
     reviewerIds: command.reviewerIds,
     nextOccurrenceOn,
     dueDay,
+    ...mapEngagementReference(command.engagementId),
   };
 }

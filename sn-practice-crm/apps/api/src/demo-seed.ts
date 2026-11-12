@@ -302,6 +302,8 @@ export function createDemoSeed(): DemoSeed {
         reviewerNames: ['Ananya Rao'],
         nextOccurrenceOn: '2026-11-20',
         dueDay: 20,
+        engagementId: null,
+        engagementCode: null,
         active: true,
         createdById: DEMO_ACTOR_IDS.founder,
         createdAt: '2026-04-01T04:30:00.000Z',

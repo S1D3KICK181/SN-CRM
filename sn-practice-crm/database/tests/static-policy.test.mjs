@@ -681,3 +681,51 @@ test('migration 0007 links assignments to engagements with a guarded, immutable,
   assert.doesNotMatch(sql0007, /recurring_schedules/i, 'no recurring schedule change');
   assert.doesNotMatch(sql0007, /materialize_due_recurring_assignments/i, 'materializer untouched');
 });
+
+test('migration 0008 links recurring schedules to engagements and stops them when the engagement ends', () => {
+  const migration0008Path = new URL('../../supabase/migrations/20261113100000_eng02c_schedule_engagement_link.sql', import.meta.url);
+  const sql0008 = readMigration(migration0008Path, 'Migration 0008');
+
+  // 1. Optional FK with restrict, index, and paired-nullness constraint
+  expectSql(sql0008, /add column engagement_id uuid references public\.engagements\(id\) on delete restrict/i, 'nullable restrict FK');
+  assert.doesNotMatch(sql0008, /engagement_id uuid[^,]*not null/i, 'engagement_id stays nullable');
+  expectSql(sql0008, /add column engagement_code text(?!\s+not null)/i, 'engagement_code nullable text');
+  expectSql(sql0008, /create index recurring_schedules_engagement_idx on public\.recurring_schedules \(engagement_id\);/i, 'engagement index');
+  expectSql(sql0008, /constraint recurring_schedule_engagement_code_pair check \(\s*\(engagement_id is null\) = \(engagement_code is null\)\s*\)/i, 'code null exactly when id null');
+
+  // 2. Guard function: security definer, pinned search_path, same-client + active + immutable + no reactivation
+  const guard = functionBlock(sql0008, 'guard_recurring_schedule_engagement_link');
+  assert.match(guard, /security definer/i);
+  assert.match(guard, /set search_path = public, pg_temp/i);
+  assert.match(guard, /The Engagement must belong to the same client as the Recurring Schedule/i);
+  assert.match(guard, /A Recurring Schedule can only be linked to an active Engagement/i);
+  assert.match(guard, /new\.engagement_code := v_engagement\.code;/i);
+  assert.match(guard, /The Recurring Schedule engagement link is immutable after creation/i);
+  assert.match(guard, /A linked Recurring Schedule cannot change client/i);
+  assert.match(guard, /new\.is_active and not old\.is_active and new\.engagement_id is not null/i);
+  assert.match(guard, /A Recurring Schedule linked to an ended Engagement cannot be reactivated/i);
+
+  expectSql(
+    sql0008,
+    /create trigger guard_recurring_schedule_engagement_link\s+before insert or update of engagement_id, engagement_code, client_id, is_active on public\.recurring_schedules\s+for each row execute function public\.guard_recurring_schedule_engagement_link\(\);/i,
+    'guard trigger',
+  );
+
+  // 3. Ending an engagement deactivates its schedules
+  const stop = functionBlock(sql0008, 'stop_engagement_recurring_schedules');
+  assert.match(stop, /security definer/i);
+  assert.match(stop, /set search_path = public, pg_temp/i);
+  assert.match(stop, /set is_active = false/i);
+  assert.match(stop, /where engagement_id = new\.id\s+and is_active;/i);
+  expectSql(
+    sql0008,
+    /create trigger stop_engagement_recurring_schedules\s+after update of status on public\.engagements\s+for each row\s+when \(old\.status is distinct from new\.status and new\.status = 'ended'\)\s+execute function public\.stop_engagement_recurring_schedules\(\);/i,
+    'stop trigger',
+  );
+
+  // 4. Materializer inherits the link and skips schedules whose engagement is not active
+  const materializer = functionBlock(sql0008, 'materialize_due_recurring_assignments');
+  assert.match(materializer, /rs\.engagement_id is null\s+or exists \(\s*select 1 from public\.engagements e\s+where e\.id = rs\.engagement_id and e\.status = 'active'/i);
+  assert.match(materializer, /recurring_schedule_id,\s+engagement_id,\s+title,/i);
+  assert.match(materializer, /v_schedule\.id,\s+v_schedule\.engagement_id,\s+v_schedule\.title,/i);
+});

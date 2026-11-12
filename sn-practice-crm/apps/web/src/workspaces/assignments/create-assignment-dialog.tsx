@@ -183,12 +183,14 @@ export function CreateAssignmentDialog({
 
   const clientEngagements = engagements.filter((e) => e.clientId === clientId);
   const engagementHint = engagementsUnavailable
-    ? 'Engagements could not be loaded. You can still create the assignment without one.'
+    ? `Engagements could not be loaded. You can still create the ${tab === 'assignment' ? 'assignment' : 'schedule'} without one.`
     : engagementsLoading
       ? 'Loading engagements…'
       : clientEngagements.length === 0
       ? 'This client has no active engagement.'
-      : 'Optional. Links this work to the agreed scope and fee. Cannot be changed later.';
+      : tab === 'assignment'
+        ? 'Optional. Links this work to the agreed scope and fee. Cannot be changed later.'
+        : 'Optional. Every assignment this schedule creates is linked to it. Cannot be changed later.';
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -287,6 +289,7 @@ export function CreateAssignmentDialog({
           ownerId,
           dueDay: dueOffsetNum,
           nextOccurrenceOn: nextOccurrenceOn.trim(),
+          ...(engagementId ? { engagementId } : {}),
         });
 
         if (success) {
@@ -436,29 +439,27 @@ export function CreateAssignmentDialog({
               </select>
             </div>
 
-            {/* Engagement link (one-off only) */}
-            {tab === 'assignment' ? (
-              <div className="field is-full">
-                <label htmlFor="assign-engagement">
-                  <span>Engagement</span>
-                </label>
-                <select
-                  id="assign-engagement"
-                  value={engagementId}
-                  onChange={(e) => setEngagementId(e.target.value)}
-                  aria-describedby="assign-engagement-hint"
-                  disabled={submitting || engagementsLoading || clientEngagements.length === 0}
-                >
-                  <option value="">No engagement</option>
-                  {clientEngagements.map((e) => (
-                    <option key={e.id} value={e.id}>
-                      {e.code} · {e.title}
-                    </option>
-                  ))}
-                </select>
-                <small id="assign-engagement-hint" className="assignment-engagement-hint">{engagementHint}</small>
-              </div>
-            ) : null}
+            {/* Engagement link (one-off and recurring schedule) */}
+            <div className="field is-full">
+              <label htmlFor="assign-engagement">
+                <span>Engagement</span>
+              </label>
+              <select
+                id="assign-engagement"
+                value={engagementId}
+                onChange={(e) => setEngagementId(e.target.value)}
+                aria-describedby="assign-engagement-hint"
+                disabled={submitting || engagementsLoading || clientEngagements.length === 0}
+              >
+                <option value="">No engagement</option>
+                {clientEngagements.map((e) => (
+                  <option key={e.id} value={e.id}>
+                    {e.code} · {e.title}
+                  </option>
+                ))}
+              </select>
+              <small id="assign-engagement-hint">{engagementHint}</small>
+            </div>
 
             {/* Title */}
             <div className="field is-full">

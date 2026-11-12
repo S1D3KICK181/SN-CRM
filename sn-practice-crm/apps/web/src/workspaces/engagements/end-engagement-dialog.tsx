@@ -164,7 +164,9 @@ export function EndEngagementDialog({
             </div>
             <div>
               <h2 id="end-engagement-title">End engagement</h2>
-              <p>Ending is permanent. Approved terms and history stay on record.</p>
+              <p>
+                Ending is permanent. Approved terms and history stay on record. Any recurring schedules linked to this engagement stop creating new assignments.
+              </p>
             </div>
           </div>
           <button

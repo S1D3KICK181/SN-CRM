@@ -265,6 +265,54 @@ describe('HTTP API', () => {
       });
     });
 
+    describe('ENG-02c schedule engagement link', () => {
+      const scheduleBody = (extra: Record<string, unknown> = {}) => ({
+        clientId: CANONICAL_CLIENT_1,
+        serviceId: CANONICAL_SERVICE_1,
+        title: 'Linked schedule',
+        cadence: 'monthly',
+        ownerId: DEMO_ACTOR_IDS.senior,
+        nextOccurrenceOn: '2026-10-31',
+        dueDay: 11,
+        ...extra,
+      });
+      const postSchedule = (baseUrl: string, body: Record<string, unknown>) =>
+        fetch(`${baseUrl}/api/v1/recurring-schedules`, {
+          method: 'POST', headers: headers(DEMO_ACTOR_IDS.founder), body: JSON.stringify(body),
+        });
+
+      it('accepts engagementId and returns engagementId and engagementCode', async () => {
+        const baseUrl = await startServer();
+        const { id, active } = await prepareActive(baseUrl);
+        const res = await postSchedule(baseUrl, scheduleBody({ engagementId: id }));
+        expect(res.status).toBe(201);
+        expect((await res.json()).data).toMatchObject({ engagementId: id, engagementCode: active.code });
+      });
+
+      it('returns null link fields when engagementId is omitted or null', async () => {
+        const baseUrl = await startServer();
+        for (const extra of [{}, { engagementId: null }]) {
+          const res = await postSchedule(baseUrl, scheduleBody(extra));
+          expect(res.status).toBe(201);
+          expect((await res.json()).data).toMatchObject({ engagementId: null, engagementCode: null });
+        }
+      });
+
+      it('rejects a non-UUID engagementId with 422 validation_failed', async () => {
+        const baseUrl = await startServer();
+        const res = await postSchedule(baseUrl, scheduleBody({ engagementId: 'not-a-uuid' }));
+        expect(res.status).toBe(422);
+        expect((await res.json()).error.code).toBe('validation_failed');
+      });
+
+      it('rejects an unknown engagement with 422 referenced_entity_not_found', async () => {
+        const baseUrl = await startServer();
+        const res = await postSchedule(baseUrl, scheduleBody({ engagementId: '00000000-0000-4000-e000-999999999999' }));
+        expect(res.status).toBe(422);
+        expect((await res.json()).error.code).toBe('referenced_entity_not_found');
+      });
+    });
+
     it('completes the authenticated eight-route lifecycle with route-bound identities', async () => {
       const baseUrl = await startServer();
       const list = await fetch(`${baseUrl}/api/v1/engagements`, { headers: { 'x-demo-user-id': DEMO_ACTOR_IDS.manager } });
