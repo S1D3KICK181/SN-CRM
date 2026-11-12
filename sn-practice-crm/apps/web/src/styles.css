@@ -4255,6 +4255,58 @@ tbody tr:hover {
   justify-content: flex-end;
 }
 
+.engagement-drawer-action-group {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
+.activation-dialog-layer {
+  z-index: 120;
+}
+
+.activation-dialog {
+  width: min(680px, calc(100vw - 32px));
+}
+
+.activation-summary {
+  padding: 20px 24px;
+}
+
+.activation-summary dl {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px 20px;
+  margin: 18px 0;
+}
+
+.activation-summary dt {
+  color: var(--ink-muted);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.activation-summary dd {
+  margin: 3px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.activation-note {
+  margin: 0;
+  padding: 12px;
+  border-left: 3px solid var(--signal);
+  background: color-mix(in srgb, var(--signal) 7%, var(--surface));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .activation-dialog-layer,
+  .activation-dialog-layer .dialog {
+    animation: none;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .revision-dialog-layer,
   .revision-dialog-layer .dialog {

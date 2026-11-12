@@ -23,6 +23,8 @@ export interface EngagementDetailDrawerProps {
   canRevise?: boolean;
   obscured?: boolean;
   onRevise?: (element: HTMLButtonElement) => void;
+  canActivate?: boolean;
+  onActivate?: (element: HTMLButtonElement) => void;
 }
 export function EngagementDetailDrawer({
   engagement,
@@ -35,11 +37,28 @@ export function EngagementDetailDrawer({
   canRevise = false,
   obscured = false,
   onRevise,
+  canActivate = false,
+  onActivate,
 }: EngagementDetailDrawerProps) {
   const drawerRef = useRef<HTMLElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
   const footerCloseRef = useRef<HTMLButtonElement>(null);
   const previousFocus = useRef<HTMLElement | null>(activator ?? null);
+  const current = currentTerms(versions, engagement?.approvedVersion);
+  const showRevise =
+    canRevise &&
+    !loading &&
+    !error &&
+    engagement?.status === "draft" &&
+    current &&
+    Boolean(onRevise);
+  const showActivate =
+    canActivate &&
+    !loading &&
+    !error &&
+    engagement?.status === "draft" &&
+    current &&
+    Boolean(onActivate);
   useEffect(() => {
     previousFocus.current = activator ?? previousFocus.current;
     closeRef.current?.focus();
@@ -62,7 +81,6 @@ export function EngagementDetailDrawer({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose, obscured]);
-  const current = currentTerms(versions, engagement?.approvedVersion);
   return (
     <>
       <div
@@ -149,16 +167,30 @@ export function EngagementDetailDrawer({
                   {missing(engagement.clientName)} · {missing(engagement.serviceName)}
                 </p>
               </section>
-              {canRevise && !loading && !error && engagement.status === "draft" && current && onRevise ? (
+              {showRevise || showActivate ? (
                 <section className="drawer-card engagement-drawer-action-card">
-                  <button
-                    className="primary-button"
-                    type="button"
-                    onClick={(event) => onRevise(event.currentTarget)}
-                    disabled={obscured}
-                  >
-                    Revise draft
-                  </button>
+                  <div className="engagement-drawer-action-group">
+                    {showRevise ? (
+                      <button
+                        className="soft-button"
+                        type="button"
+                        onClick={(event) => onRevise?.(event.currentTarget)}
+                        disabled={obscured}
+                      >
+                        Revise draft
+                      </button>
+                    ) : null}
+                    {showActivate ? (
+                      <button
+                        className="primary-button"
+                        type="button"
+                        onClick={(event) => onActivate?.(event.currentTarget)}
+                        disabled={obscured}
+                      >
+                        Approve &amp; activate
+                      </button>
+                    ) : null}
+                  </div>
                 </section>
               ) : null}
               <section className="drawer-card">

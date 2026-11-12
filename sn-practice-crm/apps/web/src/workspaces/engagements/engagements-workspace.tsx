@@ -16,6 +16,7 @@ import { Card } from "../../ui/workspace-primitives";
 import { EngagementDetailDrawer } from "./engagement-detail-drawer";
 import { CreateEngagementDraftDialog } from "./create-engagement-draft-dialog";
 import { ReviseEngagementDraftDialog } from "./revise-engagement-draft-dialog";
+import { ActivateEngagementDialog } from "./activate-engagement-dialog";
 import type { DraftOption } from "./engagement-draft-form-model";
 import { isValidUuid } from "./engagement-draft-form-model";
 import {
@@ -63,6 +64,11 @@ export function EngagementsWorkspace({ role, port, onToast, currentActor, client
     version: EngagementVersionDto;
   } | null>(null);
   const revisionOpener = useRef<HTMLElement | null>(null);
+  const activationOpener = useRef<HTMLElement | null>(null);
+  const [activationSnapshot, setActivationSnapshot] = useState<{
+    engagement: EngagementDto;
+    version: EngagementVersionDto;
+  } | null>(null);
   const draftOpener = useRef<HTMLElement | null>(null);
   const activatorRef = useRef<HTMLElement | null>(null);
   const previousRole = useRef(role);
@@ -77,6 +83,8 @@ export function EngagementsWorkspace({ role, port, onToast, currentActor, client
     setDraftOpen(false);
     setRevisionSnapshot(null);
     revisionOpener.current = null;
+    activationOpener.current = null;
+    setActivationSnapshot(null);
   }, [role, roleMismatch]);
   const model = useEngagements(role, { port, onToast, enabled: allowed });
   const canCreateDraft = hasEngagementCapability(role, "createDraft");
@@ -299,7 +307,20 @@ export function EngagementsWorkspace({ role, port, onToast, currentActor, client
             !model.detailLoading &&
             !model.detailError
           }
-          obscured={Boolean(revisionSnapshot)}
+          obscured={Boolean(revisionSnapshot || activationSnapshot)}
+          canActivate={
+            hasEngagementCapability(role, "activate") && !revisionSnapshot && !activationSnapshot
+          }
+          onActivate={(element) => {
+            const version = currentTerms(
+              model.selectedVersions,
+              model.selectedDetail?.approvedVersion,
+            );
+            if (model.selectedDetail && version) {
+              activationOpener.current = element;
+              setActivationSnapshot({ engagement: model.selectedDetail, version });
+            }
+          }}
           onRevise={(element) => {
             const version = currentTerms(
               model.selectedVersions,
@@ -337,6 +358,20 @@ export function EngagementsWorkspace({ role, port, onToast, currentActor, client
             revisionOpener.current = null;
           }}
           onRevise={(input) => model.reviseDraft(revisionSnapshot.engagement.id, input)}
+        />
+      ) : null}
+      {activationSnapshot ? (
+        <ActivateEngagementDialog
+          open
+          role={role}
+          engagement={activationSnapshot.engagement}
+          version={activationSnapshot.version}
+          opener={activationOpener.current}
+          onClose={() => {
+            setActivationSnapshot(null);
+            activationOpener.current = null;
+          }}
+          onActivate={(input) => model.activate(activationSnapshot.engagement.id, input)}
         />
       ) : null}
     </div>

@@ -305,6 +305,61 @@ describe("EngagementsWorkspace", () => {
     });
   });
 
+  it("activates the latest draft through the real adapter for a founder", async () => {
+    const draftId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    const latestVersionId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+    const draft = { ...engagement(draftId, "draft"), updatedAt: "2026-04-02T00:00:00Z" };
+    const firstVersion = { ...versionForWorkspace(draftId, founder.id, manager.id, "v1"), id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", versionNumber: 1 };
+    const latestVersion = { ...firstVersion, id: latestVersionId, versionNumber: 2, title: "Latest activation terms" };
+    const port = new TestEngagementsAdapter().seed([draft], new Map([[draftId, [firstVersion, latestVersion]]]));
+    const activate = vi.spyOn(port, "activate");
+    render(<EngagementsWorkspace role="founder" port={port} currentActor={founder} teamLines={lines} />);
+    await waitFor(() => expect(screen.getByText(`Client ${draftId}`)).toBeTruthy());
+    fireEvent.click(screen.getByText(`Client ${draftId}`));
+    fireEvent.click(await screen.findByRole("button", { name: "Approve & activate" }));
+    fireEvent.click(screen.getByRole("button", { name: "Approve & activate" }));
+    await waitFor(() => expect(activate).toHaveBeenCalledTimes(1));
+    expect(activate).toHaveBeenCalledWith(
+      "founder",
+      draftId,
+      {
+        engagementId: draftId,
+        versionId: latestVersionId,
+        expectedUpdatedAt: draft.updatedAt,
+      },
+      expect.any(String),
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+    expect(activate.mock.calls[0]?.[3]).toMatch(/^[0-9a-f-]{36}$/);
+    const activated = await port.list("founder");
+    expect(activated.find((item) => item.id === draftId)).toMatchObject({
+      status: "active",
+      approvedVersionId: latestVersionId,
+    });
+    expect(screen.getByRole("dialog", { name: draft.code })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Revise draft" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Approve & activate" })).toBeNull();
+    expect(screen.getByRole("region", { name: "Engagement metrics" }).textContent).toContain("Active1");
+    expect(screen.getByRole("region", { name: "Engagement metrics" }).textContent).toContain("Draft0");
+    const history = screen.getByText("Version history").parentElement;
+    expect(history?.textContent).toContain("v1");
+    expect(history?.textContent).toContain("Draft");
+  });
+
+  it("shows a manager the revise action without exposing activation", async () => {
+    const draftId = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+    const draft = engagement(draftId, "draft");
+    const draftVersion = versionForWorkspace(draftId, founder.id, manager.id, "manager draft");
+    const port = new TestEngagementsAdapter().seed([draft], new Map([[draftId, [draftVersion]]]));
+    const activate = vi.spyOn(port, "activate");
+    render(<EngagementsWorkspace role="manager" port={port} currentActor={manager} teamLines={lines} />);
+    await waitFor(() => expect(screen.getByText(`Client ${draftId}`)).toBeTruthy());
+    fireEvent.click(screen.getByText(`Client ${draftId}`));
+    expect(await screen.findByRole("button", { name: "Revise draft" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Approve & activate" })).toBeNull();
+    expect(activate).not.toHaveBeenCalled();
+  });
+
   it("does not retain the revision modal across founder to staff to founder transition", async () => {
     const draftId = "99999999-9999-4999-8999-999999999999";
     const version: EngagementVersionDto = {
@@ -340,4 +395,51 @@ describe("EngagementsWorkspace", () => {
     view.rerender(<EngagementsWorkspace role="founder" port={port} currentActor={founder} teamLines={lines} />);
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   });
+
+  it("clears the activation modal across founder, manager, staff, and founder", async () => {
+    const draftId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const draft = engagement(draftId, "draft");
+    const draftVersion: EngagementVersionDto = { id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", engagementId: draftId, versionNumber: 1, title: "Activation draft", scope: "Scope", exclusions: null, responsiblePartnerId: founder.id, responsiblePartnerName: "Founder", deliveryManagerId: manager.id, deliveryManagerName: "Manager", feeModel: "fixed", agreedFeePaise: 100000, billingTerms: "Monthly", startDate: "2026-01-01", endDate: null, approvedAt: null, approvedById: null, createdById: founder.id, createdAt: "2026-01-01T00:00:00Z" };
+    const port = new TestEngagementsAdapter().seed([draft], new Map([[draftId, [draftVersion]]]));
+    const view = render(<EngagementsWorkspace role="founder" port={port} currentActor={founder} teamLines={lines} />);
+    await waitFor(() => expect(screen.getByText(`Client ${draftId}`)).toBeTruthy());
+    fireEvent.click(screen.getByText(`Client ${draftId}`));
+    fireEvent.click(await screen.findByRole("button", { name: "Approve & activate" }));
+    expect(screen.getByRole("dialog", { name: "Approve engagement" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Approve & activate", hidden: true })).toBeTruthy();
+    view.rerender(<EngagementsWorkspace role="manager" port={port} currentActor={manager} teamLines={lines} />);
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Approve engagement" })).toBeNull());
+    expect(screen.queryByRole("button", { name: "Approve & activate" })).toBeNull();
+    view.rerender(<EngagementsWorkspace role="staff" port={port} currentActor={staff} teamLines={lines} />);
+    expect(screen.queryByRole("dialog", { name: "Approve engagement" })).toBeNull();
+    view.rerender(<EngagementsWorkspace role="founder" port={port} currentActor={founder} teamLines={lines} />);
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Approve engagement" })).toBeNull());
+  });
+});
+
+const versionForWorkspace = (
+  engagementId: string,
+  responsiblePartnerId: string,
+  deliveryManagerId: string,
+  title: string,
+): EngagementVersionDto => ({
+  id: `${engagementId}-version`,
+  engagementId,
+  versionNumber: 1,
+  title,
+  scope: "Scope",
+  exclusions: null,
+  responsiblePartnerId,
+  responsiblePartnerName: "Founder",
+  deliveryManagerId,
+  deliveryManagerName: "Manager",
+  feeModel: "fixed",
+  agreedFeePaise: 100000,
+  billingTerms: "Monthly",
+  startDate: "2026-01-01",
+  endDate: null,
+  approvedAt: null,
+  approvedById: null,
+  createdById: responsiblePartnerId,
+  createdAt: "2026-01-01T00:00:00Z",
 });
