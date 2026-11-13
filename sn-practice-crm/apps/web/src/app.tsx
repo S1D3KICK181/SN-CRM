@@ -29,6 +29,7 @@ import { authorize, type CompanyRole } from '@sn/domain';
 import { useBilling } from './api/use-billing';
 import { useEngagements } from './api/use-engagements';
 import { useServiceCatalog } from './api/use-service-catalog';
+import { useDocuments } from './api/use-documents';
 import { SessionClient } from './api/auth/session-client';
 import { SessionManager } from './api/auth/session-manager';
 import type { AuthSessionSource } from './api/auth/types';
@@ -40,6 +41,7 @@ import { Card, Field, MoreButton } from './ui/workspace-primitives';
 import { ClientsWorkspace } from './workspaces/clients/clients-workspace';
 import { EngagementsWorkspace } from './workspaces/engagements/engagements-workspace';
 import { BillingWorkspace, type BillingActions } from './workspaces/billing/billing-workspace';
+import { DocumentsWorkspace, type DocumentsWorkspaceProps } from './workspaces/documents/documents-workspace';
 import { TeamWorkspace } from './workspaces/team/team-workspace';
 import { SettingsWorkspace, type SettingsWorkspaceProps } from './workspaces/settings/settings-workspace';
 import {
@@ -259,6 +261,16 @@ function AuthenticatedApp({
     createService,
     updateService,
   } = useServiceCatalog(role, { enabled: activePage === 'Settings' });
+  const {
+    documents: clientDocuments,
+    loading: documentsLoading,
+    error: documentsError,
+    hasLiveSnapshot: documentsLoaded,
+    retry: retryDocuments,
+    upload: uploadDocument,
+    download: downloadDocument,
+    remove: removeDocument,
+  } = useDocuments(role, { enabled: activePage === 'Documents' });
   const [clients, setClients] = useState<ClientRecord[]>(CLIENTS);
 
   const staffOptions = useMemo<readonly DialogStaffOption[]>(() => {
@@ -656,6 +668,14 @@ function AuthenticatedApp({
             error: serviceCatalogError ? serviceCatalogError.message : null,
             onRetry: retryServiceCatalog,
             onServicesChanged: reloadServices,
+          }}
+          documentsModel={{
+            documents: clientDocuments,
+            actions: { upload: uploadDocument, download: downloadDocument, remove: removeDocument },
+            loading: documentsLoading,
+            hasLiveSnapshot: documentsLoaded,
+            error: documentsError ? documentsError.message : null,
+            onRetry: retryDocuments,
           }}
           assignmentsLoading={assignmentsLoading}
           assignmentsError={assignmentsError ? assignmentsError.message : null}
@@ -1201,6 +1221,16 @@ const NO_BILLING_ACTIONS: BillingActions = {
   removeCredit: billingUnavailable,
 };
 
+const documentsUnavailable = () => Promise.reject(new Error('Document actions are not connected.'));
+const NO_DOCUMENTS_MODEL: Omit<DocumentsWorkspaceProps, 'role' | 'clients' | 'onToast'> = {
+  documents: [],
+  actions: { upload: documentsUnavailable, download: documentsUnavailable, remove: documentsUnavailable },
+  loading: false,
+  hasLiveSnapshot: true,
+  error: null,
+  onRetry: () => undefined,
+};
+
 export function ModuleWorkspace({
   page,
   role,
@@ -1227,6 +1257,7 @@ export function ModuleWorkspace({
   onRetryBilling,
   billingActions,
   serviceCatalog,
+  documentsModel,
   onGenerateDue,
   isGeneratingDue,
   assignmentsLoading,
@@ -1259,6 +1290,8 @@ export function ModuleWorkspace({
   billingActions?: BillingActions;
   /** The Founder's service list for the Settings page; without it Settings keeps its placeholder. */
   serviceCatalog?: Omit<SettingsWorkspaceProps, 'onToast'>;
+  /** The client documents for the Documents page; without it the page shows an empty list. */
+  documentsModel?: Omit<DocumentsWorkspaceProps, 'role' | 'clients' | 'onToast'>;
   onGenerateDue?: () => void;
   isGeneratingDue?: boolean;
   assignmentsLoading?: boolean;
@@ -1354,10 +1387,18 @@ export function ModuleWorkspace({
           actions={workItemsActions}
         />
       ) : null}
+      {page === 'Documents' ? (
+        <DocumentsWorkspace
+          role={role}
+          clients={directoryClients ?? []}
+          onToast={onToast}
+          {...(documentsModel ?? NO_DOCUMENTS_MODEL)}
+        />
+      ) : null}
       {page === 'Office Accounts' ? <AccountsWorkspace /> : null}
       {page === 'Team' ? <TeamWorkspace role={role} onToast={onToast} /> : null}
       {showSettings && serviceCatalog ? <SettingsWorkspace {...serviceCatalog} onToast={onToast} /> : null}
-      {!['Clients', 'Engagements', 'Assignments', 'Billing & Collections', 'My Tasks', 'Office Accounts', 'Team'].includes(page) &&
+      {!['Clients', 'Engagements', 'Assignments', 'Billing & Collections', 'My Tasks', 'Documents', 'Office Accounts', 'Team'].includes(page) &&
       !showSettings ? (
         <ModuleFoundation page={page} />
       ) : null}
@@ -1368,7 +1409,6 @@ export function ModuleWorkspace({
 function ModuleFoundation({ page }: { page: PageKey }) {
   const modules: Record<string, Array<[string, string, string]>> = {
     Clients: [['Active clients', '48', '3 require attention'], ['Registrations tracked', '126', 'PAN, GSTIN, TAN and more'], ['Document requests', '12', '5 overdue']],
-    Documents: [['Current requests', '12', 'Across 7 clients'], ['Awaiting review', '8', 'Evidence uploaded'], ['Expiring soon', '4', 'Next 30 days']],
     Communication: [['Follow-ups due', '9', '4 scheduled today'], ['Unanswered requests', '5', 'Oldest 3 days'], ['Activity logged', '74', 'This week']],
     'Billing & Collections': [['Raised this month', '₹1,84,000', '12 invoices'], ['Collected', '₹1,27,500', '69% realized'], ['Outstanding', '₹1,21,750', '4 clients']],
     Reports: [['Delivery readiness', '86%', 'Across open work'], ['Review velocity', '78%', 'Within 24 hours'], ['Collections discipline', '61%', 'Improvement needed']],

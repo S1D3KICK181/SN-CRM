@@ -1,6 +1,8 @@
+import { DOCUMENT_MAX_BYTES } from '@sn/contracts';
 import type {
   AssignmentDto,
   ClientContactDto,
+  ClientDocumentDto,
   ClientDto,
   CreateLedgerEntryInput,
   CreateRecurringScheduleInput,
@@ -30,9 +32,11 @@ import { computeRequestHash } from './idempotency';
 import type {
   ApplyCreditCommand,
   ClientReference,
+  ConfirmDocumentCommand,
   CreateAssignmentRecord,
   CreateClientContactCommand,
   CreateClientRecord,
+  CreateDocumentCommand,
   CreateServiceCommand,
   CreateWorkItemRecord,
   CrmRepository,
@@ -42,6 +46,7 @@ import type {
   RecordPaymentCommand,
   RecordVyaparBillCommand,
   RemoveCreditAllocationCommand,
+  RemoveDocumentCommand,
   RepositoryContext,
   ServiceReference,
   UpdateAssignmentCommand,
@@ -54,11 +59,16 @@ import type {
   VoidFeeRecordCommand,
 } from './repository';
 import {
+  alreadyRemoved,
   alreadyVoided,
   billHasPayments,
   billNotOpen,
+  documentNotConfirmable,
+  documentNotRemovable,
+  documentStoragePath,
   duplicateService,
   duplicateVyaparBill,
+  fileTooLarge,
   financialYearStart,
   kolkataToday,
   noCreditAvailable,
@@ -66,6 +76,7 @@ import {
   staleClient,
   staleContact,
   staleService,
+  uploadMissing,
 } from './repository';
 
 /** A catalog service. Seeds may give just id and name; the rest default to an active, plain service. */
@@ -104,6 +115,11 @@ type ClientDetailKey =
   | 'incorporationDate';
 
 type ContactRecord = { -readonly [K in keyof ClientContactDto]: ClientContactDto[K] };
+
+/** A document row; the client and uploader names are joined in when it is read. */
+type DocumentRecord = {
+  -readonly [K in keyof Omit<ClientDocumentDto, 'clientCode' | 'clientName' | 'uploadedByName'>]: ClientDocumentDto[K];
+};
 
 /** A client row. The CLI-02a detail fields and contacts are optional so older seeds stay valid. */
 export type ClientSeedRecord = Omit<
@@ -260,6 +276,8 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
   private readonly engagements = new Map<string, EngagementDto>();
   private readonly engagementVersions = new Map<string, EngagementVersionDto[]>();
   private readonly operationReceipts = new Map<string, StoredOperationReceipt>();
+  private readonly documents: DocumentRecord[] = [];
+  private readonly uploadedObjects = new Map<string, number>(); // Simulated Storage: path to size in bytes
   private readonly engagementIsDemo = new Map<string, boolean>();
   private readonly invoiceSeeds: InvoiceSeedRecord[];
   private readonly paymentReceipts: PaymentReceiptSeedRecord[];
@@ -1726,6 +1744,113 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
     }
     if (appliedPaise > 0) this.recomputeInvoiceStatus(invoice);
     return appliedPaise;
+  }
+
+  // --- Client documents (DOC-01a) ---
+  // Storage is simulated by a map of uploaded paths to their sizes; markObjectUploaded stands in for
+  // the browser's upload. Visibility is "looks after the client", the same test as fee visibility.
+
+  /** Test hook: records that the file at this storage path now exists in Storage with this size. */
+  markObjectUploaded(storagePath: string, sizeBytes: number): void {
+    this.uploadedObjects.set(storagePath, sizeBytes);
+  }
+
+  private toDocumentDto(record: DocumentRecord): ClientDocumentDto {
+    const client = this.clients.get(record.clientId);
+    return copy({
+      ...record,
+      clientCode: client?.code ?? '',
+      clientName: client?.displayName ?? '',
+      uploadedByName: this.employees.get(record.uploadedById)?.name ?? '',
+    });
+  }
+
+  private findDocumentFor(actor: EmployeeRecord, documentId: string): DocumentRecord | null {
+    const record = this.documents.find((candidate) => candidate.id === documentId);
+    return record && this.isFeeVisible(actor, record.clientId) ? record : null;
+  }
+
+  async listClientDocuments(ctx: RepositoryContext, clientId?: string): Promise<ClientDocumentDto[]> {
+    const actor = this.getActor(ctx);
+    if (!actor) return [];
+    return this.documents
+      .filter(
+        (record) =>
+          record.status === 'available' &&
+          (clientId === undefined || record.clientId === clientId) &&
+          this.isFeeVisible(actor, record.clientId),
+      )
+      .map((record, index) => ({ record, index }))
+      .sort((left, right) => {
+        const byTime = Date.parse(right.record.createdAt) - Date.parse(left.record.createdAt);
+        return byTime !== 0 ? byTime : right.index - left.index;
+      })
+      .map(({ record }) => this.toDocumentDto(record));
+  }
+
+  async createClientDocument(ctx: RepositoryContext, command: CreateDocumentCommand): Promise<ClientDocumentDto> {
+    const { idempotencyKey, ...payload } = command;
+    return this.runIdempotent<ClientDocumentDto>(ctx, idempotencyKey, 'createClientDocument', payload, () => {
+      const actor = this.getActor(ctx);
+      const client = this.clients.get(command.clientId);
+      if (!actor || !client || !this.isFeeVisible(actor, client.id)) throw notFound('Client');
+
+      const documentId = crypto.randomUUID();
+      const record: DocumentRecord = {
+        id: documentId,
+        clientId: command.clientId,
+        title: command.title,
+        category: command.category,
+        financialYearStart: command.financialYearStart ?? null,
+        fileName: command.fileName,
+        mimeType: command.mimeType,
+        sizeBytes: command.sizeBytes,
+        status: 'pending',
+        storagePath: documentStoragePath(command.clientId, documentId, command.fileName),
+        uploadedById: actor.id,
+        createdAt: this.now().toISOString(),
+        removedReason: null,
+        removedAt: null,
+      };
+      this.documents.push(record);
+      return { result: this.toDocumentDto(record), isDemo: client.isDemo === true };
+    });
+  }
+
+  async confirmClientDocument(ctx: RepositoryContext, command: ConfirmDocumentCommand): Promise<ClientDocumentDto> {
+    const { idempotencyKey, ...payload } = command;
+    return this.runIdempotent<ClientDocumentDto>(ctx, idempotencyKey, 'confirmClientDocument', payload, () => {
+      const actor = this.getActor(ctx);
+      const record = actor ? this.findDocumentFor(actor, command.id) : null;
+      if (!actor || !record) throw notFound('Document');
+      if (record.uploadedById !== actor.id) throw this.forbiddenOperation();
+      if (record.status !== 'pending') throw documentNotConfirmable();
+
+      const size = this.uploadedObjects.get(record.storagePath);
+      if (size === undefined) throw uploadMissing();
+      if (size > DOCUMENT_MAX_BYTES) throw fileTooLarge();
+
+      record.status = 'available';
+      record.sizeBytes = size;
+      return { result: this.toDocumentDto(record), isDemo: this.clients.get(record.clientId)?.isDemo === true };
+    });
+  }
+
+  async removeClientDocument(ctx: RepositoryContext, command: RemoveDocumentCommand): Promise<ClientDocumentDto> {
+    const { idempotencyKey, ...payload } = command;
+    return this.runIdempotent<ClientDocumentDto>(ctx, idempotencyKey, 'removeClientDocument', payload, () => {
+      const actor = this.getActor(ctx);
+      const record = actor ? this.findDocumentFor(actor, command.id) : null;
+      // Visible means the actor looks after the client, which is exactly who may remove (as in Postgres).
+      if (!actor || !record) throw notFound('Document');
+      if (record.status === 'removed') throw alreadyRemoved();
+      if (record.status !== 'available') throw documentNotRemovable();
+
+      record.status = 'removed';
+      record.removedReason = command.reason;
+      record.removedAt = this.now().toISOString();
+      return { result: this.toDocumentDto(record), isDemo: this.clients.get(record.clientId)?.isDemo === true };
+    });
   }
 
   async applyCredit(ctx: RepositoryContext, command: ApplyCreditCommand): Promise<InvoiceDto> {

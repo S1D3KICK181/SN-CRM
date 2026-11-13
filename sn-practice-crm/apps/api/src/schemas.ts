@@ -3,6 +3,7 @@ import {
   ASSIGNMENT_TRANSITIONS,
   CLIENT_ENTITY_TYPES,
   CLIENT_STATUSES,
+  DOCUMENT_CATEGORIES,
   ENGAGEMENT_END_OUTCOMES,
   ENGAGEMENT_FEE_MODELS,
   INDIAN_STATES,
@@ -129,6 +130,34 @@ export const recordPaymentSchema = z
   .strict();
 
 export const voidFeeRecordSchema = z
+  .object({ reason: z.string().trim().min(3).max(500) })
+  .strict();
+
+// --- Client documents (DOC-01a) ---
+// File size and type are checked by the application so they return their own error codes.
+
+export const createDocumentSchema = z
+  .object({
+    clientId: entityUuid,
+    title,
+    category: z.enum(DOCUMENT_CATEGORIES),
+    financialYearStart: z.number().int().min(2000).max(2100).nullable().optional(),
+    fileName: z
+      .string()
+      .trim()
+      .min(1)
+      .max(200)
+      .refine((value) => !value.includes('/') && !value.includes('\\'), {
+        message: 'The file name cannot contain a slash or backslash.',
+      }),
+    mimeType: z.string().trim().min(1).max(200),
+    sizeBytes: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER),
+  })
+  .strict();
+
+export const confirmDocumentSchema = z.object({}).strict();
+
+export const removeDocumentSchema = z
   .object({ reason: z.string().trim().min(3).max(500) })
   .strict();
 

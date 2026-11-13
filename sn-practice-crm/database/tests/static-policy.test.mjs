@@ -996,3 +996,125 @@ test('migration 0013 hides the raw PAN and GSTIN from the authenticated role and
   assert.doesNotMatch(sql0013, /revoke (insert|update)/i, 'insert and update grants are untouched');
   assert.doesNotMatch(sql0013, /\b(create|drop|alter) policy\b/i, 'no policy changes');
 });
+
+test('migration 0014 stores client documents in a private bucket, decides access in Postgres, and never deletes', () => {
+  const migration0014Path = new URL('../../supabase/migrations/20261113200000_doc01_client_documents.sql', import.meta.url);
+  const sql0014 = readMigration(migration0014Path, 'Migration 0014');
+
+  // 1. Private bucket: 25 MB and document types only
+  expectSql(sql0014, /insert into storage\.buckets \(id, name, public, file_size_limit, allowed_mime_types\)\s+values \(\s+'client-documents',\s+'client-documents',\s+false,\s+26214400,/i, 'private 25 MB bucket');
+  expectSql(sql0014, /on conflict \(id\) do nothing;/i, 'bucket insert is repeatable');
+  const bucketMimeTypes = sql0014.match(/array\[([\s\S]*?)\]\s*\)\s*on conflict/i)?.[1] ?? '';
+  for (const mime of [
+    'application/pdf',
+    'image/jpeg',
+    'image/png',
+    'application/vnd.ms-excel',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'text/csv',
+    'application/msword',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  ]) {
+    assert.ok(bucketMimeTypes.includes(`'${mime}'`), `bucket allows ${mime}`);
+  }
+  assert.equal(bucketMimeTypes.match(/'[^']+'/g)?.length, 8, 'bucket allows exactly eight types');
+
+  // 2. The document record
+  const table = sql0014.match(/create table public\.client_documents \(([\s\S]*?)\n\);/i)?.[1] ?? '';
+  assert.match(table, /client_id uuid not null references public\.clients\(id\) on delete restrict/i);
+  assert.match(table, /title text not null check \(char_length\(btrim\(title\)\) between 2 and 160\)/i);
+  assert.match(table, /category in \('kyc', 'financial_statements', 'returns_filed', 'acknowledgements', 'agreements', 'correspondence', 'other'\)/i);
+  assert.match(table, /financial_year_start smallint check \(financial_year_start is null or financial_year_start between 2000 and 2100\)/i);
+  assert.match(table, /file_name text not null check \(char_length\(file_name\) between 1 and 200 and file_name !~ '\[\/\\\\\]'\)/i);
+  assert.match(table, /size_bytes bigint not null check \(size_bytes between 1 and 26214400\)/i);
+  assert.match(table, /storage_path text not null unique/i);
+  assert.match(table, /status text not null default 'pending' check \(status in \('pending', 'available', 'removed'\)\)/i);
+  assert.match(table, /removed_by uuid references public\.profiles\(user_id\) on delete restrict/i);
+  assert.match(table, /created_by uuid not null references public\.profiles\(user_id\) on delete restrict/i);
+  assert.match(table, /is_demo boolean not null default false/i);
+  assert.match(table, /status = 'removed' and removed_reason is not null and removed_by is not null and removed_at is not null/i);
+  expectSql(sql0014, /create index client_documents_client_status_idx on public\.client_documents \(client_id, status\);/i, 'client and status index');
+
+  // 3. Guard: demo flag inherited, identity immutable, only the two legal status moves, removed is terminal
+  const guard = functionBlock(sql0014, 'guard_client_document_write');
+  assert.match(guard, /security definer/i);
+  assert.match(guard, /set search_path = public, pg_temp/i);
+  assert.match(guard, /new\.is_demo := coalesce\(v_client_is_demo, false\);/i);
+  assert.match(guard, /if new\.status <> 'pending' then\s+raise exception 'A document starts as a pending upload\.'/i);
+  assert.match(guard, /new\.client_id is distinct from old\.client_id\s+or new\.storage_path is distinct from old\.storage_path\s+or new\.file_name is distinct from old\.file_name\s+or new\.created_by is distinct from old\.created_by/i);
+  assert.match(guard, /if old\.status = 'removed' then\s+raise exception 'A removed document cannot be changed\.'/i);
+  assert.match(guard, /if old\.status = 'pending' and new\.status = 'available' then/i);
+  assert.match(guard, /v_actor <> old\.created_by/i);
+  assert.match(guard, /if old\.status = 'available' and new\.status = 'removed' then\s+if v_actor is not null and not public\.is_management\(v_actor\) then/i);
+  assert.match(guard, /A reason is required to remove a document\./i);
+  assert.match(guard, /new\.removed_by := coalesce\(v_actor, new\.removed_by\);/i);
+  assert.match(guard, /new\.removed_at := now\(\);/i);
+  assert.match(guard, /This document status change is not allowed\./i);
+  expectSql(sql0014, /create trigger guard_client_document_write\s+before insert or update on public\.client_documents\s+for each row execute function public\.guard_client_document_write\(\);/i, 'guard trigger');
+  expectSql(sql0014, /create trigger prevent_demo_flag_tampering before update on public\.client_documents/i, 'demo flag is immutable');
+  expectSql(sql0014, /create trigger set_client_documents_updated_at before update on public\.client_documents\s+for each row execute function public\.set_updated_at\(\);/i, 'updated_at trigger');
+  expectSql(sql0014, /create trigger audit_client_documents after insert or update or delete on public\.client_documents\s+for each row execute function public\.audit_row_change\(\);/i, 'audit trigger');
+
+  // 4. Table access: whoever looks after the client; no delete policy and no delete grant
+  expectSql(sql0014, /alter table public\.client_documents enable row level security;/i, 'RLS enabled');
+  expectSql(sql0014, /create policy client_documents_select on public\.client_documents\s+for select to authenticated\s+using \(public\.looks_after_client\(client_id\)\);/i, 'document select');
+  expectSql(sql0014, /create policy client_documents_insert on public\.client_documents\s+for insert to authenticated\s+with check \(public\.looks_after_client\(client_id\) and created_by = auth\.uid\(\) and status = 'pending'\);/i, 'document insert');
+  expectSql(sql0014, /create policy client_documents_update on public\.client_documents\s+for update to authenticated\s+using \(public\.looks_after_client\(client_id\)\)\s+with check \(public\.looks_after_client\(client_id\)\);/i, 'document update');
+  assert.doesNotMatch(sql0014, /create policy \w+ on public\.client_documents\s+for delete/i, 'no delete policy on documents');
+  expectSql(sql0014, /revoke all on table public\.client_documents from public, anon;\s+grant select, insert, update on public\.client_documents to authenticated;/i, 'document grants');
+
+  // 5. Storage: existence checks run as the function owner; the object policies only insert and select
+  for (const name of ['document_upload_allowed', 'document_download_allowed', 'document_object_size']) {
+    const block = functionBlock(sql0014, name);
+    assert.match(block, /security definer/i, `${name} is security definer`);
+    assert.match(block, /set search_path = public, pg_temp/i, `${name} pins its search path`);
+    assert.match(block, /public\.looks_after_client\(d\.client_id\)/i, `${name} requires looking after the client`);
+  }
+  const upload = functionBlock(sql0014, 'document_upload_allowed');
+  assert.match(upload, /d\.storage_path = p_path\s+and d\.status = 'pending'\s+and d\.created_by = auth\.uid\(\)/i);
+  const download = functionBlock(sql0014, 'document_download_allowed');
+  assert.match(download, /d\.storage_path = p_path\s+and d\.status = 'available'/i);
+  const objectSize = functionBlock(sql0014, 'document_object_size');
+  assert.match(objectSize, /returns bigint/i);
+  assert.match(objectSize, /\(o\.metadata->>'size'\)::bigint/i);
+  assert.match(objectSize, /o\.bucket_id = 'client-documents' and o\.name = d\.storage_path/i);
+  for (const signature of ['document_upload_allowed(text)', 'document_download_allowed(text)', 'document_object_size(uuid)']) {
+    const escaped = signature.replace(/[()]/g, '\\$&');
+    assert.match(sql0014, new RegExp(`revoke all on function public\\.${escaped} from public, anon;`, 'i'));
+    assert.match(sql0014, new RegExp(`grant execute on function public\\.${escaped} to authenticated;`, 'i'));
+  }
+  expectSql(sql0014, /create policy client_documents_objects_insert on storage\.objects\s+for insert to authenticated\s+with check \(bucket_id = 'client-documents' and public\.document_upload_allowed\(name\)\);/i, 'object insert');
+  expectSql(sql0014, /create policy client_documents_objects_select on storage\.objects\s+for select to authenticated\s+using \(bucket_id = 'client-documents' and public\.document_download_allowed\(name\)\);/i, 'object select');
+  const objectPolicies = sql0014.match(/create policy \w+ on storage\.objects\s+for (\w+)/gi) ?? [];
+  assert.equal(objectPolicies.length, 2, 'only two object policies');
+  assert.doesNotMatch(sql0014, /on storage\.objects\s+for (update|delete|all)/i, 'files cannot be overwritten or deleted from the browser');
+
+  // 6. Demo removal clears document records before their clients
+  const removeDemo = functionBlock(sql0014, 'remove_demo_data');
+  assert.match(removeDemo, /delete from public\.client_documents where is_demo = true;/i);
+  assert.ok(
+    removeDemo.indexOf('delete from public.client_documents') < removeDemo.indexOf('delete from public.clients where is_demo = true'),
+    'documents are deleted before clients',
+  );
+  assert.match(removeDemo, /'client_documents', v_client_documents_count,/i);
+  assert.match(removeDemo, /Unauthorized: remove_demo_data may only be executed by a Founder\./i);
+  expectSql(sql0014, /revoke all on function public\.remove_demo_data\(\) from public, anon;\s+grant execute on function public\.remove_demo_data\(\) to authenticated;/i, 'demo removal grants');
+});
+
+test('migration 0015 lets staff who look after a client remove its documents, and keeps every other document rule', () => {
+  const migration0015Path = new URL('../../supabase/migrations/20261113210000_doc01_staff_remove.sql', import.meta.url);
+  const sql0015 = readMigration(migration0015Path, 'Migration 0015');
+  const guard = functionBlock(sql0015, 'guard_client_document_write');
+
+  assert.match(guard, /security definer/i);
+  assert.match(guard, /set search_path = public, pg_temp/i);
+  // Removal: looks after the client, with a reason, recorded who and when
+  assert.match(guard, /if v_actor is not null and not public\.user_looks_after_client\(v_actor, old\.client_id\) then/i);
+  assert.match(guard, /Only the Founder, the Manager or staff who look after this client may remove a document\./i);
+  assert.match(guard, /A reason is required to remove a document\./i);
+  assert.match(guard, /new\.removed_by := coalesce\(v_actor, new\.removed_by\);/i);
+  // Removed stays terminal, and management is no longer the only remover
+  assert.match(guard, /A removed document cannot be changed\./i);
+  assert.doesNotMatch(guard, /is_management/i);
+  assert.doesNotMatch(sql0015, /\b(create|drop|alter) policy\b/i, 'no policy changes');
+});

@@ -942,3 +942,66 @@ export interface VoidFeeRecordInput {
 // --- Client credit (FEE-02a) ---
 
 export type ApplyCreditInput = Record<string, never>;
+
+// --- Client documents (DOC-01a) ---
+
+export const DOCUMENT_CATEGORIES = [
+  'kyc',
+  'financial_statements',
+  'returns_filed',
+  'acknowledgements',
+  'agreements',
+  'correspondence',
+  'other',
+] as const;
+export type DocumentCategory = (typeof DOCUMENT_CATEGORIES)[number];
+
+export const DOCUMENT_MAX_BYTES = 26214400; // 25 MB
+
+/** Allowed mime types and the lower-case file extensions (without the dot) that may carry each. */
+export const DOCUMENT_ALLOWED_TYPES = {
+  'application/pdf': ['pdf'],
+  'image/jpeg': ['jpg', 'jpeg'],
+  'image/png': ['png'],
+  'application/vnd.ms-excel': ['xls'],
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['xlsx'],
+  'text/csv': ['csv'],
+  'application/msword': ['doc'],
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': ['docx'],
+} as const satisfies Record<string, readonly string[]>;
+
+export type DocumentStatus = 'pending' | 'available' | 'removed';
+
+export interface ClientDocumentDto {
+  readonly id: string; // RFC 4122 UUID
+  readonly clientId: string; // RFC 4122 UUID
+  readonly clientCode: string;
+  readonly clientName: string;
+  readonly title: string;
+  readonly category: DocumentCategory;
+  readonly financialYearStart: number | null; // e.g. 2026 for FY 2026-27
+  readonly fileName: string;
+  readonly mimeType: string;
+  readonly sizeBytes: number;
+  readonly status: DocumentStatus;
+  readonly storagePath: string; // Path inside the private client-documents bucket
+  readonly uploadedById: string; // RFC 4122 UUID
+  readonly uploadedByName: string;
+  readonly createdAt: string; // ISO-8601 UTC
+  readonly removedReason: string | null;
+  readonly removedAt: string | null; // ISO-8601 UTC
+}
+
+export interface CreateDocumentInput {
+  readonly clientId: string; // RFC 4122 UUID
+  readonly title: string;
+  readonly category: DocumentCategory;
+  readonly financialYearStart?: number | null;
+  readonly fileName: string;
+  readonly mimeType: string;
+  readonly sizeBytes: number;
+}
+
+export interface RemoveDocumentInput {
+  readonly reason: string;
+}

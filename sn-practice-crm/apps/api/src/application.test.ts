@@ -4,6 +4,7 @@ import type {
   AssignmentDto,
   ClientDto,
   CreateAssignmentInput,
+  CreateDocumentInput,
   CreateRecurringScheduleInput,
   LedgerEntryDto,
   RecordPaymentInput,
@@ -1008,6 +1009,18 @@ describe("CrmApplication authority and workflow rules", () => {
         },
         async deleteClientContact(ctx: RepositoryContext) {
           throw new Error(`Unexpected client repository call: deleteClientContact(${ctx.actorId})`);
+        },
+        async listClientDocuments(ctx: RepositoryContext) {
+          throw new Error(`Unexpected document repository call: listClientDocuments(${ctx.actorId})`);
+        },
+        async createClientDocument(ctx: RepositoryContext) {
+          throw new Error(`Unexpected document repository call: createClientDocument(${ctx.actorId})`);
+        },
+        async confirmClientDocument(ctx: RepositoryContext) {
+          throw new Error(`Unexpected document repository call: confirmClientDocument(${ctx.actorId})`);
+        },
+        async removeClientDocument(ctx: RepositoryContext) {
+          throw new Error(`Unexpected document repository call: removeClientDocument(${ctx.actorId})`);
         },
       };
 
@@ -3016,6 +3029,243 @@ describe("CLI-02a client master", () => {
 
       await application.deleteClientContact(staff, ownerContact.id);
       expect((await application.getClient(staff, BLUEPEAK)).contacts).toEqual([]);
+    });
+  });
+});
+
+describe("DOC-01a client documents", () => {
+  const ASTER = CANONICAL_CLIENT_1; // looked after by the Founder, Manager and Senior Staff, not by Staff
+  const BLUEPEAK = "10000000-0000-4000-a000-000000000002"; // owner: Staff; Senior Staff does not look after it
+  let keyCounter = 0;
+  const key = () => `doc-key-${++keyCounter}`;
+
+  async function documentFixture() {
+    const { application, repository } = createFixture();
+    return {
+      application,
+      repository,
+      founder: await application.requireActor(DEMO_ACTOR_IDS.founder),
+      manager: await application.requireActor(DEMO_ACTOR_IDS.manager),
+      senior: await application.requireActor(DEMO_ACTOR_IDS.senior),
+      staff: await application.requireActor(DEMO_ACTOR_IDS.staff),
+      trainee: await application.requireActor(DEMO_ACTOR_IDS.trainee),
+    };
+  }
+
+  const documentInput = (overrides: Partial<CreateDocumentInput> = {}): CreateDocumentInput => ({
+    clientId: BLUEPEAK,
+    title: "PAN card",
+    category: "kyc",
+    financialYearStart: null,
+    fileName: "pan card (1).pdf",
+    mimeType: "application/pdf",
+    sizeBytes: 2048,
+    ...overrides,
+  });
+
+  it("creates a pending document with a safe storage path and keeps it out of the list until confirmed", async () => {
+    const { application, staff } = await documentFixture();
+    const created = await application.createDocument(staff, documentInput({ financialYearStart: 2026 }), key());
+    expect(created).toMatchObject({
+      clientId: BLUEPEAK,
+      clientCode: "CL-001002",
+      clientName: "BluePeak Tech",
+      title: "PAN card",
+      category: "kyc",
+      financialYearStart: 2026,
+      fileName: "pan card (1).pdf",
+      status: "pending",
+      uploadedById: staff.id,
+      removedReason: null,
+      removedAt: null,
+    });
+    expect(created.uploadedByName).toBe(staff.name);
+    expect(created.storagePath).toBe(`clients/${BLUEPEAK}/${created.id}/pan_card__1_.pdf`);
+    expect(await application.listDocuments(staff)).toEqual([]);
+  });
+
+  it("confirms only after the file is in Storage and stores the real size", async () => {
+    const { application, repository, staff } = await documentFixture();
+    const created = await application.createDocument(staff, documentInput(), key());
+
+    await expect(application.confirmDocument(staff, created.id, key())).rejects.toMatchObject({
+      status: 422,
+      code: "upload_missing",
+      message: "The file has not finished uploading. Try again.",
+    });
+
+    repository.markObjectUploaded(created.storagePath, 4096);
+    const confirmed = await application.confirmDocument(staff, created.id, key());
+    expect(confirmed).toMatchObject({ id: created.id, status: "available", sizeBytes: 4096 });
+    expect((await application.listDocuments(staff)).map((document) => document.id)).toEqual([created.id]);
+  });
+
+  it("refuses an uploaded object that is over the limit", async () => {
+    const { application, repository, staff } = await documentFixture();
+    const created = await application.createDocument(staff, documentInput(), key());
+    repository.markObjectUploaded(created.storagePath, 26214401);
+    await expect(application.confirmDocument(staff, created.id, key())).rejects.toMatchObject({
+      status: 422,
+      code: "file_too_large",
+      message: "The file is larger than 25 MB.",
+    });
+  });
+
+  it("refuses a file over 25 MB or of a type that is not allowed before touching the repository", async () => {
+    const { application, repository, staff } = await documentFixture();
+    const spy = vi.spyOn(repository, "createClientDocument");
+    await expect(application.createDocument(staff, documentInput({ sizeBytes: 26214401 }), key())).rejects.toMatchObject({
+      status: 422,
+      code: "file_too_large",
+      message: "The file is larger than 25 MB.",
+    });
+    const notAllowed = {
+      status: 422,
+      code: "file_type_not_allowed",
+      message: "Only PDF, JPG, PNG, Excel, CSV and Word files can be uploaded.",
+    };
+    await expect(
+      application.createDocument(staff, documentInput({ fileName: "setup.exe", mimeType: "application/x-msdownload" }), key()),
+    ).rejects.toMatchObject(notAllowed);
+    // The extension must match the mime type
+    await expect(application.createDocument(staff, documentInput({ fileName: "scan.png" }), key())).rejects.toMatchObject(notAllowed);
+    await expect(application.createDocument(staff, documentInput({ fileName: "scan" }), key())).rejects.toMatchObject(notAllowed);
+    expect(spy).not.toHaveBeenCalled();
+
+    // Upper-case extensions and the two JPEG spellings are accepted
+    await application.createDocument(staff, documentInput({ fileName: "SCAN.JPEG", mimeType: "image/jpeg" }), key());
+    await application.createDocument(staff, documentInput({ fileName: "scan.jpg", mimeType: "image/jpeg" }), key());
+  });
+
+  it("validates the title, category, financial year and file name", async () => {
+    const { application, staff } = await documentFixture();
+    const invalid = { status: 422, code: "validation_failed" };
+    await expect(application.createDocument(staff, documentInput({ title: "A" }), key())).rejects.toMatchObject(invalid);
+    await expect(
+      application.createDocument(staff, documentInput({ category: "photos" as unknown as CreateDocumentInput["category"] }), key()),
+    ).rejects.toMatchObject(invalid);
+    await expect(application.createDocument(staff, documentInput({ financialYearStart: 1999 }), key())).rejects.toMatchObject(invalid);
+    await expect(application.createDocument(staff, documentInput({ fileName: "../pan.pdf" }), key())).rejects.toMatchObject(invalid);
+    await expect(application.createDocument(staff, documentInput({ sizeBytes: 0 }), key())).rejects.toMatchObject(invalid);
+  });
+
+  it("lets only the people who look after the client upload and see its documents", async () => {
+    const { application, repository, founder, senior, staff, trainee } = await documentFixture();
+
+    // Staff looks after BluePeak; Senior Staff does not
+    const created = await application.createDocument(staff, documentInput(), key());
+    repository.markObjectUploaded(created.storagePath, 100);
+    await application.confirmDocument(staff, created.id, key());
+    await expect(application.createDocument(senior, documentInput(), key())).rejects.toMatchObject({ status: 404 });
+    await expect(application.createDocument(trainee, documentInput(), key())).rejects.toMatchObject({ status: 404 });
+
+    // Senior Staff reviews an Aster assignment; Staff does not look after Aster
+    const asterDocument = await application.createDocument(senior, documentInput({ clientId: ASTER, title: "Agreement" }), key());
+    repository.markObjectUploaded(asterDocument.storagePath, 100);
+    await application.confirmDocument(senior, asterDocument.id, key());
+    await expect(application.createDocument(staff, documentInput({ clientId: ASTER }), key())).rejects.toMatchObject({
+      status: 404,
+      message: "Client was not found.",
+    });
+
+    expect((await application.listDocuments(founder)).map((document) => document.id).sort()).toEqual(
+      [created.id, asterDocument.id].sort(),
+    );
+    expect((await application.listDocuments(staff)).map((document) => document.id)).toEqual([created.id]);
+    expect((await application.listDocuments(senior)).map((document) => document.id)).toEqual([asterDocument.id]);
+    expect(await application.listDocuments(trainee)).toEqual([]);
+    expect((await application.listDocuments(founder, ASTER)).map((document) => document.id)).toEqual([asterDocument.id]);
+    await expect(application.listDocuments(founder, "not-a-uuid")).rejects.toMatchObject({ status: 422 });
+  });
+
+  it("lists the newest documents first", async () => {
+    const { application, repository, founder } = await documentFixture();
+    const first = await application.createDocument(founder, documentInput({ title: "First" }), key());
+    const second = await application.createDocument(founder, documentInput({ title: "Second" }), key());
+    for (const document of [first, second]) {
+      repository.markObjectUploaded(document.storagePath, 10);
+      await application.confirmDocument(founder, document.id, key());
+    }
+    expect((await application.listDocuments(founder)).map((document) => document.title)).toEqual(["Second", "First"]);
+  });
+
+  it("lets only the uploader confirm, and only a pending document", async () => {
+    const { application, repository, founder, staff } = await documentFixture();
+    const created = await application.createDocument(staff, documentInput(), key());
+    repository.markObjectUploaded(created.storagePath, 10);
+    await expect(application.confirmDocument(founder, created.id, key())).rejects.toMatchObject({ status: 403 });
+    await application.confirmDocument(staff, created.id, key());
+    await expect(application.confirmDocument(staff, created.id, key())).rejects.toMatchObject({
+      status: 409,
+      code: "invalid_state_transition",
+    });
+    await expect(application.confirmDocument(staff, "72000000-0000-4000-a000-0000000000ff", key())).rejects.toMatchObject({
+      status: 404,
+      message: "Document was not found.",
+    });
+  });
+
+  it("replays create and confirm for the same key and rejects the key for a different payload", async () => {
+    const { application, repository, staff } = await documentFixture();
+    const createKey = key();
+    const created = await application.createDocument(staff, documentInput(), createKey);
+    expect(await application.createDocument(staff, documentInput(), createKey)).toEqual(created);
+    await expect(application.createDocument(staff, documentInput({ title: "Other" }), createKey)).rejects.toMatchObject({
+      status: 409,
+      code: "conflict",
+    });
+
+    repository.markObjectUploaded(created.storagePath, 10);
+    const confirmKey = key();
+    const confirmed = await application.confirmDocument(staff, created.id, confirmKey);
+    expect(await application.confirmDocument(staff, created.id, confirmKey)).toEqual(confirmed);
+  });
+
+  it("lets staff on the client and management remove a document, refuses trainees, and keeps the record", async () => {
+    const { application, repository, manager, founder, staff } = await documentFixture();
+    const created = await application.createDocument(staff, documentInput(), key());
+    repository.markObjectUploaded(created.storagePath, 10);
+    await application.confirmDocument(staff, created.id, key());
+
+    const trainee = await application.requireActor(DEMO_ACTOR_IDS.trainee);
+    const spy = vi.spyOn(repository, "removeClientDocument");
+    await expect(application.removeDocument(trainee, created.id, { reason: "Wrong file" }, key())).rejects.toMatchObject({
+      status: 403,
+      code: "role_not_permitted",
+      message: "Trainees cannot remove documents.",
+    });
+    expect(spy).not.toHaveBeenCalled();
+    await expect(application.removeDocument(manager, created.id, { reason: "No" }, key())).rejects.toMatchObject({
+      status: 422,
+      code: "validation_failed",
+    });
+
+    const removeKey = key();
+    const removed = await application.removeDocument(manager, created.id, { reason: "  Wrong file  " }, removeKey);
+    expect(removed).toMatchObject({ id: created.id, status: "removed", removedReason: "Wrong file" });
+    expect(removed.removedAt).not.toBeNull();
+    expect(await application.removeDocument(manager, created.id, { reason: "Wrong file" }, removeKey)).toEqual(removed);
+    await expect(application.removeDocument(founder, created.id, { reason: "Again" }, key())).rejects.toMatchObject({
+      status: 422,
+      code: "already_removed",
+    });
+    expect(await application.listDocuments(founder)).toEqual([]);
+    expect(await application.listDocuments(staff)).toEqual([]);
+
+    // Staff who look after the client can remove a document themselves.
+    const second = await application.createDocument(staff, documentInput(), key());
+    repository.markObjectUploaded(second.storagePath, 10);
+    await application.confirmDocument(staff, second.id, key());
+    const byStaff = await application.removeDocument(staff, second.id, { reason: "Duplicate upload" }, key());
+    expect(byStaff).toMatchObject({ id: second.id, status: "removed", removedReason: "Duplicate upload" });
+  });
+
+  it("refuses to remove a document that is still waiting for its upload", async () => {
+    const { application, founder, staff } = await documentFixture();
+    const created = await application.createDocument(staff, documentInput(), key());
+    await expect(application.removeDocument(founder, created.id, { reason: "Not needed" }, key())).rejects.toMatchObject({
+      status: 409,
+      code: "invalid_state_transition",
     });
   });
 });

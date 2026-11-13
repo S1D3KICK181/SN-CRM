@@ -23,8 +23,15 @@ async function getAssignmentUpdatedAt(baseUrl: string, assignmentId: string): Pr
 }
 
 async function startServer(options?: { allowDevActorHeader?: boolean }): Promise<string> {
+  return (await startServerWithRepository(options)).baseUrl;
+}
+
+async function startServerWithRepository(
+  options?: { allowDevActorHeader?: boolean },
+): Promise<{ baseUrl: string; repository: InMemoryCrmRepository }> {
   let id = 0;
-  const application = new CrmApplication(new InMemoryCrmRepository(createDemoSeed()), {
+  const repository = new InMemoryCrmRepository(createDemoSeed());
+  const application = new CrmApplication(repository, {
     now: () => new Date('2026-10-30T12:00:00.000Z'),
     createId: (prefix = 'entity') => `00000000-0000-4000-e000-${String(++id).padStart(12, '0')}`,
   });
@@ -38,7 +45,7 @@ async function startServer(options?: { allowDevActorHeader?: boolean }): Promise
   runningServers.push(server);
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const address = server.address() as AddressInfo;
-  return `http://127.0.0.1:${address.port}`;
+  return { baseUrl: `http://127.0.0.1:${address.port}`, repository };
 }
 
 afterEach(async () => {
@@ -2676,5 +2683,157 @@ describe('HTTP API client master (CLI-02a)', () => {
     });
     expect(res.status).toBe(204);
     expect(res.headers.get('access-control-allow-methods')).toContain('DELETE');
+  });
+});
+
+describe('DOC-01a client document routes', () => {
+  const BLUEPEAK = '10000000-0000-4000-a000-000000000002'; // looked after by Staff
+  const input = {
+    clientId: BLUEPEAK,
+    title: 'PAN card',
+    category: 'kyc',
+    financialYearStart: 2026,
+    fileName: 'pan.pdf',
+    mimeType: 'application/pdf',
+    sizeBytes: 2048,
+  };
+
+  async function call(
+    baseUrl: string,
+    method: 'GET' | 'POST',
+    path: string,
+    options: { actor?: string; body?: unknown; key?: string | null } = {},
+  ) {
+    const headers: Record<string, string> = { 'x-demo-user-id': options.actor ?? DEMO_ACTOR_IDS.staff };
+    if (options.body !== undefined) headers['content-type'] = 'application/json';
+    if (options.key !== null && method !== 'GET') headers['Idempotency-Key'] = options.key ?? `key-${Math.random()}`;
+    const response = await fetch(`${baseUrl}${path}`, {
+      method,
+      headers,
+      ...(options.body !== undefined ? { body: JSON.stringify(options.body) } : {}),
+    });
+    return { status: response.status, body: await response.json() };
+  }
+
+  it('walks a document through create, upload, confirm, list and remove', async () => {
+    const { baseUrl, repository } = await startServerWithRepository();
+    const created = await call(baseUrl, 'POST', '/api/v1/documents', { body: input, key: 'doc-1' });
+    expect(created.status).toBe(201);
+    expect(created.body.data).toMatchObject({ status: 'pending', clientCode: 'CL-001002', fileName: 'pan.pdf' });
+    expect(created.body.data.storagePath).toBe(`clients/${BLUEPEAK}/${created.body.data.id}/pan.pdf`);
+
+    const replay = await call(baseUrl, 'POST', '/api/v1/documents', { body: input, key: 'doc-1' });
+    expect(replay.status).toBe(201);
+    expect(replay.body.data).toEqual(created.body.data);
+
+    const id = created.body.data.id;
+    expect((await call(baseUrl, 'GET', '/api/v1/documents')).body.data).toEqual([]);
+
+    const early = await call(baseUrl, 'POST', `/api/v1/documents/${id}/confirm`, { body: {}, key: 'doc-2' });
+    expect(early.status).toBe(422);
+    expect(early.body.error).toMatchObject({
+      code: 'upload_missing',
+      message: 'The file has not finished uploading. Try again.',
+    });
+
+    repository.markObjectUploaded(created.body.data.storagePath, 5000);
+    const confirmed = await call(baseUrl, 'POST', `/api/v1/documents/${id}/confirm`, { body: {}, key: 'doc-3' });
+    expect(confirmed.status).toBe(200);
+    expect(confirmed.body.data).toMatchObject({ id, status: 'available', sizeBytes: 5000 });
+
+    const listed = await call(baseUrl, 'GET', `/api/v1/documents?clientId=${BLUEPEAK}`);
+    expect(listed.status).toBe(200);
+    expect(listed.body.data.map((document: { id: string }) => document.id)).toEqual([id]);
+    const otherClient = await call(baseUrl, 'GET', '/api/v1/documents?clientId=10000000-0000-4000-a000-000000000001');
+    expect(otherClient.body.data).toEqual([]);
+
+    const removed = await call(baseUrl, 'POST', `/api/v1/documents/${id}/remove`, {
+      actor: DEMO_ACTOR_IDS.manager,
+      body: { reason: 'Uploaded to the wrong client' },
+      key: 'doc-4',
+    });
+    expect(removed.status).toBe(200);
+    expect(removed.body.data).toMatchObject({ status: 'removed', removedReason: 'Uploaded to the wrong client' });
+    const again = await call(baseUrl, 'POST', `/api/v1/documents/${id}/remove`, {
+      actor: DEMO_ACTOR_IDS.manager,
+      body: { reason: 'Uploaded to the wrong client' },
+      key: 'doc-5',
+    });
+    expect(again.status).toBe(422);
+    expect(again.body.error.code).toBe('already_removed');
+    expect((await call(baseUrl, 'GET', '/api/v1/documents')).body.data).toEqual([]);
+  });
+
+  it('returns the size and type errors with their codes and messages', async () => {
+    const baseUrl = await startServer();
+    const large = await call(baseUrl, 'POST', '/api/v1/documents', { body: { ...input, sizeBytes: 26214401 } });
+    expect(large.status).toBe(422);
+    expect(large.body.error).toMatchObject({ code: 'file_too_large', message: 'The file is larger than 25 MB.' });
+
+    const type = await call(baseUrl, 'POST', '/api/v1/documents', {
+      body: { ...input, fileName: 'run.exe', mimeType: 'application/x-msdownload' },
+    });
+    expect(type.status).toBe(422);
+    expect(type.body.error).toMatchObject({
+      code: 'file_type_not_allowed',
+      message: 'Only PDF, JPG, PNG, Excel, CSV and Word files can be uploaded.',
+    });
+  });
+
+  it('requires the Idempotency-Key header on every document write', async () => {
+    const baseUrl = await startServer();
+    const id = '72000000-0000-4000-a000-000000000001';
+    for (const [path, body] of [
+      ['/api/v1/documents', input],
+      [`/api/v1/documents/${id}/confirm`, {}],
+      [`/api/v1/documents/${id}/remove`, { reason: 'Wrong file' }],
+    ] as const) {
+      const response = await call(baseUrl, 'POST', path, { body, key: null });
+      expect(response.status).toBe(400);
+      expect(response.body.error.code).toBe('idempotency_key_required');
+    }
+  });
+
+  it('rejects malformed identifiers, unknown fields and a missing body', async () => {
+    const baseUrl = await startServer();
+    expect((await call(baseUrl, 'GET', '/api/v1/documents?clientId=nope')).body.error.code).toBe('invalid_identifier');
+    expect((await call(baseUrl, 'POST', '/api/v1/documents/nope/confirm', { body: {} })).body.error.code).toBe('invalid_identifier');
+    expect((await call(baseUrl, 'POST', '/api/v1/documents/nope/remove', { body: { reason: 'Wrong file' } })).body.error.code).toBe(
+      'invalid_identifier',
+    );
+    const extra = await call(baseUrl, 'POST', '/api/v1/documents', { body: { ...input, status: 'available' } });
+    expect(extra.status).toBe(422);
+    expect(extra.body.error.code).toBe('validation_failed');
+    const missingBody = await call(baseUrl, 'POST', '/api/v1/documents');
+    expect(missingBody.status).toBe(415);
+  });
+
+  it('keeps documents from people who do not look after the client', async () => {
+    const baseUrl = await startServer();
+    const senior = await call(baseUrl, 'POST', '/api/v1/documents', { actor: DEMO_ACTOR_IDS.senior, body: input });
+    expect(senior.status).toBe(404);
+    const trainee = await call(baseUrl, 'POST', '/api/v1/documents', { actor: DEMO_ACTOR_IDS.trainee, body: input });
+    expect(trainee.status).toBe(404);
+    expect((await call(baseUrl, 'GET', '/api/v1/documents', { actor: DEMO_ACTOR_IDS.trainee })).body.data).toEqual([]);
+  });
+
+  it('refuses removal by a trainee with 403 and an unknown document with 404', async () => {
+    const baseUrl = await startServer();
+    const denied = await call(baseUrl, 'POST', '/api/v1/documents/72000000-0000-4000-a000-000000000001/remove', {
+      actor: DEMO_ACTOR_IDS.trainee,
+      body: { reason: 'Wrong file' },
+    });
+    expect(denied.status).toBe(403);
+    expect(denied.body.error.code).toBe('role_not_permitted');
+    // Staff are allowed to try; a document they cannot see is simply not found.
+    const staffMissing = await call(baseUrl, 'POST', '/api/v1/documents/72000000-0000-4000-a000-000000000001/remove', {
+      body: { reason: 'Wrong file' },
+    });
+    expect(staffMissing.status).toBe(404);
+    const missing = await call(baseUrl, 'POST', '/api/v1/documents/72000000-0000-4000-a000-000000000001/remove', {
+      actor: DEMO_ACTOR_IDS.founder,
+      body: { reason: 'Wrong file' },
+    });
+    expect(missing.status).toBe(404);
   });
 });

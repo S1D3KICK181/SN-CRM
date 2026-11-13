@@ -1,13 +1,19 @@
 import { authorize, type Actor, type AuthorityRequest, type CompanyRole } from '@sn/domain';
+import {
+  DOCUMENT_ALLOWED_TYPES,
+  DOCUMENT_MAX_BYTES,
+} from '@sn/contracts';
 import type {
   AssignmentDto,
   AssignmentStatus,
   AssignmentTransition,
   ClientContactDto,
+  ClientDocumentDto,
   ClientDto,
   CreateAssignmentInput,
   CreateClientContactInput,
   CreateClientInput,
+  CreateDocumentInput,
   CreateLedgerEntryInput,
   CreateRecurringScheduleInput,
   CreateServiceInput,
@@ -29,6 +35,7 @@ import type {
   RecordPaymentInput,
   RecordVyaparBillInput,
   RecurringScheduleDto,
+  RemoveDocumentInput,
   ReportingLineDto,
   ServiceCatalogItemDto,
   ServiceDto,
@@ -54,13 +61,16 @@ import type {
   ServiceReference,
   UpdateAssignmentCommand,
 } from './repository';
-import { kolkataToday } from './repository';
+import { fileTooLarge, fileTypeNotAllowed, kolkataToday } from './repository';
 import {
   CONTACT_UNREACHABLE_MESSAGE,
   createClientContactSchema,
   createClientSchema,
+  createDocumentSchema,
+  entityUuid,
   parseIsoInstant,
   updateClientContactSchema,
+  removeDocumentSchema,
   updateClientSchema,
   validateInput,
 } from './schemas';
@@ -228,6 +238,60 @@ export class CrmApplication {
     return this.repository.voidPaymentReceipt(
       { actorId: actor.id },
       { id: receiptId, reason: input.reason.trim(), idempotencyKey: normalizeIdempotencyKey(idempotencyKey) },
+    );
+  }
+
+  // --- Client documents (DOC-01a) ---
+  // Who may see or upload is decided in Postgres by "looks after the client"; a reader who does not
+  // look after a client sees no documents and cannot add one. Only removal needs an authority rule.
+
+  async listDocuments(actor: SessionActor, clientId?: string): Promise<ClientDocumentDto[]> {
+    if (clientId !== undefined) {
+      validateInput(entityUuid, clientId);
+    }
+    return this.repository.listClientDocuments({ actorId: actor.id }, clientId);
+  }
+
+  async createDocument(
+    actor: SessionActor,
+    input: CreateDocumentInput,
+    idempotencyKey: string,
+  ): Promise<ClientDocumentDto> {
+    const data = validateInput(createDocumentSchema, input);
+    if (data.sizeBytes > DOCUMENT_MAX_BYTES) {
+      throw fileTooLarge();
+    }
+    const extension = data.fileName.includes('.') ? data.fileName.split('.').pop()?.toLowerCase() : undefined;
+    const allowedExtensions: readonly string[] | undefined = Object.hasOwn(DOCUMENT_ALLOWED_TYPES, data.mimeType)
+      ? DOCUMENT_ALLOWED_TYPES[data.mimeType as keyof typeof DOCUMENT_ALLOWED_TYPES]
+      : undefined;
+    if (!allowedExtensions || extension === undefined || !allowedExtensions.includes(extension)) {
+      throw fileTypeNotAllowed();
+    }
+    return this.repository.createClientDocument(
+      { actorId: actor.id },
+      { ...definedOnly(data), idempotencyKey: normalizeIdempotencyKey(idempotencyKey) },
+    );
+  }
+
+  async confirmDocument(actor: SessionActor, documentId: string, idempotencyKey: string): Promise<ClientDocumentDto> {
+    return this.repository.confirmClientDocument(
+      { actorId: actor.id },
+      { id: documentId, idempotencyKey: normalizeIdempotencyKey(idempotencyKey) },
+    );
+  }
+
+  async removeDocument(
+    actor: SessionActor,
+    documentId: string,
+    input: RemoveDocumentInput,
+    idempotencyKey: string,
+  ): Promise<ClientDocumentDto> {
+    requireAuthority({ action: 'document.remove', actor: asActor(actor) });
+    const data = validateInput(removeDocumentSchema, input);
+    return this.repository.removeClientDocument(
+      { actorId: actor.id },
+      { id: documentId, reason: data.reason, idempotencyKey: normalizeIdempotencyKey(idempotencyKey) },
     );
   }
 

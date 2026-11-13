@@ -1,7 +1,9 @@
 import type postgres from 'postgres';
+import { DOCUMENT_MAX_BYTES } from '@sn/contracts';
 import type {
   AssignmentDto,
   ClientContactDto,
+  ClientDocumentDto,
   ClientDto,
   ClientEntityType,
   ClientStatus,
@@ -31,9 +33,11 @@ import { computeRequestHash } from './idempotency';
 import type {
   ApplyCreditCommand,
   ClientReference,
+  ConfirmDocumentCommand,
   CreateAssignmentRecord,
   CreateClientContactCommand,
   CreateClientRecord,
+  CreateDocumentCommand,
   CreateServiceCommand,
   CreateWorkItemRecord,
   CrmRepository,
@@ -43,6 +47,7 @@ import type {
   RecordPaymentCommand,
   RecordVyaparBillCommand,
   RemoveCreditAllocationCommand,
+  RemoveDocumentCommand,
   RepositoryContext,
   ServiceReference,
   UpdateAssignmentCommand,
@@ -55,17 +60,23 @@ import type {
   VoidFeeRecordCommand,
 } from './repository';
 import {
+  alreadyRemoved,
   alreadyVoided,
   billHasPayments,
   billNotOpen,
+  documentNotConfirmable,
+  documentNotRemovable,
+  documentStoragePath,
   duplicateService,
   duplicateVyaparBill,
+  fileTooLarge,
   financialYearStart,
   noCreditAvailable,
   notCreditAllocation,
   staleClient,
   staleContact,
   staleService,
+  uploadMissing,
 } from './repository';
 
 function sanitizeDatabaseError(error: unknown): never {
@@ -2461,6 +2472,195 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
   }
 
   // --- Client credit (FEE-02a) ---
+
+  // --- Client documents (DOC-01a) ---
+  // Row-level security limits every read and write to clients the actor looks after; the files
+  // themselves are uploaded and downloaded by the browser straight to Storage.
+
+  private async queryDocumentDtos(
+    tx: SqlClient,
+    filter: { readonly id?: string; readonly clientId?: string; readonly availableOnly?: boolean },
+  ): Promise<ClientDocumentDto[]> {
+    const rows = await tx`
+      SELECT
+        d.id,
+        d.client_id AS "clientId",
+        c.code AS "clientCode",
+        c.display_name AS "clientName",
+        d.title,
+        d.category,
+        d.financial_year_start AS "financialYearStart",
+        d.file_name AS "fileName",
+        d.mime_type AS "mimeType",
+        d.size_bytes AS "sizeBytes",
+        d.status,
+        d.storage_path AS "storagePath",
+        d.created_by AS "uploadedById",
+        p.full_name AS "uploadedByName",
+        d.created_at AS "createdAt",
+        d.removed_reason AS "removedReason",
+        d.removed_at AS "removedAt"
+      FROM public.client_documents d
+      JOIN public.clients c ON c.id = d.client_id
+      JOIN public.profiles p ON p.user_id = d.created_by
+      WHERE (${filter.id ?? null}::uuid IS NULL OR d.id = ${filter.id ?? null}::uuid)
+        AND (${filter.clientId ?? null}::uuid IS NULL OR d.client_id = ${filter.clientId ?? null}::uuid)
+        AND (${filter.availableOnly === true}::boolean = false OR d.status = 'available')
+      ORDER BY d.created_at DESC, d.id DESC;
+    `;
+    return rows.map((row) => ({
+      id: String(row['id']),
+      clientId: String(row['clientId']),
+      clientCode: String(row['clientCode']),
+      clientName: String(row['clientName']),
+      title: String(row['title']),
+      category: row['category'] as ClientDocumentDto['category'],
+      financialYearStart: row['financialYearStart'] === null ? null : Number(row['financialYearStart']),
+      fileName: String(row['fileName']),
+      mimeType: String(row['mimeType']),
+      sizeBytes: toSafePaise(row['sizeBytes'], 'size_bytes'),
+      status: row['status'] as ClientDocumentDto['status'],
+      storagePath: String(row['storagePath']),
+      uploadedById: String(row['uploadedById']),
+      uploadedByName: String(row['uploadedByName']),
+      createdAt: toIsoString(row['createdAt']),
+      removedReason: nullableText(row['removedReason']),
+      removedAt: row['removedAt'] === null ? null : toIsoString(row['removedAt']),
+    }));
+  }
+
+  async listClientDocuments(ctx: RepositoryContext, clientId?: string): Promise<ClientDocumentDto[]> {
+    try {
+      return await this.runner.withUserContext(ctx, (tx) =>
+        this.queryDocumentDtos(tx, { availableOnly: true, ...(clientId !== undefined ? { clientId } : {}) }),
+      );
+    } catch (error) {
+      sanitizeDatabaseError(error);
+    }
+  }
+
+  async createClientDocument(ctx: RepositoryContext, command: CreateDocumentCommand): Promise<ClientDocumentDto> {
+    const { idempotencyKey, ...payload } = command;
+    try {
+      return await this.runner.withUserContext(ctx, (tx) =>
+        this.runIdempotent<ClientDocumentDto>(tx, ctx, idempotencyKey, 'createClientDocument', payload, async () => {
+          const clientRows = await tx`
+            SELECT is_demo, public.looks_after_client(id) AS looks_after
+            FROM public.clients
+            WHERE id = ${command.clientId}::uuid;
+          `;
+          const client = clientRows[0];
+          if (!client || client['looks_after'] !== true) throw notFound('Client');
+
+          const documentId = crypto.randomUUID();
+          const storagePath = documentStoragePath(command.clientId, documentId, command.fileName);
+          // is_demo is inherited from the client by the document's insert trigger
+          await tx`
+            INSERT INTO public.client_documents (
+              id, client_id, title, category, financial_year_start, file_name, mime_type,
+              size_bytes, storage_path, created_by
+            ) VALUES (
+              ${documentId}::uuid,
+              ${command.clientId}::uuid,
+              ${command.title},
+              ${command.category},
+              ${command.financialYearStart ?? null}::smallint,
+              ${command.fileName},
+              ${command.mimeType},
+              ${command.sizeBytes}::bigint,
+              ${storagePath},
+              ${ctx.actorId}::uuid
+            );
+          `;
+          const created = (await this.queryDocumentDtos(tx, { id: documentId }))[0];
+          if (!created) {
+            throw new ApiError(500, 'internal_error', 'Created document could not be retrieved.');
+          }
+          return { result: created, isDemo: Boolean(client['is_demo']) };
+        }),
+      );
+    } catch (error) {
+      sanitizeDatabaseError(error);
+    }
+  }
+
+  async confirmClientDocument(ctx: RepositoryContext, command: ConfirmDocumentCommand): Promise<ClientDocumentDto> {
+    const { idempotencyKey, ...payload } = command;
+    try {
+      return await this.runner.withUserContext(ctx, (tx) =>
+        this.runIdempotent<ClientDocumentDto>(tx, ctx, idempotencyKey, 'confirmClientDocument', payload, async () => {
+          const rows = await tx`
+            SELECT status, created_by, is_demo
+            FROM public.client_documents
+            WHERE id = ${command.id}::uuid
+            FOR UPDATE;
+          `;
+          const document = rows[0];
+          if (!document) throw notFound('Document');
+          if (String(document['created_by']) !== ctx.actorId) throw this.forbiddenOperation();
+          if (document['status'] !== 'pending') throw documentNotConfirmable();
+
+          const sizeRows = await tx`SELECT public.document_object_size(${command.id}::uuid) AS size;`;
+          const rawSize = sizeRows[0]?.['size'];
+          if (rawSize === null || rawSize === undefined) throw uploadMissing();
+          const size = toSafePaise(rawSize, 'size');
+          if (size > DOCUMENT_MAX_BYTES) throw fileTooLarge();
+
+          const updated = await tx`
+            UPDATE public.client_documents
+            SET status = 'available', size_bytes = ${size}::bigint
+            WHERE id = ${command.id}::uuid
+            RETURNING id;
+          `;
+          // Row-level security silently skips an update the actor may not make
+          if (updated.length === 0) throw this.forbiddenOperation();
+          const confirmed = (await this.queryDocumentDtos(tx, { id: command.id }))[0];
+          if (!confirmed) {
+            throw new ApiError(500, 'internal_error', 'Confirmed document could not be retrieved.');
+          }
+          return { result: confirmed, isDemo: Boolean(document['is_demo']) };
+        }),
+      );
+    } catch (error) {
+      sanitizeDatabaseError(error);
+    }
+  }
+
+  async removeClientDocument(ctx: RepositoryContext, command: RemoveDocumentCommand): Promise<ClientDocumentDto> {
+    const { idempotencyKey, ...payload } = command;
+    try {
+      return await this.runner.withUserContext(ctx, (tx) =>
+        this.runIdempotent<ClientDocumentDto>(tx, ctx, idempotencyKey, 'removeClientDocument', payload, async () => {
+          const rows = await tx`
+            SELECT status, is_demo
+            FROM public.client_documents
+            WHERE id = ${command.id}::uuid
+            FOR UPDATE;
+          `;
+          const document = rows[0];
+          if (!document) throw notFound('Document');
+          if (document['status'] === 'removed') throw alreadyRemoved();
+          if (document['status'] !== 'available') throw documentNotRemovable();
+
+          // The guard trigger records who removed it and when
+          const updated = await tx`
+            UPDATE public.client_documents
+            SET status = 'removed', removed_reason = ${command.reason}
+            WHERE id = ${command.id}::uuid
+            RETURNING id;
+          `;
+          if (updated.length === 0) throw this.forbiddenOperation();
+          const removed = (await this.queryDocumentDtos(tx, { id: command.id }))[0];
+          if (!removed) {
+            throw new ApiError(500, 'internal_error', 'Removed document could not be retrieved.');
+          }
+          return { result: removed, isDemo: Boolean(document['is_demo']) };
+        }),
+      );
+    } catch (error) {
+      sanitizeDatabaseError(error);
+    }
+  }
 
   private async lockClientCredit(tx: postgres.TransactionSql, clientId: string): Promise<void> {
     await tx`SELECT pg_advisory_xact_lock(hashtext(${`client-credit:${clientId}`}))`;

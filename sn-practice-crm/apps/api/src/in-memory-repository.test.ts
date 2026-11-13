@@ -4,6 +4,7 @@ import { InMemoryCrmRepository } from './in-memory-repository';
 import type {
   CreateAssignmentRecord,
   CreateClientRecord,
+  CreateDocumentCommand,
   CreateWorkItemRecord,
   RecordPaymentCommand,
   RecordVyaparBillCommand,
@@ -11,6 +12,7 @@ import type {
   UpdateAssignmentStatusCommand,
   UpdateWorkItemStatusCommand,
 } from './repository';
+import { documentStoragePath, safeDocumentFileName } from './repository';
 
 describe('InMemoryCrmRepository Contract, Lookups and Invariants', () => {
   const ctx: RepositoryContext = { actorId: DEMO_ACTOR_IDS.founder };
@@ -1855,5 +1857,164 @@ describe('InMemoryCrmRepository client master (CLI-02a)', () => {
 
     await repository.deleteClientContact(staffCtx, own.id);
     expect((await repository.getClient(staffCtx, BLUEPEAK))?.contacts).toEqual([]);
+  });
+});
+
+describe('InMemoryCrmRepository client documents (DOC-01a)', () => {
+  const ASTER = '10000000-0000-4000-a000-000000000001'; // looked after by Founder, Manager and Senior Staff
+  const BLUEPEAK = '10000000-0000-4000-a000-000000000002'; // looked after by Founder, Manager and Staff
+  const founderCtx: RepositoryContext = { actorId: DEMO_ACTOR_IDS.founder };
+  const managerCtx: RepositoryContext = { actorId: DEMO_ACTOR_IDS.manager };
+  const seniorCtx: RepositoryContext = { actorId: DEMO_ACTOR_IDS.senior };
+  const staffCtx: RepositoryContext = { actorId: DEMO_ACTOR_IDS.staff };
+  const traineeCtx: RepositoryContext = { actorId: DEMO_ACTOR_IDS.trainee };
+
+  const command = (overrides: Partial<CreateDocumentCommand> = {}): CreateDocumentCommand => ({
+    clientId: BLUEPEAK,
+    title: 'Board resolution',
+    category: 'agreements',
+    financialYearStart: 2026,
+    fileName: 'resolution.pdf',
+    mimeType: 'application/pdf',
+    sizeBytes: 1000,
+    idempotencyKey: 'create-1',
+    ...overrides,
+  });
+
+  it('builds the storage path from the client, the document and a safe file name', () => {
+    expect(safeDocumentFileName('Balance sheet (FY 26-27) ₹.xlsx')).toBe('Balance_sheet__FY_26-27___.xlsx');
+    expect(safeDocumentFileName('a_b-c.d.pdf')).toBe('a_b-c.d.pdf');
+    expect(documentStoragePath('client', 'doc', 'my file.pdf')).toBe('clients/client/doc/my_file.pdf');
+  });
+
+  it('simulates Storage: a document is available only once its object exists, with the real size', async () => {
+    const repository = new InMemoryCrmRepository(createDemoSeed());
+    const created = await repository.createClientDocument(staffCtx, command());
+    expect(created.status).toBe('pending');
+    expect(created.storagePath).toBe(`clients/${BLUEPEAK}/${created.id}/resolution.pdf`);
+
+    await expect(
+      repository.confirmClientDocument(staffCtx, { id: created.id, idempotencyKey: 'confirm-1' }),
+    ).rejects.toMatchObject({ status: 422, code: 'upload_missing' });
+
+    repository.markObjectUploaded(created.storagePath, 777);
+    const confirmed = await repository.confirmClientDocument(staffCtx, { id: created.id, idempotencyKey: 'confirm-2' });
+    expect(confirmed).toMatchObject({ status: 'available', sizeBytes: 777 });
+    expect(await repository.listClientDocuments(staffCtx)).toEqual([confirmed]);
+  });
+
+  it('refuses an object over 25 MB at confirmation', async () => {
+    const repository = new InMemoryCrmRepository(createDemoSeed());
+    const created = await repository.createClientDocument(staffCtx, command());
+    repository.markObjectUploaded(created.storagePath, 26214401);
+    await expect(
+      repository.confirmClientDocument(staffCtx, { id: created.id, idempotencyKey: 'confirm-1' }),
+    ).rejects.toMatchObject({ status: 422, code: 'file_too_large' });
+  });
+
+  it('shows and accepts documents only for clients the actor looks after', async () => {
+    const repository = new InMemoryCrmRepository(createDemoSeed());
+    await expect(repository.createClientDocument(seniorCtx, command())).rejects.toMatchObject({ status: 404 });
+    await expect(repository.createClientDocument(traineeCtx, command())).rejects.toMatchObject({ status: 404 });
+    await expect(
+      repository.createClientDocument(staffCtx, command({ clientId: ASTER, idempotencyKey: 'create-2' })),
+    ).rejects.toMatchObject({ status: 404 });
+    await expect(
+      repository.createClientDocument(founderCtx, command({ clientId: '10000000-0000-4000-a000-0000000000ff', idempotencyKey: 'create-3' })),
+    ).rejects.toMatchObject({ status: 404 });
+
+    const owned = await repository.createClientDocument(staffCtx, command({ idempotencyKey: 'create-4' }));
+    const reviewed = await repository.createClientDocument(seniorCtx, command({ clientId: ASTER, idempotencyKey: 'create-5' }));
+    for (const [ctx, document] of [
+      [staffCtx, owned],
+      [seniorCtx, reviewed],
+    ] as const) {
+      repository.markObjectUploaded(document.storagePath, 10);
+      await repository.confirmClientDocument(ctx, { id: document.id, idempotencyKey: `confirm-${document.id}` });
+    }
+
+    const ids = async (ctx: RepositoryContext, clientId?: string) =>
+      (await repository.listClientDocuments(ctx, clientId)).map((document) => document.id);
+    expect((await ids(founderCtx)).sort()).toEqual([owned.id, reviewed.id].sort());
+    expect((await ids(managerCtx)).sort()).toEqual([owned.id, reviewed.id].sort());
+    expect(await ids(staffCtx)).toEqual([owned.id]);
+    expect(await ids(seniorCtx)).toEqual([reviewed.id]);
+    expect(await ids(traineeCtx)).toEqual([]);
+    expect(await ids(founderCtx, ASTER)).toEqual([reviewed.id]);
+    expect(await ids(staffCtx, ASTER)).toEqual([]);
+  });
+
+  it('lets only the uploader confirm a pending document', async () => {
+    const repository = new InMemoryCrmRepository(createDemoSeed());
+    const created = await repository.createClientDocument(staffCtx, command());
+    repository.markObjectUploaded(created.storagePath, 10);
+    await expect(
+      repository.confirmClientDocument(founderCtx, { id: created.id, idempotencyKey: 'confirm-1' }),
+    ).rejects.toMatchObject({ status: 403 });
+    await expect(
+      repository.confirmClientDocument(seniorCtx, { id: created.id, idempotencyKey: 'confirm-2' }),
+    ).rejects.toMatchObject({ status: 404 });
+    await repository.confirmClientDocument(staffCtx, { id: created.id, idempotencyKey: 'confirm-3' });
+    await expect(
+      repository.confirmClientDocument(staffCtx, { id: created.id, idempotencyKey: 'confirm-4' }),
+    ).rejects.toMatchObject({ status: 409, code: 'invalid_state_transition' });
+  });
+
+  it('lets staff on the client remove a document, keeps the record, and never removes twice', async () => {
+    const repository = new InMemoryCrmRepository(createDemoSeed());
+    const created = await repository.createClientDocument(staffCtx, command());
+    repository.markObjectUploaded(created.storagePath, 10);
+    await repository.confirmClientDocument(staffCtx, { id: created.id, idempotencyKey: 'confirm-s' });
+    const removed = await repository.removeClientDocument(staffCtx, {
+      id: created.id,
+      reason: 'Wrong file',
+      idempotencyKey: 'remove-s',
+    });
+    expect(removed).toMatchObject({ status: 'removed', removedReason: 'Wrong file' });
+    await expect(
+      repository.removeClientDocument(managerCtx, { id: created.id, reason: 'Again', idempotencyKey: 'remove-s2' }),
+    ).rejects.toMatchObject({ status: 422, code: 'already_removed' });
+  });
+
+  it('removes a document for management, keeps the record, and never removes twice', async () => {
+    const repository = new InMemoryCrmRepository(createDemoSeed());
+    const created = await repository.createClientDocument(staffCtx, command());
+    await expect(
+      repository.removeClientDocument(managerCtx, { id: created.id, reason: 'Too early', idempotencyKey: 'remove-0' }),
+    ).rejects.toMatchObject({ status: 409, code: 'invalid_state_transition' });
+    repository.markObjectUploaded(created.storagePath, 10);
+    await repository.confirmClientDocument(staffCtx, { id: created.id, idempotencyKey: 'confirm-1' });
+
+    const removed = await repository.removeClientDocument(managerCtx, {
+      id: created.id,
+      reason: 'Wrong file',
+      idempotencyKey: 'remove-2',
+    });
+    expect(removed).toMatchObject({ status: 'removed', removedReason: 'Wrong file' });
+    expect(removed.removedAt).not.toBeNull();
+    expect(await repository.listClientDocuments(founderCtx)).toEqual([]);
+    await expect(
+      repository.removeClientDocument(founderCtx, { id: created.id, reason: 'Again', idempotencyKey: 'remove-3' }),
+    ).rejects.toMatchObject({ status: 422, code: 'already_removed' });
+  });
+
+  it('replays a write with the same key and refuses the key for a different payload', async () => {
+    const repository = new InMemoryCrmRepository(createDemoSeed());
+    const first = await repository.createClientDocument(staffCtx, command());
+    expect(await repository.createClientDocument(staffCtx, command())).toEqual(first);
+    await expect(
+      repository.createClientDocument(staffCtx, command({ title: 'Different title' })),
+    ).rejects.toMatchObject({ status: 409, code: 'conflict' });
+    expect(await repository.createClientDocument(staffCtx, command({ idempotencyKey: 'create-2' }))).not.toEqual(first);
+  });
+
+  it('returns copies, so a caller cannot change a stored document', async () => {
+    const repository = new InMemoryCrmRepository(createDemoSeed());
+    const created = await repository.createClientDocument(staffCtx, command());
+    repository.markObjectUploaded(created.storagePath, 10);
+    await repository.confirmClientDocument(staffCtx, { id: created.id, idempotencyKey: 'confirm-1' });
+    const [listed] = await repository.listClientDocuments(staffCtx);
+    (listed as { title: string }).title = 'Changed';
+    expect((await repository.listClientDocuments(staffCtx))[0]?.title).toBe('Board resolution');
   });
 });

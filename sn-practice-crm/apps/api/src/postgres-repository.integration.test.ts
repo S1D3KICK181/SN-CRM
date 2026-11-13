@@ -5,6 +5,7 @@ import { CrmApplication } from './application';
 import { maskGstinForRoutineRead, maskPanForRoutineRead } from './client-privacy';
 import { createApiServer } from './http';
 import { PostgresCrmRepository } from './postgres-repository';
+import type { CreateDocumentCommand } from './repository';
 
 const DATABASE_URL = process.env['DATABASE_URL'] ?? 'postgresql://postgres:postgres@127.0.0.1:54322/postgres';
 const GOTRUE_URL = process.env['SUPABASE_URL'] ? `${process.env['SUPABASE_URL']}/auth/v1` : 'http://127.0.0.1:54321/auth/v1';
@@ -3515,6 +3516,439 @@ describe('PostgresCrmRepository Integration Suite', () => {
           expect(row['pan']).toBe(maskPanForRoutineRead(input));
           expect(row['gstin']).toBe(maskGstinForRoutineRead(input));
         }
+      });
+    });
+  });
+
+  describe('DOC-01a client documents', () => {
+    const founderCtx = { actorId: FOUNDER_ID };
+    const managerCtx = { actorId: MANAGER_ID };
+    const seniorCtx = { actorId: SENIOR_ID };
+    const staffCtx = { actorId: STAFF_ID };
+    const traineeCtx = { actorId: TRAINEE_ID };
+    const ASTER = '10000000-0000-4000-a000-000000000001'; // looked after by Founder, Manager, Senior Staff
+    const BLUEPEAK = '10000000-0000-4000-a000-000000000002'; // looked after by Founder, Manager, Staff
+
+    function key() {
+      return `it-doc-${crypto.randomUUID()}`;
+    }
+
+    function docCommand(overrides: Partial<CreateDocumentCommand> = {}): CreateDocumentCommand {
+      return {
+        clientId: BLUEPEAK,
+        title: 'Signed engagement letter',
+        category: 'agreements',
+        financialYearStart: 2026,
+        fileName: 'engagement letter (signed).pdf',
+        mimeType: 'application/pdf',
+        sizeBytes: 2048,
+        idempotencyKey: key(),
+        ...overrides,
+      };
+    }
+
+    async function asRole(tx: postgres.TransactionSql, actorId: string) {
+      await tx`SELECT set_config('request.jwt.claim.sub', ${actorId}, true)`;
+      await tx`SELECT set_config('request.jwt.claim.role', 'authenticated', true)`;
+      await tx`SELECT set_config('role', 'authenticated', true)`;
+    }
+
+    // The browser's upload to Storage: an insert into storage.objects under the user's own token
+    async function putObject(tx: postgres.TransactionSql, actorId: string, path: string, size = 4321) {
+      await tx.savepoint(async (sp) => {
+        await asRole(sp, actorId);
+        await sp`
+          INSERT INTO storage.objects (bucket_id, name, metadata)
+          VALUES ('client-documents', ${path}, ${sp.json({ size, mimetype: 'application/pdf' })})`;
+      });
+      await tx`RESET ROLE`;
+    }
+
+    // What the user can see of an object through Storage row-level security
+    async function visibleObjects(tx: postgres.TransactionSql, actorId: string, path: string): Promise<number> {
+      const rows = await tx.savepoint(async (sp) => {
+        await asRole(sp, actorId);
+        return sp`SELECT name FROM storage.objects WHERE bucket_id = 'client-documents' AND name = ${path}`;
+      });
+      await tx`RESET ROLE`;
+      return rows.length;
+    }
+
+    async function availableDocument(
+      repo: PostgresCrmRepository,
+      tx: postgres.TransactionSql,
+      ctx: { actorId: string },
+      overrides: Partial<CreateDocumentCommand> = {},
+    ) {
+      const created = await repo.createClientDocument(ctx, docCommand(overrides));
+      await putObject(tx, ctx.actorId, created.storagePath);
+      return repo.confirmClientDocument(ctx, { id: created.id, idempotencyKey: key() });
+    }
+
+    it('IT-70: confirming needs the file in Storage, which the uploader may insert; the stored size is the real one', async () => {
+      await runIsolatedTest(async (repo, tx) => {
+        const created = await repo.createClientDocument(founderCtx, docCommand());
+        expect(created).toMatchObject({
+          clientCode: 'CL-001002',
+          clientName: 'BluePeak Tech',
+          status: 'pending',
+          financialYearStart: 2026,
+          uploadedById: FOUNDER_ID,
+          removedAt: null,
+        });
+        expect(created.uploadedByName.length).toBeGreaterThan(0);
+        expect(created.storagePath).toBe(`clients/${BLUEPEAK}/${created.id}/engagement_letter__signed_.pdf`);
+
+        await expect(repo.confirmClientDocument(founderCtx, { id: created.id, idempotencyKey: key() })).rejects.toMatchObject({
+          status: 422,
+          code: 'upload_missing',
+        });
+        // A refused confirmation leaves the document pending and out of the list
+        expect((await repo.listClientDocuments(founderCtx)).map((document) => document.id)).not.toContain(created.id);
+
+        await putObject(tx, FOUNDER_ID, created.storagePath, 9876);
+        const confirmed = await repo.confirmClientDocument(founderCtx, { id: created.id, idempotencyKey: key() });
+        expect(confirmed).toMatchObject({ id: created.id, status: 'available', sizeBytes: 9876 });
+        expect((await repo.listClientDocuments(founderCtx)).map((document) => document.id)).toContain(created.id);
+        expect((await repo.listClientDocuments(founderCtx, BLUEPEAK)).map((document) => document.id)).toContain(created.id);
+        expect((await repo.listClientDocuments(founderCtx, ASTER)).map((document) => document.id)).not.toContain(created.id);
+
+        // Confirming again is not a second upload
+        await expect(repo.confirmClientDocument(founderCtx, { id: created.id, idempotencyKey: key() })).rejects.toMatchObject({
+          status: 409,
+          code: 'invalid_state_transition',
+        });
+      });
+    });
+
+    it('IT-71: staff who look after the client create and see documents; other staff and trainees cannot create and see none', async () => {
+      await runIsolatedTest(async (repo, tx) => {
+        // Lists are checked by this test's own documents only, so documents already in the local database don't matter.
+        const own = await availableDocument(repo, tx, staffCtx);
+        expect(await repo.listClientDocuments(staffCtx)).toContainEqual(own);
+
+        await expect(repo.createClientDocument(seniorCtx, docCommand())).rejects.toMatchObject({ status: 404 });
+        await expect(repo.createClientDocument(traineeCtx, docCommand())).rejects.toMatchObject({ status: 404 });
+        await expect(repo.createClientDocument(staffCtx, docCommand({ clientId: ASTER }))).rejects.toMatchObject({ status: 404 });
+
+        const reviewed = await availableDocument(repo, tx, seniorCtx, { clientId: ASTER });
+        const seniorIds = (await repo.listClientDocuments(seniorCtx)).map((document) => document.id);
+        expect(seniorIds).toContain(reviewed.id);
+        expect(seniorIds).not.toContain(own.id);
+        expect(await repo.listClientDocuments(staffCtx, ASTER)).toEqual([]);
+        expect(await repo.listClientDocuments(traineeCtx)).toEqual([]);
+        expect(await repo.listClientDocuments(traineeCtx, BLUEPEAK)).toEqual([]);
+        expect((await repo.listClientDocuments(managerCtx)).map((document) => document.id)).toEqual(
+          expect.arrayContaining([own.id, reviewed.id]),
+        );
+
+        // The table itself says the same, whatever the application does
+        for (const [actorId, clientId] of [
+          [TRAINEE_ID, BLUEPEAK],
+          [SENIOR_ID, BLUEPEAK],
+          [STAFF_ID, ASTER],
+        ] as const) {
+          await expect(
+            tx.savepoint(async (sp) => {
+              await asRole(sp, actorId);
+              await sp`
+                INSERT INTO public.client_documents (client_id, title, category, file_name, mime_type, size_bytes, storage_path)
+                VALUES (${clientId}::uuid, 'Direct insert', 'other', 'a.pdf', 'application/pdf', 10, ${`clients/${clientId}/direct/a.pdf`})`;
+            }),
+          ).rejects.toMatchObject({ code: '42501' });
+        }
+        await tx`RESET ROLE`;
+        const traineeRows = await tx.savepoint(async (sp) => {
+          await asRole(sp, TRAINEE_ID);
+          return sp`SELECT id FROM public.client_documents`;
+        });
+        expect(traineeRows.length).toBe(0);
+      });
+    });
+
+    it('IT-72: Storage lets a user read only the file of an available document they look after', async () => {
+      await runIsolatedTest(async (repo, tx) => {
+        const pending = await repo.createClientDocument(founderCtx, docCommand());
+        await putObject(tx, FOUNDER_ID, pending.storagePath);
+        // The file exists, but nobody may read it while the document is pending
+        for (const actorId of [FOUNDER_ID, MANAGER_ID, STAFF_ID, SENIOR_ID, TRAINEE_ID]) {
+          expect(await visibleObjects(tx, actorId, pending.storagePath)).toBe(0);
+        }
+
+        const available = await repo.confirmClientDocument(founderCtx, { id: pending.id, idempotencyKey: key() });
+        expect(await visibleObjects(tx, FOUNDER_ID, available.storagePath)).toBe(1);
+        expect(await visibleObjects(tx, MANAGER_ID, available.storagePath)).toBe(1);
+        expect(await visibleObjects(tx, STAFF_ID, available.storagePath)).toBe(1); // looks after BluePeak
+        expect(await visibleObjects(tx, SENIOR_ID, available.storagePath)).toBe(0);
+        expect(await visibleObjects(tx, TRAINEE_ID, available.storagePath)).toBe(0);
+
+        const asterDocument = await availableDocument(repo, tx, founderCtx, { clientId: ASTER });
+        expect(await visibleObjects(tx, SENIOR_ID, asterDocument.storagePath)).toBe(1);
+        expect(await visibleObjects(tx, STAFF_ID, asterDocument.storagePath)).toBe(0);
+
+        // Removing the document hides the file again, but nothing is destroyed
+        await repo.removeClientDocument(managerCtx, { id: available.id, reason: 'Wrong client', idempotencyKey: key() });
+        for (const actorId of [FOUNDER_ID, MANAGER_ID, STAFF_ID]) {
+          expect(await visibleObjects(tx, actorId, available.storagePath)).toBe(0);
+        }
+        const kept = await tx`SELECT count(*)::int AS c FROM storage.objects WHERE bucket_id = 'client-documents' AND name = ${available.storagePath}`;
+        expect(kept[0]!['c']).toBe(1);
+      });
+    });
+
+    it('IT-73: Storage refuses an upload with no pending record, or from anyone but the uploader, and refuses overwrites and deletes', async () => {
+      await runIsolatedTest(async (repo, tx) => {
+        const refused = async (actorId: string, path: string) => {
+          await expect(
+            tx.savepoint(async (sp) => {
+              await asRole(sp, actorId);
+              await sp`INSERT INTO storage.objects (bucket_id, name, metadata) VALUES ('client-documents', ${path}, ${sp.json({ size: 10 })})`;
+            }),
+          ).rejects.toMatchObject({ code: '42501' });
+          await tx`RESET ROLE`;
+        };
+
+        // No record at all
+        await refused(FOUNDER_ID, `clients/${BLUEPEAK}/${crypto.randomUUID()}/ghost.pdf`);
+
+        // A record created by someone else, even for a reader who looks after the client
+        const staffDocument = await repo.createClientDocument(staffCtx, docCommand());
+        await refused(FOUNDER_ID, staffDocument.storagePath);
+        await refused(MANAGER_ID, staffDocument.storagePath);
+        await refused(SENIOR_ID, staffDocument.storagePath);
+        await refused(TRAINEE_ID, staffDocument.storagePath);
+
+        // The uploader may; a record that is no longer pending cannot take a second file
+        await putObject(tx, STAFF_ID, staffDocument.storagePath);
+        await repo.confirmClientDocument(staffCtx, { id: staffDocument.id, idempotencyKey: key() });
+        await refused(STAFF_ID, `${staffDocument.storagePath}`);
+
+        // A pending record is only good for its own path
+        const another = await repo.createClientDocument(staffCtx, docCommand());
+        await refused(STAFF_ID, `clients/${BLUEPEAK}/${another.id}/other-name.pdf`);
+
+        // Files cannot be overwritten or deleted from the browser: RLS leaves nothing to act on
+        const changed = await tx.savepoint(async (sp) => {
+          await asRole(sp, FOUNDER_ID);
+          const updated = await sp`UPDATE storage.objects SET name = ${`${staffDocument.storagePath}.moved`} WHERE bucket_id = 'client-documents' AND name = ${staffDocument.storagePath} RETURNING id`;
+          return { updated: updated.length };
+        });
+        await tx`RESET ROLE`;
+        expect(changed).toEqual({ updated: 0 });
+        // Storage also blocks direct deletes outright
+        await expect(
+          tx.savepoint(async (sp) => {
+            await asRole(sp, FOUNDER_ID);
+            await sp`DELETE FROM storage.objects WHERE bucket_id = 'client-documents' AND name = ${staffDocument.storagePath}`;
+          }),
+        ).rejects.toThrow(/Direct deletion from storage tables is not allowed/);
+        await tx`RESET ROLE`;
+        const stillThere = await tx`SELECT count(*)::int AS c FROM storage.objects WHERE bucket_id = 'client-documents' AND name = ${staffDocument.storagePath}`;
+        expect(stillThere[0]!['c']).toBe(1);
+      });
+    });
+
+    it('IT-74: document_object_size reports the stored size to people who look after the client and nothing to anyone else', async () => {
+      await runIsolatedTest(async (repo, tx) => {
+        const created = await repo.createClientDocument(staffCtx, docCommand());
+        const sizeFor = async (actorId: string) => {
+          const rows = await tx.savepoint(async (sp) => {
+            await asRole(sp, actorId);
+            return sp`SELECT public.document_object_size(${created.id}::uuid) AS size`;
+          });
+          await tx`RESET ROLE`;
+          return rows[0]!['size'];
+        };
+        expect(await sizeFor(STAFF_ID)).toBeNull();
+        await putObject(tx, STAFF_ID, created.storagePath, 31337);
+        expect(Number(await sizeFor(STAFF_ID))).toBe(31337);
+        expect(Number(await sizeFor(MANAGER_ID))).toBe(31337);
+        expect(await sizeFor(SENIOR_ID)).toBeNull();
+        expect(await sizeFor(TRAINEE_ID)).toBeNull();
+      });
+    });
+
+    it('IT-75: an upload over 25 MB cannot be confirmed', async () => {
+      await runIsolatedTest(async (repo, tx) => {
+        const created = await repo.createClientDocument(staffCtx, docCommand());
+        await putObject(tx, STAFF_ID, created.storagePath, 26214401);
+        await expect(repo.confirmClientDocument(staffCtx, { id: created.id, idempotencyKey: key() })).rejects.toMatchObject({
+          status: 422,
+          code: 'file_too_large',
+          message: 'The file is larger than 25 MB.',
+        });
+        expect((await repo.listClientDocuments(staffCtx)).map((document) => document.id)).not.toContain(created.id);
+      });
+    });
+
+    it('IT-76: staff who look after the client remove a document; others cannot; it leaves the list but the record and the file stay', async () => {
+      await runIsolatedTest(async (repo, tx) => {
+        const document = await availableDocument(repo, tx, staffCtx);
+
+        expect((await repo.listClientDocuments(staffCtx)).map((row) => row.id)).toContain(document.id);
+        await expect(
+          repo.removeClientDocument(traineeCtx, { id: document.id, reason: 'Wrong file', idempotencyKey: key() }),
+        ).rejects.toMatchObject({ status: 404 });
+        await expect(
+          repo.removeClientDocument(seniorCtx, { id: document.id, reason: 'Wrong file', idempotencyKey: key() }),
+        ).rejects.toMatchObject({ status: 404 });
+
+        const removed = await repo.removeClientDocument(staffCtx, {
+          id: document.id,
+          reason: 'Uploaded to the wrong client',
+          idempotencyKey: key(),
+        });
+        expect(removed).toMatchObject({ status: 'removed', removedReason: 'Uploaded to the wrong client' });
+        expect(removed.removedAt).not.toBeNull();
+        expect((await repo.listClientDocuments(managerCtx)).map((row) => row.id)).not.toContain(document.id);
+        expect((await repo.listClientDocuments(staffCtx)).map((row) => row.id)).not.toContain(document.id);
+        await expect(
+          repo.removeClientDocument(founderCtx, { id: document.id, reason: 'Again', idempotencyKey: key() }),
+        ).rejects.toMatchObject({ status: 422, code: 'already_removed' });
+
+        await tx`RESET ROLE`;
+        const rows = await tx`
+          SELECT status, removed_by::text AS removed_by, removed_reason, size_bytes::int AS size_bytes
+          FROM public.client_documents WHERE id = ${document.id}::uuid`;
+        expect(rows[0]).toEqual({
+          status: 'removed',
+          removed_by: STAFF_ID,
+          removed_reason: 'Uploaded to the wrong client',
+          size_bytes: 4321,
+        });
+        const file = await tx`SELECT count(*)::int AS c FROM storage.objects WHERE bucket_id = 'client-documents' AND name = ${document.storagePath}`;
+        expect(file[0]!['c']).toBe(1);
+      });
+    });
+
+    it('IT-77: the database allows only pending to available and available to removed, never changes identity, and has no delete', async () => {
+      await runIsolatedTest(async (repo, tx) => {
+        const pending = await repo.createClientDocument(staffCtx, docCommand());
+        const available = await availableDocument(repo, tx, staffCtx);
+        const mutate = async (actorId: string, statement: (sp: postgres.TransactionSql) => Promise<unknown>) => {
+          try {
+            await tx.savepoint(async (sp) => {
+              await asRole(sp, actorId);
+              await statement(sp);
+            });
+          } finally {
+            await tx`RESET ROLE`;
+          }
+        };
+
+        // Not a legal move
+        await expect(
+          mutate(MANAGER_ID, (sp) => sp`UPDATE public.client_documents SET status = 'removed', removed_reason = 'Skipped upload' WHERE id = ${pending.id}::uuid`),
+        ).rejects.toMatchObject({ code: '23514' });
+        await expect(
+          mutate(STAFF_ID, (sp) => sp`UPDATE public.client_documents SET status = 'pending' WHERE id = ${available.id}::uuid`),
+        ).rejects.toMatchObject({ code: '23514' });
+        // Only the uploader confirms
+        await expect(
+          mutate(MANAGER_ID, (sp) => sp`UPDATE public.client_documents SET status = 'available' WHERE id = ${pending.id}::uuid`),
+        ).rejects.toMatchObject({ code: '42501' });
+        // Removing needs a reason (staff who look after the client may remove; see IT-76)
+        await expect(
+          mutate(MANAGER_ID, (sp) => sp`UPDATE public.client_documents SET status = 'removed' WHERE id = ${available.id}::uuid`),
+        ).rejects.toMatchObject({ code: '23514' });
+        // Identity never changes
+        for (const column of ['client_id', 'storage_path', 'file_name', 'created_by']) {
+          const value = column === 'client_id' ? ASTER : column === 'created_by' ? MANAGER_ID : 'changed';
+          await expect(
+            mutate(FOUNDER_ID, (sp) => sp`UPDATE public.client_documents SET ${sp(column)} = ${value} WHERE id = ${available.id}::uuid`),
+          ).rejects.toMatchObject({ code: '23514' });
+        }
+        // Removing sets who and when, whatever the caller writes
+        await mutate(MANAGER_ID, (sp) => sp`UPDATE public.client_documents SET status = 'removed', removed_reason = 'Duplicate', removed_by = ${STAFF_ID}::uuid WHERE id = ${available.id}::uuid`);
+        await tx`RESET ROLE`;
+        const removed = await tx`SELECT removed_by::text AS removed_by, removed_at IS NOT NULL AS has_time FROM public.client_documents WHERE id = ${available.id}::uuid`;
+        expect(removed[0]).toEqual({ removed_by: MANAGER_ID, has_time: true });
+        // Removed is terminal
+        await expect(
+          mutate(FOUNDER_ID, (sp) => sp`UPDATE public.client_documents SET status = 'available' WHERE id = ${available.id}::uuid`),
+        ).rejects.toMatchObject({ code: '23514' });
+        // Nobody can delete a record
+        // (there is no delete policy, so row-level security leaves nothing to delete)
+        let deletedRows = -1;
+        await mutate(FOUNDER_ID, async (sp) => {
+          deletedRows = (await sp`DELETE FROM public.client_documents WHERE id = ${available.id}::uuid RETURNING id`).length;
+        });
+        expect(deletedRows).toBe(0);
+        const kept = await tx`SELECT count(*)::int AS c FROM public.client_documents WHERE id = ${available.id}::uuid`;
+        expect(kept[0]!['c']).toBe(1);
+        // A document is never born available
+        await expect(
+          mutate(STAFF_ID, (sp) => sp`
+            INSERT INTO public.client_documents (client_id, title, category, file_name, mime_type, size_bytes, storage_path, status)
+            VALUES (${BLUEPEAK}::uuid, 'Born available', 'other', 'a.pdf', 'application/pdf', 10, ${`clients/${BLUEPEAK}/born/a.pdf`}, 'available')`),
+        ).rejects.toMatchObject({ code: '23514' });
+      });
+    });
+
+    it('IT-78: an idempotent replay creates, confirms and removes only once, and a changed payload on the key is a 409', async () => {
+      await runIsolatedTest(async (repo, tx) => {
+        const createKey = key();
+        const command = docCommand({ idempotencyKey: createKey });
+        const first = await repo.createClientDocument(staffCtx, command);
+        const replay = await repo.createClientDocument(staffCtx, command);
+        expect(replay).toEqual(first);
+        await expect(
+          repo.createClientDocument(staffCtx, { ...command, title: 'A different title' }),
+        ).rejects.toMatchObject({ status: 409, code: 'conflict' });
+        await tx`RESET ROLE`;
+        const counted = await tx`SELECT count(*)::int AS c FROM public.client_documents WHERE client_id = ${BLUEPEAK}::uuid AND title = ${command.title}`;
+        expect(counted[0]!['c']).toBe(1);
+
+        await putObject(tx, STAFF_ID, first.storagePath);
+        const confirmKey = key();
+        const confirmed = await repo.confirmClientDocument(staffCtx, { id: first.id, idempotencyKey: confirmKey });
+        expect(await repo.confirmClientDocument(staffCtx, { id: first.id, idempotencyKey: confirmKey })).toEqual(confirmed);
+
+        const removeKey = key();
+        const removed = await repo.removeClientDocument(managerCtx, { id: first.id, reason: 'Duplicate upload', idempotencyKey: removeKey });
+        expect(await repo.removeClientDocument(managerCtx, { id: first.id, reason: 'Duplicate upload', idempotencyKey: removeKey })).toEqual(removed);
+      });
+    });
+
+    it('IT-79: documents inherit is_demo from their client, and removing demo data still works with documents present', async () => {
+      await runIsolatedTest(async (repo, tx) => {
+        // Aster is demo data; a client created through the repository is not
+        const demoDocument = await availableDocument(repo, tx, founderCtx, { clientId: ASTER });
+        const liveClientId = crypto.randomUUID();
+        const now = new Date().toISOString();
+        await repo.createClient(founderCtx, { id: liveClientId, displayName: 'Live Document Client', createdAt: now, updatedAt: now });
+        const liveDocument = await availableDocument(repo, tx, founderCtx, { clientId: liveClientId });
+
+        await tx`RESET ROLE`;
+        const flags = await tx`
+          SELECT id::text AS id, is_demo FROM public.client_documents
+          WHERE id IN (${demoDocument.id}::uuid, ${liveDocument.id}::uuid)`;
+        expect(flags.find((row) => row['id'] === demoDocument.id)?.['is_demo']).toBe(true);
+        expect(flags.find((row) => row['id'] === liveDocument.id)?.['is_demo']).toBe(false);
+
+        // The flag cannot be changed afterwards
+        await expect(
+          tx.savepoint(async (sp) => {
+            await sp`UPDATE public.client_documents SET is_demo = false WHERE id = ${demoDocument.id}::uuid`;
+          }),
+        ).rejects.toMatchObject({ code: '23514' });
+
+        await tx`SELECT set_config('request.jwt.claim.sub', ${FOUNDER_ID}, true)`;
+        await tx`SELECT set_config('role', 'authenticated', true)`;
+        const removal = await tx`SELECT public.remove_demo_data() AS result`;
+        expect(removal[0]!['result']).toMatchObject({ ok: true });
+        expect((removal[0]!['result'] as { deleted: Record<string, number> }).deleted['client_documents']).toBeGreaterThanOrEqual(1);
+
+        await tx`RESET ROLE`;
+        const demoLeft = await tx`SELECT count(*)::int AS c FROM public.client_documents WHERE id = ${demoDocument.id}::uuid`;
+        const liveLeft = await tx`SELECT count(*)::int AS c FROM public.client_documents WHERE id = ${liveDocument.id}::uuid`;
+        expect(demoLeft[0]!['c']).toBe(0);
+        expect(liveLeft[0]!['c']).toBe(1);
+        const demoDocumentsAnywhere = await tx`SELECT count(*)::int AS c FROM public.client_documents WHERE is_demo = true`;
+        expect(demoDocumentsAnywhere[0]!['c']).toBe(0);
+        // Demo documents' stored files may stay
+        const file = await tx`SELECT count(*)::int AS c FROM storage.objects WHERE bucket_id = 'client-documents' AND name = ${demoDocument.storagePath}`;
+        expect(file[0]!['c']).toBe(1);
       });
     });
   });

@@ -52,6 +52,11 @@ export function createSupabaseAuthClient(config: SupabaseClientConfig = {}): Sup
 export class SupabaseAuthAdapter implements AuthSessionSource {
   constructor(private readonly client: SupabaseClient) {}
 
+  /** The signed-in Supabase client, shared so Storage calls reuse the same session and token refresh. */
+  public getClient(): SupabaseClient {
+    return this.client;
+  }
+
   public async getSession(): Promise<AuthSession | null> {
     const { data, error } = await this.client.auth.getSession();
     if (error || !data.session) return null;

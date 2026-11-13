@@ -317,3 +317,18 @@ describe('SVC-01 service list authority', () => {
     });
   });
 });
+
+describe('DOC-01 document authority', () => {
+  // Which clients' documents each person may remove is the "looks after the client" rule in Postgres.
+  it.each(['founder', 'manager', 'senior_staff', 'staff'] as const)('allows the %s to remove a document', (role) => {
+    expect(authorize({ action: 'document.remove', actor: actor(role) })).toEqual({ allowed: true });
+  });
+
+  it('denies a trainee removing a document', () => {
+    expect(authorize({ action: 'document.remove', actor: actor('trainee') })).toEqual({
+      allowed: false,
+      code: 'role_not_permitted',
+      reason: 'Trainees cannot remove documents.',
+    });
+  });
+});

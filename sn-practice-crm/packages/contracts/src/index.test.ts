@@ -7,6 +7,9 @@ import {
   CLIENT_STATUSES,
   CLIENT_ENTITY_TYPES,
   INDIAN_STATES,
+  DOCUMENT_CATEGORIES,
+  DOCUMENT_MAX_BYTES,
+  DOCUMENT_ALLOWED_TYPES,
   ENGAGEMENT_STATUSES,
   ENGAGEMENT_FEE_MODELS,
   ENGAGEMENT_END_OUTCOMES,
@@ -25,6 +28,10 @@ import {
   type CreateClientInput,
   type UpdateClientInput,
   type CreateClientContactInput,
+  type ClientDocumentDto,
+  type CreateDocumentInput,
+  type RemoveDocumentInput,
+  type DocumentCategory,
   type UpdateClientContactInput,
   type WorkItemDto,
   type CreateAssignmentInput,
@@ -571,5 +578,42 @@ describe('Client master contracts (CLI-02a)', () => {
     expectTypeOf<UpdateClientInput>().toHaveProperty('status').toEqualTypeOf<ClientStatus | undefined>();
     expectTypeOf<CreateClientContactInput>().toHaveProperty('name').toBeString();
     expectTypeOf<UpdateClientContactInput>().toHaveProperty('expectedUpdatedAt').toEqualTypeOf<string>();
+  });
+});
+
+describe('Client document contracts (DOC-01a)', () => {
+  it('exports the categories, the size limit and the allowed types', () => {
+    expect(DOCUMENT_CATEGORIES).toEqual([
+      'kyc',
+      'financial_statements',
+      'returns_filed',
+      'acknowledgements',
+      'agreements',
+      'correspondence',
+      'other',
+    ]);
+    expect(DOCUMENT_MAX_BYTES).toBe(25 * 1024 * 1024);
+    expect(Object.keys(DOCUMENT_ALLOWED_TYPES).sort()).toEqual([
+      'application/msword',
+      'application/pdf',
+      'application/vnd.ms-excel',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'image/jpeg',
+      'image/png',
+      'text/csv',
+    ]);
+    expect(DOCUMENT_ALLOWED_TYPES['image/jpeg']).toEqual(['jpg', 'jpeg']);
+  });
+
+  it('verifies the document type shapes at compile time', () => {
+    expectTypeOf<ClientDocumentDto>().toHaveProperty('category').toEqualTypeOf<DocumentCategory>();
+    expectTypeOf<ClientDocumentDto>().toHaveProperty('financialYearStart').toEqualTypeOf<number | null>();
+    expectTypeOf<ClientDocumentDto>().toHaveProperty('removedReason').toEqualTypeOf<string | null>();
+    expectTypeOf<ClientDocumentDto>().toHaveProperty('removedAt').toEqualTypeOf<string | null>();
+    expectTypeOf<ClientDocumentDto>().toHaveProperty('status').toEqualTypeOf<'pending' | 'available' | 'removed'>();
+    expectTypeOf<CreateDocumentInput>().toHaveProperty('financialYearStart').toEqualTypeOf<number | null | undefined>();
+    expectTypeOf<CreateDocumentInput>().toHaveProperty('sizeBytes').toBeNumber();
+    expectTypeOf<RemoveDocumentInput>().toHaveProperty('reason').toBeString();
   });
 });

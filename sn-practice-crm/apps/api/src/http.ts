@@ -16,6 +16,8 @@ import {
   createAssignmentSchema,
   createClientContactSchema,
   createClientSchema,
+  confirmDocumentSchema,
+  createDocumentSchema,
   createLedgerEntrySchema,
   createRecurringScheduleSchema,
   createServiceSchema,
@@ -23,6 +25,7 @@ import {
   entityUuid,
   recordPaymentSchema,
   recordVyaparBillSchema,
+  removeDocumentSchema,
   voidFeeRecordSchema,
   applyCreditSchema,
   removeCreditSchema,
@@ -445,6 +448,33 @@ export function createApiServer(application: CrmApplication, options: ApiServerO
         const key = idempotencyKey(request);
         const body = await readJson(request, removeCreditSchema);
         sendData(response, context, allowedOrigins, 200, await application.removeCreditAllocation(actor, allocationRemoveId, body, key));
+        return;
+      }
+
+      if (request.method === 'GET' && pathname === '/api/v1/documents') {
+        const clientId = url.searchParams.get('clientId');
+        if (clientId !== null && !entityUuid.safeParse(clientId).success) invalidIdentifier();
+        sendData(response, context, allowedOrigins, 200, await application.listDocuments(actor, clientId ?? undefined));
+        return;
+      }
+      if (request.method === 'POST' && pathname === '/api/v1/documents') {
+        const key = idempotencyKey(request);
+        const body = await readJson(request, createDocumentSchema);
+        sendData(response, context, allowedOrigins, 201, await application.createDocument(actor, body, key));
+        return;
+      }
+      const documentConfirmId = routeId(pathname, /^\/api\/v1\/documents\/([^/]+)\/confirm$/);
+      if (request.method === 'POST' && documentConfirmId) {
+        const key = idempotencyKey(request);
+        await readJson(request, confirmDocumentSchema);
+        sendData(response, context, allowedOrigins, 200, await application.confirmDocument(actor, documentConfirmId, key));
+        return;
+      }
+      const documentRemoveId = routeId(pathname, /^\/api\/v1\/documents\/([^/]+)\/remove$/);
+      if (request.method === 'POST' && documentRemoveId) {
+        const key = idempotencyKey(request);
+        const body = await readJson(request, removeDocumentSchema);
+        sendData(response, context, allowedOrigins, 200, await application.removeDocument(actor, documentRemoveId, body, key));
         return;
       }
 

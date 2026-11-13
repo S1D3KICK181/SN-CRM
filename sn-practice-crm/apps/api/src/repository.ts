@@ -4,9 +4,11 @@ import type {
   AssignmentDto,
   AssignmentStatus,
   ClientContactDto,
+  ClientDocumentDto,
   ClientDto,
   ClientEntityType,
   CreateClientContactInput,
+  CreateDocumentInput,
   CreateEngagementDraftInput,
   CreateLedgerEntryInput,
   CreateRecurringScheduleInput,
@@ -22,6 +24,7 @@ import type {
   RecordPaymentInput,
   RecordVyaparBillInput,
   RecurringScheduleDto,
+  RemoveDocumentInput,
   ReportingLineDto,
   ReviseEngagementDraftInput,
   ServiceDto,
@@ -313,6 +316,54 @@ export function billHasPayments(): ApiError {
   return new ApiError(422, 'bill_has_payments', 'Cancel the payments and remove any credit on this bill first.');
 }
 
+// --- Client document commands (DOC-01a) ---
+// The repository generates the document id and the storage path inside the idempotent work, so a
+// replay returns the stored result rather than a second pending record.
+
+export type CreateDocumentCommand = CreateDocumentInput & { readonly idempotencyKey: string };
+export interface ConfirmDocumentCommand {
+  readonly id: string; // RFC 4122 UUID of the caller's own pending document
+  readonly idempotencyKey: string;
+}
+export type RemoveDocumentCommand = RemoveDocumentInput & {
+  readonly id: string; // RFC 4122 UUID of the document
+  readonly idempotencyKey: string;
+};
+
+/** Keeps letters, digits, dot, dash and underscore; every other character becomes an underscore. */
+export function safeDocumentFileName(fileName: string): string {
+  return fileName.replace(/[^A-Za-z0-9._-]/g, '_');
+}
+
+/** Path of a document's file inside the private client-documents bucket. */
+export function documentStoragePath(clientId: string, documentId: string, fileName: string): string {
+  return `clients/${clientId}/${documentId}/${safeDocumentFileName(fileName)}`;
+}
+
+export function fileTooLarge(): ApiError {
+  return new ApiError(422, 'file_too_large', 'The file is larger than 25 MB.');
+}
+
+export function fileTypeNotAllowed(): ApiError {
+  return new ApiError(422, 'file_type_not_allowed', 'Only PDF, JPG, PNG, Excel, CSV and Word files can be uploaded.');
+}
+
+export function uploadMissing(): ApiError {
+  return new ApiError(422, 'upload_missing', 'The file has not finished uploading. Try again.');
+}
+
+export function alreadyRemoved(): ApiError {
+  return new ApiError(422, 'already_removed', 'This document is already removed.');
+}
+
+export function documentNotConfirmable(): ApiError {
+  return new ApiError(409, 'invalid_state_transition', 'This document is not waiting for its upload.');
+}
+
+export function documentNotRemovable(): ApiError {
+  return new ApiError(409, 'invalid_state_transition', 'Only an uploaded document can be removed.');
+}
+
 export interface CrmRepository {
   // Clients
   getClient(ctx: RepositoryContext, clientId: string): Promise<ClientDto | null>;
@@ -324,6 +375,13 @@ export interface CrmRepository {
   createClientContact(ctx: RepositoryContext, command: CreateClientContactCommand): Promise<ClientContactDto>;
   updateClientContact(ctx: RepositoryContext, command: UpdateClientContactCommand): Promise<ClientContactDto>;
   deleteClientContact(ctx: RepositoryContext, contactId: string): Promise<void>;
+
+  // Client documents (DOC-01a); visibility and upload follow "looks after the client".
+  // Writes are idempotent on (actor, key).
+  listClientDocuments(ctx: RepositoryContext, clientId?: string): Promise<ClientDocumentDto[]>;
+  createClientDocument(ctx: RepositoryContext, command: CreateDocumentCommand): Promise<ClientDocumentDto>;
+  confirmClientDocument(ctx: RepositoryContext, command: ConfirmDocumentCommand): Promise<ClientDocumentDto>;
+  removeClientDocument(ctx: RepositoryContext, command: RemoveDocumentCommand): Promise<ClientDocumentDto>;
 
   // Reference Lookups (Repository-backed, split for SQL safety)
   getClientReference(ctx: RepositoryContext, clientId: string): Promise<ClientReference | null>;

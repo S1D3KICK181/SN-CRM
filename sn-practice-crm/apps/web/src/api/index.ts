@@ -30,3 +30,7 @@ export * from './use-billing';
 export * from './service-catalog-types';
 export * from './http-service-catalog-adapter';
 export * from './use-service-catalog';
+export * from './documents-types';
+export * from './http-documents-adapter';
+export * from './document-storage';
+export * from './use-documents';

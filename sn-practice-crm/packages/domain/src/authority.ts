@@ -44,7 +44,7 @@ export type AuthorityRequest =
     }
   | { action: 'client.update'; actor: Actor; isRelationshipOwner: boolean }
   | { action: 'client.change_owner_or_status'; actor: Actor }
-  | { action: 'finance.manage' | 'reports.view_practice' | 'team.manage_access' | 'service.manage'; actor: Actor }
+  | { action: 'finance.manage' | 'reports.view_practice' | 'team.manage_access' | 'service.manage' | 'document.remove'; actor: Actor }
   | { action: 'team.manage_reporting'; actor: Actor; subject: EmployeeRef; proposedManager: EmployeeRef | null }
   | {
       action:
@@ -205,6 +205,13 @@ export function authorize(request: AuthorityRequest): AuthorityDecision {
       return actor.role === 'founder'
         ? ALLOWED
         : deny('role_not_permitted', 'Only the Founder may create staff access or change roles.');
+
+    case 'document.remove':
+      // Reading, uploading and removing follow the "looks after the client" rule, enforced in Postgres.
+      // Trainees never look after a client, so they are refused here before any database work.
+      return actor.role !== 'trainee'
+        ? ALLOWED
+        : deny('role_not_permitted', 'Trainees cannot remove documents.');
 
     case 'service.manage':
       return actor.role === 'founder'
