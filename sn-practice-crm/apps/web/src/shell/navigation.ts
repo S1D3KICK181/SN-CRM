@@ -126,7 +126,7 @@ export const MODULE_DESCRIPTIONS: Record<PageKey, string> = {
   'Billing & Collections': 'Bills raised in Vyapar, payments received, and what each client still owes.',
   'Office Accounts': 'Manager-operated cash ledger, expenses, bank entries, and daily reconciliation.',
   Reports: 'Delivery, compliance, utilization, revenue, collection, and practice-performance reporting.',
-  Settings: 'Founder-controlled access, practice configuration, numbering, templates, and audit history.',
+  Settings: 'Practice settings for the Founder, starting with the services the firm offers.',
 };
 
 export function getNavigationForRole(role: CompanyRole): NavGroup[] {

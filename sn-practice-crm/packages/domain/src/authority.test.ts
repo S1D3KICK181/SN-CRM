@@ -264,3 +264,17 @@ describe('FEE-01a fee record authority', () => {
     }
   });
 });
+
+describe('SVC-01 service list authority', () => {
+  it('allows only the Founder to manage the service list', () => {
+    expect(authorize({ action: 'service.manage', actor: actor('founder') })).toEqual({ allowed: true });
+  });
+
+  it.each(['manager', 'senior_staff', 'staff', 'trainee'] as const)('denies %s managing the service list', (role) => {
+    expect(authorize({ action: 'service.manage', actor: actor(role) })).toEqual({
+      allowed: false,
+      code: 'role_not_permitted',
+      reason: 'Only the Founder may manage the service list.',
+    });
+  });
+});

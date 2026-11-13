@@ -985,6 +985,15 @@ describe("CrmApplication authority and workflow rules", () => {
         async mutateEngagement(ctx: RepositoryContext, command: MutateEngagementCommand) {
           throw new Error(`Unexpected engagement repository call: mutateEngagement(${ctx.actorId}, ${command.kind})`);
         },
+        async listServiceCatalog(ctx: RepositoryContext) {
+          throw new Error(`Unexpected service repository call: listServiceCatalog(${ctx.actorId})`);
+        },
+        async createService(ctx: RepositoryContext) {
+          throw new Error(`Unexpected service repository call: createService(${ctx.actorId})`);
+        },
+        async updateService(ctx: RepositoryContext) {
+          throw new Error(`Unexpected service repository call: updateService(${ctx.actorId})`);
+        },
       };
 
       const application = new CrmApplication(trackingRepo, {
@@ -2437,5 +2446,144 @@ describe("CrmApplication authority and workflow rules", () => {
         expect(restarted.active).toBe(true);
       });
     });
+  });
+});
+
+describe("SVC-01 service list management", () => {
+  const NON_FOUNDERS = [
+    ["manager", DEMO_ACTOR_IDS.manager],
+    ["senior_staff", DEMO_ACTOR_IDS.senior],
+    ["staff", DEMO_ACTOR_IDS.staff],
+    ["trainee", DEMO_ACTOR_IDS.trainee],
+  ] as const;
+
+  it("lets the Founder create a service with trimmed fields and a trimmed idempotency key", async () => {
+    const { application, repository } = createFixture();
+    const founder = await application.requireActor(DEMO_ACTOR_IDS.founder);
+    const spy = vi.spyOn(repository, "createService");
+
+    const created = await application.createService(
+      founder,
+      { name: "  Trademark  ", description: "   ", turnaroundDays: 30, isStatutory: false },
+      "  svc-create  ",
+    );
+
+    expect(spy).toHaveBeenCalledWith(
+      { actorId: founder.id },
+      {
+        name: "Trademark",
+        description: null,
+        turnaroundDays: 30,
+        isStatutory: false,
+        idempotencyKey: "svc-create",
+      },
+    );
+    expect(created).toMatchObject({
+      name: "Trademark",
+      description: null,
+      turnaroundDays: 30,
+      isStatutory: false,
+      isActive: true,
+      usage: { assignments: 0, recurringSchedules: 0, engagements: 0 },
+    });
+  });
+
+  it("sends only the fields an update changes", async () => {
+    const { application, repository } = createFixture();
+    const founder = await application.requireActor(DEMO_ACTOR_IDS.founder);
+    const created = await application.createService(founder, { name: "ISO" }, "svc-create");
+    const spy = vi.spyOn(repository, "updateService");
+
+    await application.updateService(
+      founder,
+      created.id,
+      { isActive: false, expectedUpdatedAt: created.updatedAt },
+      "  svc-deactivate  ",
+    );
+
+    expect(spy).toHaveBeenCalledWith(
+      { actorId: founder.id },
+      {
+        id: created.id,
+        isActive: false,
+        expectedUpdatedAt: created.updatedAt,
+        idempotencyKey: "svc-deactivate",
+      },
+    );
+  });
+
+  it("refuses a deactivated service for new work but lets existing work keep it", async () => {
+    const { application } = createFixture();
+    const founder = await application.requireActor(DEMO_ACTOR_IDS.founder);
+    const manager = await application.requireActor(DEMO_ACTOR_IDS.manager);
+    const service = await application.createService(founder, { name: "Partnership Deed Registration" }, "svc-pdr");
+    const assignment = await application.createAssignment(manager, {
+      clientId: CANONICAL_CLIENT_1,
+      title: "Deed for new partner",
+      serviceId: service.id,
+      ownerId: DEMO_ACTOR_IDS.staff,
+      dueAt: "2026-12-01T12:30:00.000Z",
+    });
+
+    await application.updateService(founder, service.id, { isActive: false, expectedUpdatedAt: service.updatedAt }, "svc-pdr-off");
+
+    await expect(
+      application.createAssignment(manager, {
+        clientId: CANONICAL_CLIENT_1,
+        title: "Another deed",
+        serviceId: service.id,
+        ownerId: DEMO_ACTOR_IDS.staff,
+        dueAt: "2026-12-01T12:30:00.000Z",
+      }),
+    ).rejects.toMatchObject({ status: 422, code: "referenced_entity_not_found" });
+
+    // Re-sending the assignment's own (now inactive) service with another change still works.
+    const updated = await application.updateAssignment(manager, assignment.id, {
+      title: "Deed for new partner (revised)",
+      serviceId: service.id,
+      expectedUpdatedAt: assignment.updatedAt,
+    });
+    expect(updated).toMatchObject({ title: "Deed for new partner (revised)", serviceId: service.id });
+  });
+
+  it("lists every service for the Founder, active ones first", async () => {
+    const { application } = createFixture();
+    const founder = await application.requireActor(DEMO_ACTOR_IDS.founder);
+    const created = await application.createService(founder, { name: "Aaa first alphabetically" }, "svc-create");
+    await application.updateService(founder, created.id, { isActive: false, expectedUpdatedAt: created.updatedAt }, "svc-off");
+
+    const catalog = await application.listServiceCatalog(founder);
+    expect(catalog.at(-1)).toMatchObject({ name: "Aaa first alphabetically", isActive: false });
+    expect(catalog.slice(0, -1).every((service) => service.isActive)).toBe(true);
+  });
+
+  it.each(NON_FOUNDERS)("denies %s every service list route before repository access", async (_role, actorId) => {
+    const { application, repository } = createFixture();
+    const actor = await application.requireActor(actorId);
+    const listSpy = vi.spyOn(repository, "listServiceCatalog");
+    const createSpy = vi.spyOn(repository, "createService");
+    const updateSpy = vi.spyOn(repository, "updateService");
+
+    const denied = { status: 403, code: "role_not_permitted", message: "Only the Founder may manage the service list." };
+    await expect(application.listServiceCatalog(actor)).rejects.toMatchObject(denied);
+    await expect(application.createService(actor, { name: "Trademark" }, "k1")).rejects.toMatchObject(denied);
+    await expect(
+      application.updateService(actor, CANONICAL_SERVICE_1, { isActive: false, expectedUpdatedAt: "2026-10-30T12:00:00.000Z" }, "k2"),
+    ).rejects.toMatchObject(denied);
+    expect(listSpy).not.toHaveBeenCalled();
+    expect(createSpy).not.toHaveBeenCalled();
+    expect(updateSpy).not.toHaveBeenCalled();
+  });
+
+  it("keeps the picker list open to every role and active-only", async () => {
+    const { application } = createFixture();
+    const founder = await application.requireActor(DEMO_ACTOR_IDS.founder);
+    const trainee = await application.requireActor(DEMO_ACTOR_IDS.trainee);
+    const created = await application.createService(founder, { name: "Project Reports" }, "svc-create");
+    await application.updateService(founder, created.id, { isActive: false, expectedUpdatedAt: created.updatedAt }, "svc-off");
+
+    const picker = await application.listServices(trainee);
+    expect(picker.map((service) => service.name)).not.toContain("Project Reports");
+    expect(picker.map((service) => service.name)).toContain("GST Compliance");
   });
 });

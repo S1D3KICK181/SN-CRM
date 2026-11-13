@@ -1504,3 +1504,220 @@ describe('InMemoryCrmRepository client credit (FEE-02a)', () => {
     }
   });
 });
+
+describe('InMemoryCrmRepository service list management (SVC-01)', () => {
+  const ctx: RepositoryContext = { actorId: DEMO_ACTOR_IDS.founder };
+  const GST_SERVICE_ID = '50000000-0000-4000-a000-000000000001';
+
+  function createRepository() {
+    let nowMs = Date.parse('2026-11-13T10:00:00.000Z');
+    const repository = new InMemoryCrmRepository(createDemoSeed(), { now: () => new Date(nowMs) });
+    return { repository, tick: (ms: number) => (nowMs += ms) };
+  }
+
+  it('creates a service that starts active, unused and named as given', async () => {
+    const { repository } = createRepository();
+    const created = await repository.createService(ctx, {
+      name: 'Trademark',
+      description: 'Registrations and renewals',
+      turnaroundDays: 45,
+      isStatutory: false,
+      idempotencyKey: 'create-trademark',
+    });
+
+    expect(created).toMatchObject({
+      name: 'Trademark',
+      description: 'Registrations and renewals',
+      turnaroundDays: 45,
+      isStatutory: false,
+      isActive: true,
+      usage: { assignments: 0, recurringSchedules: 0, engagements: 0 },
+    });
+    expect(created.createdAt).toBe(created.updatedAt);
+  });
+
+  it('refuses a duplicate name differing only in case or surrounding spaces', async () => {
+    const { repository } = createRepository();
+    await repository.createService(ctx, { name: 'Trademark', idempotencyKey: 'create-1' });
+
+    await expect(
+      repository.createService(ctx, { name: 'TRADEMARK', idempotencyKey: 'create-2' }),
+    ).rejects.toMatchObject({
+      status: 409,
+      code: 'duplicate_service',
+      message: 'A service named TRADEMARK already exists.',
+    });
+    await expect(
+      repository.createService(ctx, { name: ' gst compliance ', idempotencyKey: 'create-3' }),
+    ).rejects.toMatchObject({ status: 409, code: 'duplicate_service' });
+  });
+
+  it('renames, sets turnaround and statutory flag, and clears the description', async () => {
+    const { repository, tick } = createRepository();
+    const created = await repository.createService(ctx, {
+      name: 'ISO',
+      description: 'Certification',
+      idempotencyKey: 'create-iso',
+    });
+    tick(1000);
+
+    const updated = await repository.updateService(ctx, {
+      id: created.id,
+      name: 'ISO Certification',
+      description: null,
+      turnaroundDays: 90,
+      isStatutory: true,
+      expectedUpdatedAt: created.updatedAt,
+      idempotencyKey: 'update-iso',
+    });
+
+    expect(updated).toMatchObject({
+      name: 'ISO Certification',
+      description: null,
+      turnaroundDays: 90,
+      isStatutory: true,
+      isActive: true,
+    });
+    expect(Date.parse(updated.updatedAt)).toBeGreaterThan(Date.parse(created.updatedAt));
+  });
+
+  it('allows a service to change only the case of its own name', async () => {
+    const { repository } = createRepository();
+    const created = await repository.createService(ctx, { name: 'Trademark', idempotencyKey: 'create-1' });
+    const renamed = await repository.updateService(ctx, {
+      id: created.id,
+      name: 'TRADEMARK',
+      expectedUpdatedAt: created.updatedAt,
+      idempotencyKey: 'rename-1',
+    });
+    expect(renamed.name).toBe('TRADEMARK');
+  });
+
+  it('refuses renaming onto another service name', async () => {
+    const { repository } = createRepository();
+    const created = await repository.createService(ctx, { name: 'Trademark', idempotencyKey: 'create-1' });
+    await expect(
+      repository.updateService(ctx, {
+        id: created.id,
+        name: 'gst compliance',
+        expectedUpdatedAt: created.updatedAt,
+        idempotencyKey: 'rename-1',
+      }),
+    ).rejects.toMatchObject({ status: 409, code: 'duplicate_service' });
+  });
+
+  it('refuses a stale expectedUpdatedAt and an unknown service', async () => {
+    const { repository, tick } = createRepository();
+    const created = await repository.createService(ctx, { name: 'Trademark', idempotencyKey: 'create-1' });
+    tick(1000);
+    await repository.updateService(ctx, {
+      id: created.id,
+      turnaroundDays: 10,
+      expectedUpdatedAt: created.updatedAt,
+      idempotencyKey: 'update-1',
+    });
+
+    await expect(
+      repository.updateService(ctx, {
+        id: created.id,
+        turnaroundDays: 20,
+        expectedUpdatedAt: created.updatedAt,
+        idempotencyKey: 'update-2',
+      }),
+    ).rejects.toMatchObject({
+      status: 409,
+      code: 'stale_service',
+      message: 'This service was changed by someone else. Reload and try again.',
+    });
+    await expect(
+      repository.updateService(ctx, {
+        id: '50000000-0000-4000-a000-999999999999',
+        turnaroundDays: 20,
+        expectedUpdatedAt: created.updatedAt,
+        idempotencyKey: 'update-3',
+      }),
+    ).rejects.toMatchObject({ status: 404 });
+  });
+
+  it('detects a stale token even when two changes land in the same millisecond', async () => {
+    const { repository } = createRepository();
+    const created = await repository.createService(ctx, { name: 'Trademark', idempotencyKey: 'create-1' });
+    const first = await repository.updateService(ctx, {
+      id: created.id,
+      isActive: false,
+      expectedUpdatedAt: created.updatedAt,
+      idempotencyKey: 'update-1',
+    });
+    expect(first.updatedAt).not.toBe(created.updatedAt);
+    await expect(
+      repository.updateService(ctx, {
+        id: created.id,
+        isActive: true,
+        expectedUpdatedAt: created.updatedAt,
+        idempotencyKey: 'update-2',
+      }),
+    ).rejects.toMatchObject({ status: 409, code: 'stale_service' });
+  });
+
+  it('deactivates and reactivates; the picker list follows and the full list keeps the service', async () => {
+    const { repository, tick } = createRepository();
+    const created = await repository.createService(ctx, { name: 'Trademark', idempotencyKey: 'create-1' });
+    tick(1000);
+    const off = await repository.updateService(ctx, {
+      id: created.id,
+      isActive: false,
+      expectedUpdatedAt: created.updatedAt,
+      idempotencyKey: 'off',
+    });
+    expect(off.isActive).toBe(false);
+    expect((await repository.listServiceReferences(ctx)).map((s) => s.name)).not.toContain('Trademark');
+    expect((await repository.listServiceCatalog(ctx)).map((s) => s.name)).toContain('Trademark');
+    // New or changed work cannot choose an inactive service, by id or by name
+    expect(await repository.getServiceReferenceById(ctx, created.id)).toBeNull();
+    expect(await repository.getServiceReferenceByName(ctx, 'trademark')).toBeNull();
+
+    tick(1000);
+    const on = await repository.updateService(ctx, {
+      id: created.id,
+      isActive: true,
+      expectedUpdatedAt: off.updatedAt,
+      idempotencyKey: 'on',
+    });
+    expect(on.isActive).toBe(true);
+    expect((await repository.listServiceReferences(ctx)).map((s) => s.name)).toContain('Trademark');
+    expect(await repository.getServiceReferenceById(ctx, created.id)).toEqual({ id: created.id, name: 'Trademark' });
+  });
+
+  it('lists active services first, then by name, with usage counts', async () => {
+    const { repository, tick } = createRepository();
+    const created = await repository.createService(ctx, { name: 'Aaa Retired', idempotencyKey: 'create-1' });
+    tick(1000);
+    await repository.updateService(ctx, {
+      id: created.id,
+      isActive: false,
+      expectedUpdatedAt: created.updatedAt,
+      idempotencyKey: 'off',
+    });
+
+    const catalog = await repository.listServiceCatalog(ctx);
+    expect(catalog.at(-1)?.name).toBe('Aaa Retired');
+    const activeNames = catalog.filter((s) => s.isActive).map((s) => s.name);
+    expect(activeNames).toEqual([...activeNames].sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase())));
+
+    const gst = catalog.find((s) => s.id === GST_SERVICE_ID);
+    expect(gst?.usage.assignments).toBeGreaterThan(0);
+  });
+
+  it('replays the stored result for the same key and payload, and rejects a changed payload', async () => {
+    const { repository } = createRepository();
+    const command = { name: 'Trademark', turnaroundDays: 30, idempotencyKey: 'create-1' };
+    const first = await repository.createService(ctx, command);
+    const replay = await repository.createService(ctx, command);
+    expect(replay).toEqual(first);
+    expect((await repository.listServiceCatalog(ctx)).filter((s) => s.name === 'Trademark')).toHaveLength(1);
+
+    await expect(
+      repository.createService(ctx, { ...command, turnaroundDays: 31 }),
+    ).rejects.toMatchObject({ status: 409, code: 'conflict' });
+  });
+});

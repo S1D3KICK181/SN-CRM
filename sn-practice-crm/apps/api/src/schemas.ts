@@ -384,3 +384,29 @@ export const createLedgerEntrySchema = z
     reference: z.string().trim().max(100).optional(),
   })
   .strict();
+
+// --- Service list management (SVC-01) ---
+
+const serviceName = z.string().trim().min(2).max(120);
+const serviceDescription = z.string().trim().max(500).nullable();
+const serviceTurnaroundDays = z.number().int().min(0).max(365).nullable();
+
+export const createServiceSchema = z
+  .object({
+    name: serviceName,
+    description: serviceDescription.optional(),
+    turnaroundDays: serviceTurnaroundDays.optional(),
+    isStatutory: z.boolean().optional(),
+  })
+  .strict();
+
+export const updateServiceSchema = z
+  .object({
+    name: serviceName.optional(),
+    description: serviceDescription.optional(),
+    turnaroundDays: serviceTurnaroundDays.optional(),
+    isStatutory: z.boolean().optional(),
+    isActive: z.boolean().optional(),
+    expectedUpdatedAt: isoInstantSchema,
+  })
+  .strict();

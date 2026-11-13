@@ -244,6 +244,42 @@ export interface ServiceCatalogItemDto {
   readonly name: string;
 }
 
+// --- Service list management (SVC-01) ---
+
+export interface ServiceUsageDto {
+  readonly assignments: number;
+  readonly recurringSchedules: number;
+  readonly engagements: number;
+}
+
+export interface ServiceDto {
+  readonly id: string; // RFC 4122 UUID
+  readonly name: string;
+  readonly description: string | null;
+  readonly turnaroundDays: number | null; // Stored as default_duration_days
+  readonly isStatutory: boolean;
+  readonly isActive: boolean;
+  readonly usage: ServiceUsageDto;
+  readonly createdAt: string; // ISO-8601 UTC
+  readonly updatedAt: string; // ISO-8601 UTC
+}
+
+export interface CreateServiceInput {
+  readonly name: string;
+  readonly description?: string | null;
+  readonly turnaroundDays?: number | null;
+  readonly isStatutory?: boolean;
+}
+
+export interface UpdateServiceInput {
+  readonly name?: string;
+  readonly description?: string | null;
+  readonly turnaroundDays?: number | null;
+  readonly isStatutory?: boolean;
+  readonly isActive?: boolean;
+  readonly expectedUpdatedAt: string; // Required optimistic concurrency token
+}
+
 export interface CreateRecurringScheduleInput {
   readonly clientId: string; // RFC 4122 UUID only (clientName purged)
   readonly serviceId?: string;

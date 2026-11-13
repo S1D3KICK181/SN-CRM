@@ -2248,3 +2248,188 @@ describe('HTTP API', () => {
     });
   });
 });
+
+describe('SVC-01 service list routes', () => {
+  async function call(
+    baseUrl: string,
+    method: 'GET' | 'POST' | 'PATCH',
+    path: string,
+    options: { actor?: string; body?: unknown; key?: string | null } = {},
+  ) {
+    const headers: Record<string, string> = { 'x-demo-user-id': options.actor ?? DEMO_ACTOR_IDS.founder };
+    if (options.body !== undefined) headers['content-type'] = 'application/json';
+    if (options.key !== null && method !== 'GET') headers['Idempotency-Key'] = options.key ?? `key-${Math.random()}`;
+    const response = await fetch(`${baseUrl}${path}`, {
+      method,
+      headers,
+      ...(options.body !== undefined ? { body: JSON.stringify(options.body) } : {}),
+    });
+    return { status: response.status, body: await response.json() };
+  }
+
+  it('lets the Founder create, rename, set turnaround and statutory flag, deactivate and reactivate', async () => {
+    const baseUrl = await startServer();
+    const created = await call(baseUrl, 'POST', '/api/v1/service-catalog', {
+      body: { name: '  Trademark ', description: 'Registrations', turnaroundDays: 30 },
+    });
+    expect(created.status).toBe(201);
+    expect(created.body.data).toMatchObject({
+      name: 'Trademark',
+      description: 'Registrations',
+      turnaroundDays: 30,
+      isStatutory: false,
+      isActive: true,
+      usage: { assignments: 0, recurringSchedules: 0, engagements: 0 },
+    });
+    const id = created.body.data.id as string;
+
+    const renamed = await call(baseUrl, 'PATCH', `/api/v1/service-catalog/${id}`, {
+      body: { name: 'Trademark Services', turnaroundDays: 60, isStatutory: true, expectedUpdatedAt: created.body.data.updatedAt },
+    });
+    expect(renamed.status).toBe(200);
+    expect(renamed.body.data).toMatchObject({ name: 'Trademark Services', turnaroundDays: 60, isStatutory: true });
+
+    const off = await call(baseUrl, 'PATCH', `/api/v1/service-catalog/${id}`, {
+      body: { isActive: false, expectedUpdatedAt: renamed.body.data.updatedAt },
+    });
+    expect(off.status).toBe(200);
+    expect(off.body.data.isActive).toBe(false);
+    const picker = await call(baseUrl, 'GET', '/api/v1/services', { actor: DEMO_ACTOR_IDS.trainee });
+    expect(picker.body.data.map((service: { name: string }) => service.name)).not.toContain('Trademark Services');
+    const catalog = await call(baseUrl, 'GET', '/api/v1/service-catalog');
+    expect(catalog.body.data.find((service: { id: string }) => service.id === id)).toMatchObject({ isActive: false });
+
+    const on = await call(baseUrl, 'PATCH', `/api/v1/service-catalog/${id}`, {
+      body: { isActive: true, expectedUpdatedAt: off.body.data.updatedAt },
+    });
+    expect(on.status).toBe(200);
+    const pickerAgain = await call(baseUrl, 'GET', '/api/v1/services', { actor: DEMO_ACTOR_IDS.trainee });
+    expect(pickerAgain.body.data.map((service: { name: string }) => service.name)).toContain('Trademark Services');
+  });
+
+  it('lists active services first and counts what uses each one', async () => {
+    const baseUrl = await startServer();
+    const catalog = await call(baseUrl, 'GET', '/api/v1/service-catalog');
+    expect(catalog.status).toBe(200);
+    const gst = catalog.body.data.find((service: { id: string }) => service.id === CANONICAL_SERVICE_1);
+    expect(gst.usage.assignments).toBeGreaterThan(0);
+  });
+
+  it('refuses a duplicate name that differs only in case with 409 duplicate_service', async () => {
+    const baseUrl = await startServer();
+    const response = await call(baseUrl, 'POST', '/api/v1/service-catalog', { body: { name: ' gst COMPLIANCE ' } });
+    expect(response.status).toBe(409);
+    expect(response.body.error).toEqual({
+      code: 'duplicate_service',
+      message: 'A service named gst COMPLIANCE already exists.',
+    });
+  });
+
+  it('refuses a stale expectedUpdatedAt with 409 stale_service', async () => {
+    const baseUrl = await startServer();
+    const created = await call(baseUrl, 'POST', '/api/v1/service-catalog', { body: { name: 'ISO' } });
+    const id = created.body.data.id as string;
+    await call(baseUrl, 'PATCH', `/api/v1/service-catalog/${id}`, {
+      body: { turnaroundDays: 10, expectedUpdatedAt: created.body.data.updatedAt },
+    });
+    const stale = await call(baseUrl, 'PATCH', `/api/v1/service-catalog/${id}`, {
+      body: { turnaroundDays: 20, expectedUpdatedAt: created.body.data.updatedAt },
+    });
+    expect(stale.status).toBe(409);
+    expect(stale.body.error).toEqual({
+      code: 'stale_service',
+      message: 'This service was changed by someone else. Reload and try again.',
+    });
+  });
+
+  it('returns 404 for an unknown service and 422 for a malformed id', async () => {
+    const baseUrl = await startServer();
+    const missing = await call(baseUrl, 'PATCH', '/api/v1/service-catalog/50000000-0000-4000-a000-999999999999', {
+      body: { isActive: false, expectedUpdatedAt: '2026-10-30T12:00:00.000Z' },
+    });
+    expect(missing.status).toBe(404);
+    expect(missing.body.error.message).toBe('Service was not found.');
+    const malformed = await call(baseUrl, 'PATCH', '/api/v1/service-catalog/not-a-uuid', {
+      body: { isActive: false, expectedUpdatedAt: '2026-10-30T12:00:00.000Z' },
+    });
+    expect(malformed.status).toBe(422);
+    expect(malformed.body.error.code).toBe('invalid_identifier');
+  });
+
+  it('validates the body', async () => {
+    const baseUrl = await startServer();
+    const bodies: unknown[] = [
+      { name: 'X' },
+      { name: 'x'.repeat(121) },
+      { name: 'Valid', description: 'x'.repeat(501) },
+      { name: 'Valid', turnaroundDays: 366 },
+      { name: 'Valid', turnaroundDays: -1 },
+      { name: 'Valid', turnaroundDays: 1.5 },
+      { name: 'Valid', unexpected: true },
+    ];
+    for (const body of bodies) {
+      const response = await call(baseUrl, 'POST', '/api/v1/service-catalog', { body });
+      expect(response.status).toBe(422);
+      expect(response.body.error.code).toBe('validation_failed');
+    }
+    const missingToken = await call(baseUrl, 'PATCH', `/api/v1/service-catalog/${CANONICAL_SERVICE_1}`, {
+      body: { isActive: false },
+    });
+    expect(missingToken.status).toBe(422);
+  });
+
+  it('requires an Idempotency-Key on both writes', async () => {
+    const baseUrl = await startServer();
+    const create = await call(baseUrl, 'POST', '/api/v1/service-catalog', { body: { name: 'ISO' }, key: null });
+    expect(create.status).toBe(400);
+    expect(create.body.error.code).toBe('idempotency_key_required');
+    const update = await call(baseUrl, 'PATCH', `/api/v1/service-catalog/${CANONICAL_SERVICE_1}`, {
+      body: { isActive: false, expectedUpdatedAt: '2026-10-30T12:00:00.000Z' },
+      key: null,
+    });
+    expect(update.status).toBe(400);
+    expect(update.body.error.code).toBe('idempotency_key_required');
+  });
+
+  it('replays the same result for the same key and refuses the key with a different payload', async () => {
+    const baseUrl = await startServer();
+    const first = await call(baseUrl, 'POST', '/api/v1/service-catalog', { body: { name: 'ISO' }, key: 'svc-key' });
+    const replay = await call(baseUrl, 'POST', '/api/v1/service-catalog', { body: { name: 'ISO' }, key: 'svc-key' });
+    expect(replay.status).toBe(201);
+    expect(replay.body.data).toEqual(first.body.data);
+    const catalog = await call(baseUrl, 'GET', '/api/v1/service-catalog');
+    expect(catalog.body.data.filter((service: { name: string }) => service.name === 'ISO')).toHaveLength(1);
+
+    const changed = await call(baseUrl, 'POST', '/api/v1/service-catalog', { body: { name: 'ISO 9001' }, key: 'svc-key' });
+    expect(changed.status).toBe(409);
+    expect(changed.body.error.code).toBe('conflict');
+  });
+
+  it.each([
+    ['manager', DEMO_ACTOR_IDS.manager],
+    ['senior_staff', DEMO_ACTOR_IDS.senior],
+    ['staff', DEMO_ACTOR_IDS.staff],
+    ['trainee', DEMO_ACTOR_IDS.trainee],
+  ] as const)('answers %s with 403 on all three service list routes', async (_role, actor) => {
+    const baseUrl = await startServer();
+    const responses = [
+      await call(baseUrl, 'GET', '/api/v1/service-catalog', { actor }),
+      await call(baseUrl, 'POST', '/api/v1/service-catalog', { actor, body: { name: 'Trademark' } }),
+      await call(baseUrl, 'PATCH', `/api/v1/service-catalog/${CANONICAL_SERVICE_1}`, {
+        actor,
+        body: { isActive: false, expectedUpdatedAt: '2026-10-30T12:00:00.000Z' },
+      }),
+    ];
+    for (const response of responses) {
+      expect(response.status).toBe(403);
+      expect(response.body.error).toEqual({
+        code: 'role_not_permitted',
+        message: 'Only the Founder may manage the service list.',
+      });
+    }
+    // The service itself is untouched and the picker list stays open to every role
+    const picker = await call(baseUrl, 'GET', '/api/v1/services', { actor });
+    expect(picker.status).toBe(200);
+    expect(picker.body.data.map((service: { id: string }) => service.id)).toContain(CANONICAL_SERVICE_1);
+  });
+});

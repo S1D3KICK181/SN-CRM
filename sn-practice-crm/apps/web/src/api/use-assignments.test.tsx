@@ -307,4 +307,29 @@ describe('useAssignments React hook integration', () => {
 
     unmount();
   });
+
+  it('loads the pickers service list again when the service list changes', async () => {
+    const adapter = new DeterministicTestAssignmentsAdapter();
+    adapter.setListResponse('founder', [ROW_FOUNDER]);
+    adapter.setServicesResponse([{ id: '50000000-0000-4000-a000-000000000001', name: 'GST Compliance' }]);
+
+    const { result } = renderHook(() => useAssignments('founder', { port: adapter, initialRows: [] }));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(result.current.services.map((service) => service.name)).toEqual(['GST Compliance']);
+
+    adapter.setServicesResponse([
+      { id: '50000000-0000-4000-a000-000000000001', name: 'GST Compliance' },
+      { id: '50000000-0000-4000-a000-000000000007', name: 'Trademark' },
+    ]);
+    act(() => {
+      result.current.reloadServices();
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(result.current.services.map((service) => service.name)).toEqual(['GST Compliance', 'Trademark']);
+  });
 });

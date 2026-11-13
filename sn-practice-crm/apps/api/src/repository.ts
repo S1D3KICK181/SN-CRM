@@ -7,6 +7,7 @@ import type {
   CreateEngagementDraftInput,
   CreateLedgerEntryInput,
   CreateRecurringScheduleInput,
+  CreateServiceInput,
   EndEngagementInput,
   EngagementDto,
   EngagementVersionDto,
@@ -20,8 +21,10 @@ import type {
   RecurringScheduleDto,
   ReportingLineDto,
   ReviseEngagementDraftInput,
+  ServiceDto,
   SessionActor,
   UpdateRecurringScheduleInput,
+  UpdateServiceInput,
   WorkItemDto,
   WorkItemKind,
   WorkItemStatus,
@@ -199,6 +202,22 @@ export interface RemoveCreditAllocationCommand {
   readonly idempotencyKey: string;
 }
 
+// --- Service list commands (SVC-01) ---
+
+export type CreateServiceCommand = CreateServiceInput & { readonly idempotencyKey: string };
+export type UpdateServiceCommand = UpdateServiceInput & {
+  readonly id: string; // RFC 4122 UUID of the service
+  readonly idempotencyKey: string;
+};
+
+export function duplicateService(name: string): ApiError {
+  return new ApiError(409, 'duplicate_service', `A service named ${name} already exists.`);
+}
+
+export function staleService(): ApiError {
+  return new ApiError(409, 'stale_service', 'This service was changed by someone else. Reload and try again.');
+}
+
 /** Today's calendar date (YYYY-MM-DD) in Asia/Kolkata, matching the SQL read path. */
 export function kolkataToday(now: Date): string {
   return new Intl.DateTimeFormat('en-CA', {
@@ -265,6 +284,11 @@ export interface CrmRepository {
   getServiceReferenceById(ctx: RepositoryContext, serviceId: string): Promise<ServiceReference | null>;
   getServiceReferenceByName(ctx: RepositoryContext, serviceName: string): Promise<ServiceReference | null>;
   listServiceReferences(ctx: RepositoryContext): Promise<ServiceReference[]>;
+
+  // Service list management (SVC-01); writes are idempotent on (actor, key)
+  listServiceCatalog(ctx: RepositoryContext): Promise<ServiceDto[]>;
+  createService(ctx: RepositoryContext, command: CreateServiceCommand): Promise<ServiceDto>;
+  updateService(ctx: RepositoryContext, command: UpdateServiceCommand): Promise<ServiceDto>;
 
   // Identity & Reporting Lines
   getEmployee(ctx: RepositoryContext, id: string): Promise<EmployeeRecord | null>;

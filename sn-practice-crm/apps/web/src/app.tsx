@@ -28,6 +28,7 @@ import type { ClientDto, ReportingLineDto, ServiceCatalogItemDto, SessionActor }
 import { authorize, type CompanyRole } from '@sn/domain';
 import { useBilling } from './api/use-billing';
 import { useEngagements } from './api/use-engagements';
+import { useServiceCatalog } from './api/use-service-catalog';
 import { SessionClient } from './api/auth/session-client';
 import { SessionManager } from './api/auth/session-manager';
 import type { AuthSessionSource } from './api/auth/types';
@@ -40,6 +41,7 @@ import { ClientsWorkspace } from './workspaces/clients/clients-workspace';
 import { EngagementsWorkspace } from './workspaces/engagements/engagements-workspace';
 import { BillingWorkspace, type BillingActions } from './workspaces/billing/billing-workspace';
 import { TeamWorkspace } from './workspaces/team/team-workspace';
+import { SettingsWorkspace, type SettingsWorkspaceProps } from './workspaces/settings/settings-workspace';
 import {
   TasksWorkspace,
   PersonalTasks,
@@ -180,6 +182,7 @@ function AuthenticatedApp({
     assignments,
     schedules,
     services,
+    reloadServices,
     loading: assignmentsLoading,
     error: assignmentsError,
     refresh: refreshAssignments,
@@ -247,6 +250,15 @@ function AuthenticatedApp({
     applyCredit,
     removeCredit,
   } = useBilling(role);
+  const {
+    services: serviceCatalog,
+    loading: serviceCatalogLoading,
+    error: serviceCatalogError,
+    hasLiveSnapshot: serviceCatalogLoaded,
+    retry: retryServiceCatalog,
+    createService,
+    updateService,
+  } = useServiceCatalog(role, { enabled: activePage === 'Settings' });
   const [clients, setClients] = useState<ClientRecord[]>(CLIENTS);
 
   const staffOptions = useMemo<readonly DialogStaffOption[]>(() => {
@@ -636,6 +648,15 @@ function AuthenticatedApp({
           billingError={billingError ? billingError.message : null}
           onRetryBilling={retryBilling}
           billingActions={{ recordBill, recordPayment, voidBill, voidPayment, applyCredit, removeCredit }}
+          serviceCatalog={{
+            services: serviceCatalog,
+            actions: { createService, updateService },
+            loading: serviceCatalogLoading,
+            hasLiveSnapshot: serviceCatalogLoaded,
+            error: serviceCatalogError ? serviceCatalogError.message : null,
+            onRetry: retryServiceCatalog,
+            onServicesChanged: reloadServices,
+          }}
           assignmentsLoading={assignmentsLoading}
           assignmentsError={assignmentsError ? assignmentsError.message : null}
           onRetryAssignments={refreshAssignments}
@@ -1205,6 +1226,7 @@ export function ModuleWorkspace({
   billingError,
   onRetryBilling,
   billingActions,
+  serviceCatalog,
   onGenerateDue,
   isGeneratingDue,
   assignmentsLoading,
@@ -1235,6 +1257,8 @@ export function ModuleWorkspace({
   billingError?: string | null;
   onRetryBilling?: () => void;
   billingActions?: BillingActions;
+  /** The Founder's service list for the Settings page; without it Settings keeps its placeholder. */
+  serviceCatalog?: Omit<SettingsWorkspaceProps, 'onToast'>;
   onGenerateDue?: () => void;
   isGeneratingDue?: boolean;
   assignmentsLoading?: boolean;
@@ -1242,6 +1266,7 @@ export function ModuleWorkspace({
   onRetryAssignments?: () => void;
 }) {
   const leadership = role === 'founder' || role === 'manager';
+  const showSettings = page === 'Settings' && role === 'founder' && serviceCatalog !== undefined;
   const primaryLabel =
     page === 'Assignments'
       ? (leadership ? 'New assignment' : undefined)
@@ -1331,7 +1356,9 @@ export function ModuleWorkspace({
       ) : null}
       {page === 'Office Accounts' ? <AccountsWorkspace /> : null}
       {page === 'Team' ? <TeamWorkspace role={role} onToast={onToast} /> : null}
-      {!['Clients', 'Engagements', 'Assignments', 'Billing & Collections', 'My Tasks', 'Office Accounts', 'Team'].includes(page) ? (
+      {showSettings && serviceCatalog ? <SettingsWorkspace {...serviceCatalog} onToast={onToast} /> : null}
+      {!['Clients', 'Engagements', 'Assignments', 'Billing & Collections', 'My Tasks', 'Office Accounts', 'Team'].includes(page) &&
+      !showSettings ? (
         <ModuleFoundation page={page} />
       ) : null}
     </>

@@ -42,7 +42,7 @@ export type AuthorityRequest =
       action: 'client.read' | 'client.create' | 'billing.read' | 'billing.record_bill' | 'billing.record_payment' | 'billing.void';
       actor: Actor;
     }
-  | { action: 'finance.manage' | 'reports.view_practice' | 'team.manage_access'; actor: Actor }
+  | { action: 'finance.manage' | 'reports.view_practice' | 'team.manage_access' | 'service.manage'; actor: Actor }
   | { action: 'team.manage_reporting'; actor: Actor; subject: EmployeeRef; proposedManager: EmployeeRef | null }
   | {
       action:
@@ -192,6 +192,11 @@ export function authorize(request: AuthorityRequest): AuthorityDecision {
       return actor.role === 'founder'
         ? ALLOWED
         : deny('role_not_permitted', 'Only the Founder may create staff access or change roles.');
+
+    case 'service.manage':
+      return actor.role === 'founder'
+        ? ALLOWED
+        : deny('role_not_permitted', 'Only the Founder may manage the service list.');
 
     case 'team.manage_reporting': {
       if (actor.role !== 'founder' && actor.role !== 'manager') {

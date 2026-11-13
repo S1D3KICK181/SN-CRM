@@ -19,6 +19,7 @@ import type {
   PaymentReceiptStatus,
   RecurringScheduleDto,
   ReportingLineDto,
+  ServiceDto,
   UpdateRecurringScheduleInput,
   WorkItemDto,
 } from '@sn/contracts';
@@ -30,6 +31,7 @@ import type {
   ClientReference,
   CreateAssignmentRecord,
   CreateClientRecord,
+  CreateServiceCommand,
   CreateWorkItemRecord,
   CrmRepository,
   DevActorDirectory,
@@ -43,6 +45,7 @@ import type {
   UpdateAssignmentCommand,
   UpdateAssignmentReviewersCommand,
   UpdateAssignmentStatusCommand,
+  UpdateServiceCommand,
   UpdateWorkItemStatusCommand,
   VoidFeeRecordCommand,
 } from './repository';
@@ -50,12 +53,26 @@ import {
   alreadyVoided,
   billHasPayments,
   billNotOpen,
+  duplicateService,
   duplicateVyaparBill,
   financialYearStart,
   kolkataToday,
   noCreditAvailable,
   notCreditAllocation,
+  staleService,
 } from './repository';
+
+/** A catalog service. Seeds may give just id and name; the rest default to an active, plain service. */
+export interface ServiceSeedRecord extends ServiceReference {
+  description?: string | null;
+  turnaroundDays?: number | null;
+  isStatutory?: boolean;
+  isActive?: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+type ServiceRecord = Omit<ServiceDto, 'usage'>;
 
 export interface StoredOperationReceipt {
   readonly actorId: string;
@@ -120,7 +137,7 @@ export interface PaymentReceiptSeedRecord {
 export interface DemoSeed {
   employees: EmployeeRecord[];
   clients: ClientSeedRecord[];
-  services?: ServiceReference[];
+  services?: ServiceSeedRecord[];
   assignments: AssignmentDto[];
   recurringSchedules: RecurringScheduleDto[];
   workItems: WorkItemDto[];
@@ -152,7 +169,7 @@ const DEV_ACTOR_ALIASES: Record<string, string> = {
   usr_trainee: '00000000-0000-4000-a000-000000000005',
 };
 
-const DEFAULT_SERVICES: readonly ServiceReference[] = [
+const DEFAULT_SERVICES: readonly ServiceSeedRecord[] = [
   { id: '50000000-0000-4000-a000-000000000001', name: 'GST Compliance' },
   { id: '50000000-0000-4000-a000-000000000002', name: 'Internal Audit' },
   { id: '50000000-0000-4000-a000-000000000003', name: 'Tax Compliance (TDS)' },
@@ -196,7 +213,7 @@ function calculateRecurrenceDates(
 export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
   private readonly employees = new Map<string, EmployeeRecord>();
   private readonly clients = new Map<string, ClientSeedRecord>();
-  private readonly services = new Map<string, ServiceReference>();
+  private readonly services = new Map<string, ServiceRecord>();
   private readonly assignments = new Map<string, AssignmentDto>();
   private readonly schedules = new Map<string, RecurringScheduleDto>();
   private readonly workItems = new Map<string, WorkItemDto>();
@@ -243,7 +260,19 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
     });
 
     const servicesToLoad = seed.services ?? DEFAULT_SERVICES;
-    servicesToLoad.forEach((value) => this.services.set(value.id, copy(value)));
+    const seededAt = this.now().toISOString();
+    servicesToLoad.forEach((value) =>
+      this.services.set(value.id, {
+        id: value.id,
+        name: value.name,
+        description: value.description ?? null,
+        turnaroundDays: value.turnaroundDays ?? null,
+        isStatutory: value.isStatutory ?? false,
+        isActive: value.isActive ?? true,
+        createdAt: value.createdAt ?? seededAt,
+        updatedAt: value.updatedAt ?? seededAt,
+      }),
+    );
 
     seed.assignments.forEach((value) => {
       this.assignments.set(value.id, copy(value));
@@ -532,22 +561,102 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
   }
 
   async getServiceReferenceById(_ctx: RepositoryContext, serviceId: string): Promise<ServiceReference | null> {
+    // Only active services can be chosen for new or changed work, matching Postgres.
     const value = this.services.get(serviceId);
-    return value ? copy(value) : null;
+    return value && value.isActive ? { id: value.id, name: value.name } : null;
   }
 
   async getServiceReferenceByName(_ctx: RepositoryContext, serviceName: string): Promise<ServiceReference | null> {
     const normalized = serviceName.trim().toLowerCase();
     for (const service of this.services.values()) {
-      if (service.name.trim().toLowerCase() === normalized) {
-        return copy(service);
+      if (service.isActive && service.name.trim().toLowerCase() === normalized) {
+        return { id: service.id, name: service.name };
       }
     }
     return null;
   }
 
   async listServiceReferences(_ctx: RepositoryContext): Promise<ServiceReference[]> {
-    return copy([...this.services.values()]);
+    return [...this.services.values()]
+      .filter((service) => service.isActive)
+      .map((service) => ({ id: service.id, name: service.name }));
+  }
+
+  // --- Service list management (SVC-01) ---
+
+  private toServiceDto(service: ServiceRecord): ServiceDto {
+    return {
+      ...service,
+      usage: {
+        assignments: [...this.assignments.values()].filter((a) => a.serviceId === service.id).length,
+        recurringSchedules: [...this.schedules.values()].filter((s) => s.serviceId === service.id).length,
+        engagements: [...this.engagements.values()].filter((e) => e.serviceId === service.id).length,
+      },
+    };
+  }
+
+  private serviceNameTaken(name: string, exceptId: string | null): boolean {
+    const normalized = name.trim().toLowerCase();
+    return [...this.services.values()].some(
+      (service) => service.id !== exceptId && service.name.trim().toLowerCase() === normalized,
+    );
+  }
+
+  async listServiceCatalog(_ctx: RepositoryContext): Promise<ServiceDto[]> {
+    return [...this.services.values()]
+      .map((service) => this.toServiceDto(service))
+      .sort(
+        (a, b) =>
+          Number(b.isActive) - Number(a.isActive) ||
+          a.name.toLowerCase().localeCompare(b.name.toLowerCase()) ||
+          a.name.localeCompare(b.name),
+      );
+  }
+
+  async createService(ctx: RepositoryContext, command: CreateServiceCommand): Promise<ServiceDto> {
+    const { idempotencyKey, ...payload } = command;
+    return this.runIdempotent<ServiceDto>(ctx, idempotencyKey, 'createService', payload, () => {
+      const name = command.name.trim();
+      if (this.serviceNameTaken(name, null)) throw duplicateService(name);
+      const nowIso = this.now().toISOString();
+      const record: ServiceRecord = {
+        id: crypto.randomUUID(),
+        name,
+        description: command.description ?? null,
+        turnaroundDays: command.turnaroundDays ?? null,
+        isStatutory: command.isStatutory === true,
+        isActive: true,
+        createdAt: nowIso,
+        updatedAt: nowIso,
+      };
+      this.services.set(record.id, record);
+      return { result: this.toServiceDto(record), isDemo: false };
+    });
+  }
+
+  async updateService(ctx: RepositoryContext, command: UpdateServiceCommand): Promise<ServiceDto> {
+    const { idempotencyKey, ...payload } = command;
+    return this.runIdempotent<ServiceDto>(ctx, idempotencyKey, 'updateService', payload, () => {
+      const current = this.services.get(command.id);
+      if (!current) throw notFound('Service');
+      if (Date.parse(current.updatedAt) !== Date.parse(command.expectedUpdatedAt)) throw staleService();
+      if (command.name !== undefined && this.serviceNameTaken(command.name, command.id)) {
+        throw duplicateService(command.name);
+      }
+      // Every change moves updatedAt forward, even within the same millisecond, so a stale token never matches
+      const nowMs = Math.max(this.now().getTime(), Date.parse(current.updatedAt) + 1);
+      const updated: ServiceRecord = {
+        ...current,
+        ...(command.name !== undefined ? { name: command.name.trim() } : {}),
+        ...(command.description !== undefined ? { description: command.description } : {}),
+        ...(command.turnaroundDays !== undefined ? { turnaroundDays: command.turnaroundDays } : {}),
+        ...(command.isStatutory !== undefined ? { isStatutory: command.isStatutory } : {}),
+        ...(command.isActive !== undefined ? { isActive: command.isActive } : {}),
+        updatedAt: new Date(nowMs).toISOString(),
+      };
+      this.services.set(updated.id, updated);
+      return { result: this.toServiceDto(updated), isDemo: false };
+    });
   }
 
   // --- Identity & Reporting Lines ---

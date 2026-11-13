@@ -17,6 +17,7 @@ import type {
   PaymentReceiptDto,
   RecurringScheduleDto,
   ReportingLineDto,
+  ServiceDto,
   UpdateRecurringScheduleInput,
   WorkItemDto,
 } from '@sn/contracts';
@@ -31,6 +32,7 @@ import type {
   ClientReference,
   CreateAssignmentRecord,
   CreateClientRecord,
+  CreateServiceCommand,
   CreateWorkItemRecord,
   CrmRepository,
   DevActorDirectory,
@@ -44,6 +46,7 @@ import type {
   UpdateAssignmentCommand,
   UpdateAssignmentReviewersCommand,
   UpdateAssignmentStatusCommand,
+  UpdateServiceCommand,
   UpdateWorkItemStatusCommand,
   VoidFeeRecordCommand,
 } from './repository';
@@ -51,10 +54,12 @@ import {
   alreadyVoided,
   billHasPayments,
   billNotOpen,
+  duplicateService,
   duplicateVyaparBill,
   financialYearStart,
   noCreditAvailable,
   notCreditAllocation,
+  staleService,
 } from './repository';
 
 function sanitizeDatabaseError(error: unknown): never {
@@ -291,7 +296,8 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
         const rows = await tx`
           SELECT id, name
           FROM public.service_catalog
-          WHERE id = ${serviceId}::uuid;
+          WHERE id = ${serviceId}::uuid
+            AND is_active = true;
         `;
         const row = rows[0];
         if (!row) return null;
@@ -311,7 +317,8 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
         const rows = await tx`
           SELECT id, name
           FROM public.service_catalog
-          WHERE name = ${serviceName};
+          WHERE lower(btrim(name)) = lower(btrim(${serviceName}))
+            AND is_active = true;
         `;
         const row = rows[0];
         if (!row) return null;
@@ -340,6 +347,150 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
         }));
       });
     } catch (error) {
+      sanitizeDatabaseError(error);
+    }
+  }
+
+  // --- Service list management (SVC-01) ---
+
+  private async queryServiceDtos(tx: SqlClient, serviceId?: string): Promise<ServiceDto[]> {
+    const whereClause = serviceId ? tx`WHERE s.id = ${serviceId}::uuid` : tx``;
+    const rows = await tx`
+      SELECT
+        s.id,
+        s.name,
+        s.description,
+        s.default_duration_days,
+        s.is_statutory,
+        s.is_active,
+        s.created_at,
+        s.updated_at,
+        (SELECT count(*)::int FROM public.assignments a WHERE a.service_id = s.id) AS assignments_count,
+        (SELECT count(*)::int FROM public.recurring_schedules rs WHERE rs.service_id = s.id) AS schedules_count,
+        (SELECT count(*)::int FROM public.engagements e WHERE e.service_id = s.id) AS engagements_count
+      FROM public.service_catalog s
+      ${whereClause}
+      ORDER BY s.is_active DESC, lower(s.name) ASC, s.name ASC;
+    `;
+    return rows.map((row) => ({
+      id: String(row['id']),
+      name: String(row['name']),
+      description: nullableText(row['description']),
+      turnaroundDays: row['default_duration_days'] === null ? null : Number(row['default_duration_days']),
+      isStatutory: Boolean(row['is_statutory']),
+      isActive: Boolean(row['is_active']),
+      usage: {
+        assignments: Number(row['assignments_count']),
+        recurringSchedules: Number(row['schedules_count']),
+        engagements: Number(row['engagements_count']),
+      },
+      createdAt: toIsoString(row['created_at']),
+      updatedAt: toIsoString(row['updated_at']),
+    }));
+  }
+
+  async listServiceCatalog(ctx: RepositoryContext): Promise<ServiceDto[]> {
+    try {
+      return await this.runner.withUserContext(ctx, (tx) => this.queryServiceDtos(tx));
+    } catch (error) {
+      sanitizeDatabaseError(error);
+    }
+  }
+
+  private async serviceNameTaken(tx: SqlClient, name: string, exceptId: string | null): Promise<boolean> {
+    const rows = await tx`
+      SELECT 1
+      FROM public.service_catalog
+      WHERE lower(btrim(name)) = lower(btrim(${name}))
+        AND (${exceptId}::uuid IS NULL OR id <> ${exceptId}::uuid)
+      LIMIT 1;
+    `;
+    return rows.length > 0;
+  }
+
+  async createService(ctx: RepositoryContext, command: CreateServiceCommand): Promise<ServiceDto> {
+    const { idempotencyKey, ...payload } = command;
+    const name = command.name.trim();
+    try {
+      return await this.runner.withUserContext(ctx, (tx) =>
+        this.runIdempotent<ServiceDto>(tx, ctx, idempotencyKey, 'createService', payload, async () => {
+          if (await this.serviceNameTaken(tx, name, null)) throw duplicateService(name);
+
+          const serviceId = crypto.randomUUID();
+          await tx`
+            INSERT INTO public.service_catalog (
+              id, name, description, default_duration_days, is_statutory, created_by
+            ) VALUES (
+              ${serviceId}::uuid,
+              ${name},
+              ${command.description ?? null},
+              ${command.turnaroundDays ?? null}::smallint,
+              ${command.isStatutory === true},
+              ${ctx.actorId}::uuid
+            );
+          `;
+          const created = (await this.queryServiceDtos(tx, serviceId))[0];
+          if (!created) {
+            throw new ApiError(500, 'internal_error', 'Created service could not be retrieved.');
+          }
+          // Services belong to no client, so a new one is never demo data
+          return { result: created, isDemo: false };
+        }),
+      );
+    } catch (error) {
+      const pgErr = error as { code?: string; constraint_name?: string };
+      if (pgErr?.code === '23505' && pgErr.constraint_name?.startsWith('service_catalog_name')) {
+        throw duplicateService(name);
+      }
+      sanitizeDatabaseError(error);
+    }
+  }
+
+  async updateService(ctx: RepositoryContext, command: UpdateServiceCommand): Promise<ServiceDto> {
+    const { idempotencyKey, ...payload } = command;
+    try {
+      return await this.runner.withUserContext(ctx, (tx) =>
+        this.runIdempotent<ServiceDto>(tx, ctx, idempotencyKey, 'updateService', payload, async () => {
+          const currentRows = await tx`
+            SELECT
+              is_demo,
+              date_trunc('milliseconds', updated_at) = date_trunc('milliseconds', ${command.expectedUpdatedAt}::timestamptz) AS fresh
+            FROM public.service_catalog
+            WHERE id = ${command.id}::uuid
+            FOR UPDATE;
+          `;
+          const current = currentRows[0];
+          if (!current) throw notFound('Service');
+          if (current['fresh'] !== true) throw staleService();
+          if (command.name !== undefined && (await this.serviceNameTaken(tx, command.name, command.id))) {
+            throw duplicateService(command.name);
+          }
+
+          await tx`
+            UPDATE public.service_catalog
+            SET name = CASE WHEN ${command.name !== undefined}::boolean THEN ${command.name ?? ''}::text ELSE name END,
+                description = CASE WHEN ${command.description !== undefined}::boolean THEN ${command.description ?? null}::text ELSE description END,
+                default_duration_days = CASE WHEN ${command.turnaroundDays !== undefined}::boolean THEN ${command.turnaroundDays ?? null}::smallint ELSE default_duration_days END,
+                is_statutory = CASE WHEN ${command.isStatutory !== undefined}::boolean THEN ${command.isStatutory ?? false}::boolean ELSE is_statutory END,
+                is_active = CASE WHEN ${command.isActive !== undefined}::boolean THEN ${command.isActive ?? true}::boolean ELSE is_active END
+            WHERE id = ${command.id}::uuid;
+          `;
+          const updated = (await this.queryServiceDtos(tx, command.id))[0];
+          if (!updated) {
+            throw new ApiError(500, 'internal_error', 'Updated service could not be retrieved.');
+          }
+          return { result: updated, isDemo: Boolean(current['is_demo']) };
+        }),
+      );
+    } catch (error) {
+      const pgErr = error as { code?: string; constraint_name?: string };
+      if (
+        command.name !== undefined &&
+        pgErr?.code === '23505' &&
+        pgErr.constraint_name?.startsWith('service_catalog_name')
+      ) {
+        throw duplicateService(command.name);
+      }
       sanitizeDatabaseError(error);
     }
   }

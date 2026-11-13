@@ -2645,4 +2645,267 @@ describe('PostgresCrmRepository Integration Suite', () => {
       }
     });
   });
+
+  describe('SVC-01 service list management', () => {
+    const founderCtx = { actorId: FOUNDER_ID };
+    let serviceSequence = 0;
+
+    function serviceName(label: string) {
+      serviceSequence += 1;
+      return `SVC Integration ${label} ${serviceSequence}`;
+    }
+
+    function key() {
+      return `it-svc-${crypto.randomUUID()}`;
+    }
+
+    it('IT-50: the founder creates a service, renames it and sets its turnaround and statutory flag', async () => {
+      await runIsolatedTest(async (repo, tx) => {
+        const name = serviceName('Trademark');
+        const created = await repo.createService(founderCtx, {
+          name: `  ${name}  `,
+          description: 'Registrations and renewals',
+          turnaroundDays: 45,
+          isStatutory: false,
+          idempotencyKey: key(),
+        });
+        expect(created).toMatchObject({
+          name,
+          description: 'Registrations and renewals',
+          turnaroundDays: 45,
+          isStatutory: false,
+          isActive: true,
+          usage: { assignments: 0, recurringSchedules: 0, engagements: 0 },
+        });
+
+        const renamed = await repo.updateService(founderCtx, {
+          id: created.id,
+          name: `${name} Services`,
+          description: null,
+          turnaroundDays: 90,
+          isStatutory: true,
+          expectedUpdatedAt: created.updatedAt,
+          idempotencyKey: key(),
+        });
+        expect(renamed).toMatchObject({
+          name: `${name} Services`,
+          description: null,
+          turnaroundDays: 90,
+          isStatutory: true,
+          isActive: true,
+        });
+        expect(Date.parse(renamed.updatedAt)).toBeGreaterThanOrEqual(Date.parse(created.updatedAt));
+
+        // Fields the update leaves out are untouched
+        const turnaroundOnly = await repo.updateService(founderCtx, {
+          id: created.id,
+          turnaroundDays: null,
+          expectedUpdatedAt: renamed.updatedAt,
+          idempotencyKey: key(),
+        });
+        expect(turnaroundOnly).toMatchObject({ name: `${name} Services`, turnaroundDays: null, isStatutory: true });
+
+        const listed = (await repo.listServiceCatalog(founderCtx)).find((service) => service.id === created.id);
+        expect(listed).toEqual(turnaroundOnly);
+
+        await tx`RESET ROLE`;
+        const raw = await tx`
+          SELECT default_duration_days, is_statutory, is_demo, created_by
+          FROM public.service_catalog WHERE id = ${created.id}::uuid`;
+        expect(raw[0]).toMatchObject({
+          default_duration_days: null,
+          is_statutory: true,
+          is_demo: false,
+          created_by: FOUNDER_ID,
+        });
+      });
+    });
+
+    it('IT-51: names are unique ignoring case and surrounding spaces, in the repository and in the database', async () => {
+      await runIsolatedTest(async (repo, tx) => {
+        const name = serviceName('Unique');
+        const created = await repo.createService(founderCtx, { name, idempotencyKey: key() });
+
+        await expect(
+          repo.createService(founderCtx, { name: `  ${name.toUpperCase()} `, idempotencyKey: key() }),
+        ).rejects.toMatchObject({
+          status: 409,
+          code: 'duplicate_service',
+          message: `A service named ${name.toUpperCase()} already exists.`,
+        });
+        await expect(
+          repo.createService(founderCtx, { name: 'gst compliance', idempotencyKey: key() }),
+        ).rejects.toMatchObject({ status: 409, code: 'duplicate_service' });
+
+        const other = await repo.createService(founderCtx, { name: serviceName('Other'), idempotencyKey: key() });
+        await expect(
+          repo.updateService(founderCtx, {
+            id: other.id,
+            name: name.toLowerCase(),
+            expectedUpdatedAt: other.updatedAt,
+            idempotencyKey: key(),
+          }),
+        ).rejects.toMatchObject({ status: 409, code: 'duplicate_service' });
+        // A service may change the case of its own name
+        const recased = await repo.updateService(founderCtx, {
+          id: created.id,
+          name: name.toUpperCase(),
+          expectedUpdatedAt: created.updatedAt,
+          idempotencyKey: key(),
+        });
+        expect(recased.name).toBe(name.toUpperCase());
+
+        // The unique index itself refuses a write that skips the repository check
+        await tx`RESET ROLE`;
+        await expect(
+          tx.savepoint(async (sp) => {
+            await sp`
+              INSERT INTO public.service_catalog (name, created_by)
+              VALUES (${`  ${name.toLowerCase()}  `}, ${FOUNDER_ID}::uuid)`;
+          }),
+        ).rejects.toMatchObject({ code: '23505', constraint_name: 'service_catalog_name_normalized_key' });
+      });
+    });
+
+    it('IT-52: a stale expectedUpdatedAt is refused and an unknown service is not found', async () => {
+      await runIsolatedTest(async (repo) => {
+        const created = await repo.createService(founderCtx, { name: serviceName('Stale'), idempotencyKey: key() });
+        // Postgres keeps one transaction timestamp, so move the stored token to prove a mismatch is caught
+        const stale = new Date(Date.parse(created.updatedAt) - 5000).toISOString();
+        await expect(
+          repo.updateService(founderCtx, { id: created.id, isStatutory: true, expectedUpdatedAt: stale, idempotencyKey: key() }),
+        ).rejects.toMatchObject({
+          status: 409,
+          code: 'stale_service',
+          message: 'This service was changed by someone else. Reload and try again.',
+        });
+        await expect(
+          repo.updateService(founderCtx, {
+            id: '50000000-0000-4000-a000-999999999999',
+            isStatutory: true,
+            expectedUpdatedAt: created.updatedAt,
+            idempotencyKey: key(),
+          }),
+        ).rejects.toMatchObject({ status: 404, message: 'Service was not found.' });
+        const untouched = (await repo.listServiceCatalog(founderCtx)).find((service) => service.id === created.id);
+        expect(untouched?.isStatutory).toBe(false);
+      });
+    });
+
+    it('IT-53: the same key replays the stored result and a changed payload on that key is refused', async () => {
+      await runIsolatedTest(async (repo, tx) => {
+        const name = serviceName('Replay');
+        const createKey = key();
+        const first = await repo.createService(founderCtx, { name, turnaroundDays: 30, idempotencyKey: createKey });
+        const replay = await repo.createService(founderCtx, { name, turnaroundDays: 30, idempotencyKey: createKey });
+        expect(replay).toEqual(first);
+        expect((await repo.listServiceCatalog(founderCtx)).filter((service) => service.name === name)).toHaveLength(1);
+        await expect(
+          repo.createService(founderCtx, { name, turnaroundDays: 31, idempotencyKey: createKey }),
+        ).rejects.toMatchObject({ status: 409, code: 'conflict' });
+
+        const updateKey = key();
+        const command = { id: first.id, isStatutory: true, expectedUpdatedAt: first.updatedAt, idempotencyKey: updateKey };
+        const updated = await repo.updateService(founderCtx, command);
+        // The replay succeeds even though the token is now out of date
+        expect(await repo.updateService(founderCtx, command)).toEqual(updated);
+
+        await tx`RESET ROLE`;
+        const receipts = await tx`
+          SELECT operation_type FROM public.operation_receipts
+          WHERE actor_id = ${FOUNDER_ID}::uuid AND idempotency_key IN (${createKey}, ${updateKey})
+          ORDER BY operation_type`;
+        expect(receipts.map((row) => row['operation_type'])).toEqual(['createService', 'updateService']);
+      });
+    });
+
+    it('IT-54: a deactivated service leaves the pickers, keeps its name on existing work and can be reactivated', async () => {
+      await runIsolatedTest(async (repo) => {
+        const client = (await repo.listClientReferences(founderCtx))[0]!;
+        const name = serviceName('Deactivate');
+        const created = await repo.createService(founderCtx, { name, idempotencyKey: key() });
+        const assignmentId = '90000000-0000-4000-a000-0000000000b1';
+        await repo.createAssignment(founderCtx, {
+          id: assignmentId,
+          clientId: client.id,
+          clientName: client.name,
+          serviceId: created.id,
+          service: created.name,
+          title: 'Work filed under the new service',
+          ownerId: STAFF_ID,
+          reviewerIds: [],
+          status: 'assigned',
+          dueAt: new Date(Date.now() + 86400000 * 7).toISOString(),
+          createdById: FOUNDER_ID,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        });
+        expect((await repo.listServiceReferences(founderCtx)).map((service) => service.name)).toContain(name);
+
+        const off = await repo.updateService(founderCtx, {
+          id: created.id,
+          isActive: false,
+          expectedUpdatedAt: created.updatedAt,
+          idempotencyKey: key(),
+        });
+        expect(off).toMatchObject({ isActive: false, usage: { assignments: 1, recurringSchedules: 0, engagements: 0 } });
+        expect((await repo.listServiceReferences(founderCtx)).map((service) => service.name)).not.toContain(name);
+        expect((await repo.listAssignments(founderCtx)).find((assignment) => assignment.id === assignmentId)).toMatchObject({
+          serviceId: created.id,
+          service: name,
+        });
+        expect((await repo.listServiceCatalog(founderCtx)).find((service) => service.id === created.id)?.isActive).toBe(false);
+
+        const on = await repo.updateService(founderCtx, {
+          id: created.id,
+          isActive: true,
+          expectedUpdatedAt: off.updatedAt,
+          idempotencyKey: key(),
+        });
+        expect(on.isActive).toBe(true);
+        expect((await repo.listServiceReferences(founderCtx)).map((service) => service.name)).toContain(name);
+      });
+    });
+
+    it('IT-55: the full list shows inactive services last and counts assignments, schedules and engagements', async () => {
+      await runIsolatedTest(async (repo) => {
+        const created = await repo.createService(founderCtx, { name: serviceName('Aaa Retired'), idempotencyKey: key() });
+        await repo.updateService(founderCtx, {
+          id: created.id,
+          isActive: false,
+          expectedUpdatedAt: created.updatedAt,
+          idempotencyKey: key(),
+        });
+        const catalog = await repo.listServiceCatalog(founderCtx);
+        expect(catalog.at(-1)).toMatchObject({ id: created.id, isActive: false });
+        const activeNames = catalog.filter((service) => service.isActive).map((service) => service.name);
+        expect(activeNames).toEqual([...activeNames].sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase())));
+        expect(catalog.slice(0, activeNames.length).every((service) => service.isActive)).toBe(true);
+        expect(catalog.some((service) => service.usage.assignments > 0)).toBe(true);
+      });
+    });
+
+    it.each([
+      ['manager', MANAGER_ID],
+      ['senior_staff', SENIOR_ID],
+      ['staff', STAFF_ID],
+      ['trainee', TRAINEE_ID],
+    ] as const)('IT-56: %s gets 403 on listing, creating and updating services', async (_role, actorId) => {
+      await runIsolatedTest(async (repo) => {
+        const application = new CrmApplication(repo);
+        const actor = await application.requireActor(actorId);
+        const denied = { status: 403, message: 'Only the Founder may manage the service list.' };
+        await expect(application.listServiceCatalog(actor)).rejects.toMatchObject(denied);
+        await expect(application.createService(actor, { name: serviceName('Denied') }, key())).rejects.toMatchObject(denied);
+        const target = (await repo.listServiceCatalog(founderCtx))[0]!;
+        await expect(
+          application.updateService(actor, target.id, { isActive: false, expectedUpdatedAt: target.updatedAt }, key()),
+        ).rejects.toMatchObject(denied);
+        const unchanged = (await repo.listServiceCatalog(founderCtx)).find((service) => service.id === target.id);
+        expect(unchanged?.isActive).toBe(target.isActive);
+        // Every role still reads the active services for the pickers
+        expect((await application.listServices(actor)).length).toBeGreaterThan(0);
+      });
+    });
+  });
 });

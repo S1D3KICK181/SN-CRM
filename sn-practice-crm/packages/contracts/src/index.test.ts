@@ -43,6 +43,9 @@ import {
   type RecordVyaparBillInput,
   type RecordPaymentInput,
   type VoidFeeRecordInput,
+  type ServiceDto,
+  type CreateServiceInput,
+  type UpdateServiceInput,
 } from './index';
 
 describe('Contracts Single Status Truth & Runtime Tuples', () => {
@@ -503,5 +506,23 @@ describe('Client credit contracts (FEE-02a)', () => {
     expectTypeOf<PaymentReceiptDto['allocations'][number]['source']>().toEqualTypeOf<PaymentAllocationSource>();
     expectTypeOf<RecordVyaparBillInput['applyCredit']>().toEqualTypeOf<boolean | undefined>();
     expectTypeOf<ApplyCreditInput>().toEqualTypeOf<Record<string, never>>();
+  });
+});
+
+describe('Service list contracts (SVC-01)', () => {
+  it('keeps the service shapes aligned with the brief', () => {
+    expectTypeOf<ServiceDto['description']>().toEqualTypeOf<string | null>();
+    expectTypeOf<ServiceDto['turnaroundDays']>().toEqualTypeOf<number | null>();
+    expectTypeOf<ServiceDto['isStatutory']>().toEqualTypeOf<boolean>();
+    expectTypeOf<ServiceDto['isActive']>().toEqualTypeOf<boolean>();
+    expectTypeOf<ServiceDto['usage']['assignments']>().toEqualTypeOf<number>();
+    expectTypeOf<ServiceDto['usage']['recurringSchedules']>().toEqualTypeOf<number>();
+    expectTypeOf<ServiceDto['usage']['engagements']>().toEqualTypeOf<number>();
+    expectTypeOf<CreateServiceInput['description']>().toEqualTypeOf<string | null | undefined>();
+    expectTypeOf<CreateServiceInput['turnaroundDays']>().toEqualTypeOf<number | null | undefined>();
+    expectTypeOf<CreateServiceInput['isStatutory']>().toEqualTypeOf<boolean | undefined>();
+    expectTypeOf<UpdateServiceInput['name']>().toEqualTypeOf<string | undefined>();
+    expectTypeOf<UpdateServiceInput['isActive']>().toEqualTypeOf<boolean | undefined>();
+    expectTypeOf<UpdateServiceInput['expectedUpdatedAt']>().toEqualTypeOf<string>();
   });
 });

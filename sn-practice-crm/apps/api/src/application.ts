@@ -8,6 +8,7 @@ import type {
   CreateClientInput,
   CreateLedgerEntryInput,
   CreateRecurringScheduleInput,
+  CreateServiceInput,
   CreateWorkItemInput,
   ActivateEngagementInput,
   AmendActiveEngagementInput,
@@ -28,9 +29,11 @@ import type {
   RecurringScheduleDto,
   ReportingLineDto,
   ServiceCatalogItemDto,
+  ServiceDto,
   SessionActor,
   UpdateAssignmentInput,
   UpdateRecurringScheduleInput,
+  UpdateServiceInput,
   VoidFeeRecordInput,
   WorkItemDto,
   WorkItemStatus,
@@ -85,6 +88,13 @@ function invalidTransition(message: string): never {
 
 function normalizeIdempotencyKey(value: string): string {
   return value.trim();
+}
+
+/** A blank description means "no description"; undefined means "leave unchanged". */
+function normalizeServiceDescription(value: string | null | undefined): string | null | undefined {
+  if (value === undefined || value === null) return value;
+  const trimmed = value.trim();
+  return trimmed === '' ? null : trimmed;
 }
 
 export type CreateWorkItemServiceInput = CreateWorkItemInput extends infer T
@@ -399,6 +409,54 @@ export class CrmApplication {
     return await this.repository.listServiceReferences(ctx);
   }
 
+  // --- Service list management (SVC-01) ---
+
+  async listServiceCatalog(actor: SessionActor): Promise<ServiceDto[]> {
+    requireAuthority({ action: 'service.manage', actor: asActor(actor) });
+    return this.repository.listServiceCatalog({ actorId: actor.id });
+  }
+
+  async createService(
+    actor: SessionActor,
+    input: CreateServiceInput,
+    idempotencyKey: string,
+  ): Promise<ServiceDto> {
+    requireAuthority({ action: 'service.manage', actor: asActor(actor) });
+    return this.repository.createService(
+      { actorId: actor.id },
+      {
+        name: input.name.trim(),
+        description: normalizeServiceDescription(input.description) ?? null,
+        turnaroundDays: input.turnaroundDays ?? null,
+        isStatutory: input.isStatutory === true,
+        idempotencyKey: normalizeIdempotencyKey(idempotencyKey),
+      },
+    );
+  }
+
+  async updateService(
+    actor: SessionActor,
+    serviceId: string,
+    input: UpdateServiceInput,
+    idempotencyKey: string,
+  ): Promise<ServiceDto> {
+    requireAuthority({ action: 'service.manage', actor: asActor(actor) });
+    const description = normalizeServiceDescription(input.description);
+    return this.repository.updateService(
+      { actorId: actor.id },
+      {
+        id: serviceId,
+        ...(input.name !== undefined ? { name: input.name.trim() } : {}),
+        ...(description !== undefined ? { description } : {}),
+        ...(input.turnaroundDays !== undefined ? { turnaroundDays: input.turnaroundDays } : {}),
+        ...(input.isStatutory !== undefined ? { isStatutory: input.isStatutory } : {}),
+        ...(input.isActive !== undefined ? { isActive: input.isActive } : {}),
+        expectedUpdatedAt: input.expectedUpdatedAt,
+        idempotencyKey: normalizeIdempotencyKey(idempotencyKey),
+      },
+    );
+  }
+
   async listAssignments(actor: SessionActor): Promise<AssignmentDto[]> {
     const ctx: RepositoryContext = { actorId: actor.id };
     const [assignments, workItems] = await Promise.all([
@@ -631,7 +689,8 @@ export class CrmApplication {
     }
 
     let serviceName = assignment.service;
-    if (input.serviceId !== undefined) {
+    // Only a change of service is checked: an assignment keeps its service even after that service is deactivated.
+    if (input.serviceId !== undefined && input.serviceId !== assignment.serviceId) {
       const serviceRef = await this.repository.getServiceReferenceById(ctx, input.serviceId);
       if (!serviceRef) {
         throw new ApiError(422, 'referenced_entity_not_found', 'Referenced service does not exist in catalog.');

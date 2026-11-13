@@ -833,3 +833,16 @@ test('migration 0010 adds an immutable allocation source for client credit witho
   // 3. No policy changes: staff insert and management-only delete stay as FEE-01a left them
   assert.doesNotMatch(sql0010, /\b(create|drop|alter) policy\b/i, 'no policy changes');
 });
+
+test('migration 0011 makes service names unique ignoring case and spaces without other changes', () => {
+  const migration0011Path = new URL('../../supabase/migrations/20261113160000_svc01_service_catalog_admin.sql', import.meta.url);
+  const sql0011 = readMigration(migration0011Path, 'Migration 0011');
+
+  expectSql(
+    sql0011,
+    /create unique index service_catalog_name_normalized_key\s+on public\.service_catalog \(lower\(btrim\(name\)\)\);/i,
+    'normalized service name unique index',
+  );
+  assert.doesNotMatch(sql0011, /\b(create|drop|alter) policy\b/i, 'no policy changes');
+  assert.doesNotMatch(sql0011, /\b(create|drop|alter) (table|function|trigger)\b/i, 'no table, function or trigger changes');
+});

@@ -27,3 +27,6 @@ export * from './billing-types';
 export * from './billing-mapper';
 export * from './http-billing-adapter';
 export * from './use-billing';
+export * from './service-catalog-types';
+export * from './http-service-catalog-adapter';
+export * from './use-service-catalog';

@@ -17,6 +17,7 @@ import {
   createClientSchema,
   createLedgerEntrySchema,
   createRecurringScheduleSchema,
+  createServiceSchema,
   createWorkItemSchema,
   entityUuid,
   recordPaymentSchema,
@@ -28,6 +29,7 @@ import {
   reportingLineSchema,
   updateAssignmentSchema,
   updateRecurringScheduleSchema,
+  updateServiceSchema,
   workItemTransitionSchema,
 } from './schemas';
 
@@ -371,6 +373,24 @@ export function createApiServer(application: CrmApplication, options: ApiServerO
 
       if (request.method === 'GET' && pathname === '/api/v1/services') {
         sendData(response, context, allowedOrigins, 200, await application.listServices(actor));
+        return;
+      }
+
+      if (request.method === 'GET' && pathname === '/api/v1/service-catalog') {
+        sendData(response, context, allowedOrigins, 200, await application.listServiceCatalog(actor));
+        return;
+      }
+      if (request.method === 'POST' && pathname === '/api/v1/service-catalog') {
+        const key = idempotencyKey(request);
+        const body = await readJson(request, createServiceSchema);
+        sendData(response, context, allowedOrigins, 201, await application.createService(actor, body, key));
+        return;
+      }
+      const serviceCatalogId = routeId(pathname, /^\/api\/v1\/service-catalog\/([^/]+)$/);
+      if (request.method === 'PATCH' && serviceCatalogId) {
+        const key = idempotencyKey(request);
+        const body = await readJson(request, updateServiceSchema);
+        sendData(response, context, allowedOrigins, 200, await application.updateService(actor, serviceCatalogId, body, key));
         return;
       }
 

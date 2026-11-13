@@ -101,6 +101,7 @@ export function useAssignments(role: CompanyRole, options: UseAssignmentsOptions
   const coordinator = coordinatorRef.current;
   const [state, setState] = useState<CoordinatorState>(() => coordinator.getState());
   const [services, setServices] = useState<readonly ServiceCatalogItemDto[]>([]);
+  const [serviceReloads, setServiceReloads] = useState(0);
 
   useEffect(() => {
     let active = true;
@@ -116,7 +117,12 @@ export function useAssignments(role: CompanyRole, options: UseAssignmentsOptions
     return () => {
       active = false;
     };
-  }, [port, role]);
+  }, [port, role, serviceReloads]);
+
+  /** Loads the pickers' service list again, after the firm's service list changed. */
+  const reloadServices = useCallback((): void => {
+    setServiceReloads((value) => value + 1);
+  }, []);
 
   useEffect(() => {
     isMountedRef.current = true;
@@ -280,6 +286,7 @@ export function useAssignments(role: CompanyRole, options: UseAssignmentsOptions
     assignments: isRoleStale ? [] : state.assignments,
     schedules: isRoleStale ? [] : state.schedules,
     services,
+    reloadServices,
     loading: isRoleStale ? true : state.loading,
     isGeneratingDue: state.isGeneratingDue ?? false,
     error: isRoleStale ? null : state.error,
