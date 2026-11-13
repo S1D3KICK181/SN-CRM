@@ -53,6 +53,72 @@ describe('HttpClientsAdapter', () => {
     }
   });
 
+  describe('signed-in session transport', () => {
+    function okListFetch(onHeaders: (headers: Headers) => void) {
+      return vi.fn().mockImplementation(async (_url: string, init: RequestInit) => {
+        onHeaders(new Headers(init.headers));
+        return new Response(JSON.stringify({ data: [sampleClientDto], requestId: 'req_token' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      });
+    }
+
+    it.each([
+      ['a synchronous', () => '  jwt-sync  ', 'jwt-sync'],
+      ['an async', async () => 'jwt-async', 'jwt-async'],
+    ])('sends a Bearer token from %s token source and never the demo header', async (_label, getAccessToken, expected) => {
+      let captured: Headers | undefined;
+      const fetchFn = okListFetch((headers) => {
+        captured = headers;
+      });
+      const adapter = new HttpClientsAdapter({ fetchFn, getAccessToken });
+
+      const items = await adapter.list('founder');
+
+      expect(items).toEqual([sampleClientDto]);
+      expect(captured?.get('authorization')).toBe(`Bearer ${expected}`);
+      expect(captured?.get('x-demo-user-id')).toBeNull();
+    });
+
+    it.each([
+      ['null', () => null],
+      ['blank', () => '   '],
+      ['throwing', () => {
+        throw new Error('refresh failed');
+      }],
+      ['rejecting', async () => {
+        throw new Error('refresh failed');
+      }],
+    ])('fails closed without dispatching when the token source is %s', async (_label, getAccessToken) => {
+      const fetchFn = vi.fn();
+      const adapter = new HttpClientsAdapter({ fetchFn, getAccessToken });
+
+      const error = await adapter.list('manager').catch((err: unknown) => err);
+
+      expect(error).toBeInstanceOf(ClientOperationError);
+      expect((error as ClientOperationError).code).toBe('unauthorized');
+      expect(fetchFn).not.toHaveBeenCalled();
+    });
+
+    it('does not dispatch when aborted while the token resolves', async () => {
+      const controller = new AbortController();
+      const fetchFn = vi.fn();
+      const adapter = new HttpClientsAdapter({
+        fetchFn,
+        getAccessToken: async () => {
+          controller.abort();
+          return 'jwt-late';
+        },
+      });
+
+      const error = await adapter.list('founder', { signal: controller.signal }).catch((err: unknown) => err);
+
+      expect((error as ClientOperationError).code).toBe('aborted');
+      expect(fetchFn).not.toHaveBeenCalled();
+    });
+  });
+
   it('lists clients unwrapping envelope and propagating request id', async () => {
     let capturedUrl = '';
     let capturedHeaders: Headers | undefined;

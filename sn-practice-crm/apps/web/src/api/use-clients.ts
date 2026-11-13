@@ -3,6 +3,7 @@ import type { CompanyRole } from '@sn/domain';
 import type { ClientDto, CreateClientInput } from '@sn/contracts';
 import { ClientsCoordinator } from './clients-coordinator';
 import { HttpClientsAdapter } from './http-clients-adapter';
+import { useOptionalSessionActor } from '../shell/session-context';
 import {
   ClientOperationError,
   type ClientsCoordinatorState,
@@ -16,6 +17,8 @@ export interface UseClientsOptions {
   port?: ClientsPort;
   onToast?: (message: string) => void;
   onError?: (error: ClientOperationError) => void;
+  getAccessToken?: () => Promise<string | null> | string | null;
+  baseUrl?: string;
 }
 
 export interface UseClientsResult {
@@ -44,8 +47,32 @@ export function useClients(
   options: UseClientsOptions = {},
 ): UseClientsResult {
   const { onToast, onError } = options;
+  const sessionActor = useOptionalSessionActor();
+  const rawGetAccessToken = options.getAccessToken ?? sessionActor?.getAccessToken;
+  const hasAuthSource = Boolean(rawGetAccessToken);
 
-  const port = useMemo(() => options.port ?? new HttpClientsAdapter(), [options.port]);
+  // Stable token getter, as in useEngagements: a new function identity on each render must not
+  // recreate the port (and reload clients). No source means demo transport; a source that yields
+  // nothing fails closed in the adapter.
+  const getAccessTokenRef = useRef(rawGetAccessToken);
+  getAccessTokenRef.current = rawGetAccessToken;
+
+  const stableGetAccessToken = useMemo(() => {
+    if (!hasAuthSource) return undefined;
+    return async () => {
+      const fn = getAccessTokenRef.current;
+      return fn ? await fn() : null;
+    };
+  }, [hasAuthSource]);
+
+  const baseUrl =
+    options.baseUrl ??
+    (typeof import.meta !== 'undefined' ? (import.meta.env?.VITE_CRM_API_BASE_URL ?? '') : '');
+
+  const port = useMemo(
+    () => options.port ?? new HttpClientsAdapter({ getAccessToken: stableGetAccessToken, baseUrl }),
+    [options.port, stableGetAccessToken, baseUrl],
+  );
 
   const activeTokenRef = useRef<symbol | null>(null);
   const onToastRef = useRef(onToast);

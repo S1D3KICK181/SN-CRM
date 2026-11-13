@@ -69,6 +69,32 @@ describe('useClients React hook', () => {
     expect(result.current.error).toBeNull();
   });
 
+  it('loads through the HTTP adapter with the signed-in session token, not the demo header', async () => {
+    const seen: Headers[] = [];
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      seen.push(new Headers(init?.headers));
+      return new Response(JSON.stringify({ data: [SAMPLE_ASTER] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const { result } = renderHook(() =>
+        useClients('founder', { getAccessToken: () => 'jwt-session', baseUrl: '' }),
+      );
+
+      await waitFor(() => expect(result.current.items).toEqual([SAMPLE_ASTER]));
+      expect(seen.length).toBeGreaterThan(0);
+      for (const headers of seen) {
+        expect(headers.get('authorization')).toBe('Bearer jwt-session');
+        expect(headers.get('x-demo-user-id')).toBeNull();
+      }
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   // FIX 1: Real React.StrictMode wrapper test
   it('supports React.StrictMode replay without terminal poisoning: loads data on final sync', async () => {
     const port = new DeterministicTestClientsAdapter();

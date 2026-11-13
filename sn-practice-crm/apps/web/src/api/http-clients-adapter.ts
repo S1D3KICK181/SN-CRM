@@ -12,6 +12,8 @@ import {
 export interface HttpClientsAdapterOptions {
   fetchFn?: typeof fetch;
   baseUrl?: string;
+  /** Signed-in session token source. When set, requests carry a Bearer token and never the demo header. */
+  getAccessToken?: () => Promise<string | null> | string | null;
 }
 
 const RFC4122_UUID_REGEX =
@@ -295,10 +297,22 @@ function parseClientDetail(raw: unknown): ClientDto {
 export class HttpClientsAdapter implements ClientsPort {
   private readonly fetchFn: typeof fetch;
   private readonly baseUrl: string;
+  private readonly getAccessToken?: () => Promise<string | null> | string | null;
 
   constructor(options: HttpClientsAdapterOptions = {}) {
     this.fetchFn = options.fetchFn ?? ((input, init) => globalThis.fetch(input, init));
     this.baseUrl = options.baseUrl?.replace(/\/+$/, '') ?? '';
+    this.getAccessToken = options.getAccessToken;
+  }
+
+  private async resolveAccessToken(): Promise<string | null> {
+    if (!this.getAccessToken) return null;
+    try {
+      const resolved = await this.getAccessToken();
+      return typeof resolved === 'string' && resolved.trim().length > 0 ? resolved.trim() : null;
+    } catch {
+      return null;
+    }
   }
 
   private buildUrl(path: string): string {
@@ -347,8 +361,32 @@ export class HttpClientsAdapter implements ClientsPort {
       });
     }
 
+    const token = await this.resolveAccessToken();
+
+    // Check abort again after awaiting the token so a cancelled request is never dispatched.
+    if (options?.signal?.aborted) {
+      throw new ClientOperationError({
+        code: 'aborted',
+        message: 'The client operation was aborted.',
+        requestId: options?.requestId,
+      });
+    }
+
     const headers = new Headers(init.headers);
-    headers.set('x-demo-user-id', actorId);
+    if (this.getAccessToken) {
+      // Signed-in transport: a Bearer token is required, and there is never a demo-header fallback.
+      if (!token) {
+        throw new ClientOperationError({
+          code: 'unauthorized',
+          message: 'Session expired. Please sign in again to continue.',
+          requestId: options?.requestId,
+        });
+      }
+      headers.set('authorization', `Bearer ${token}`);
+    } else {
+      // Local demo preview without a session: the role's demo actor header.
+      headers.set('x-demo-user-id', actorId);
+    }
     if (options?.requestId) {
       headers.set('x-request-id', options.requestId);
     }
