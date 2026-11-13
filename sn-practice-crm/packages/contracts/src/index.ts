@@ -680,6 +680,7 @@ export interface InvoicePaymentDto {
 export interface InvoiceDto {
   readonly id: string;
   readonly code: string;
+  readonly vyaparBillNumber: string | null;
   readonly clientId: string;
   readonly clientCode: string;
   readonly clientName: string;
@@ -729,4 +730,28 @@ export interface PaymentReceiptDto {
   readonly unallocatedPaise: number; // amountPaise - allocatedPaise
   readonly allocations: readonly PaymentAllocationDto[];
   readonly createdAt: string;
+}
+
+// --- Vyapar bills and payments (FEE-01a) ---
+
+export interface RecordVyaparBillInput {
+  readonly clientId: string; // RFC 4122 UUID
+  readonly vyaparBillNumber: string; // 1-30 chars, unique per financial year
+  readonly billDate: string; // YYYY-MM-DD
+  readonly dueDate: string; // YYYY-MM-DD
+  readonly amountPaise: number; // positive safe integer
+  readonly description: string;
+}
+
+export interface RecordPaymentInput {
+  readonly invoiceId: string; // RFC 4122 UUID of the Vyapar bill
+  readonly receivedOn: string; // YYYY-MM-DD
+  readonly amountPaise: number; // positive safe integer
+  readonly method: PaymentMethod;
+  readonly reference?: string | null;
+  readonly notes?: string | null;
+}
+
+export interface VoidFeeRecordInput {
+  readonly reason: string;
 }

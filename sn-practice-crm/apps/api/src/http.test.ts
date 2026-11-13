@@ -215,13 +215,309 @@ describe('HTTP API', () => {
       );
     });
 
-    it('returns 403 for staff on both routes', async () => {
+    it('returns 403 for a trainee on both routes', async () => {
       const baseUrl = await startServer();
-      const headers = { 'x-demo-user-id': DEMO_ACTOR_IDS.staff };
+      const headers = { 'x-demo-user-id': DEMO_ACTOR_IDS.trainee };
       for (const path of ['/api/v1/invoices', '/api/v1/payment-receipts']) {
         const response = await fetch(`${baseUrl}${path}`, { headers });
         expect(response.status).toBe(403);
         expect((await response.json()).error.code).toBe('role_not_permitted');
+      }
+    });
+  });
+
+  describe('FEE-01a Vyapar bill and payment routes', () => {
+    const CLIENT_2 = '10000000-0000-4000-a000-000000000002'; // looked after by Staff
+    const CLIENT_1 = '10000000-0000-4000-a000-000000000001'; // not looked after by Staff
+    const billBody = (overrides: Record<string, unknown> = {}) => ({
+      clientId: CLIENT_2,
+      vyaparBillNumber: 'VYP-501',
+      billDate: '2026-10-01',
+      dueDate: '2026-10-31',
+      amountPaise: 1000000,
+      description: 'Monthly accounting fee',
+      ...overrides,
+    });
+    const paymentBody = (invoiceId: string, overrides: Record<string, unknown> = {}) => ({
+      invoiceId,
+      receivedOn: '2026-10-20',
+      amountPaise: 400000,
+      method: 'upi',
+      ...overrides,
+    });
+
+    async function send(
+      baseUrl: string,
+      path: string,
+      body: unknown,
+      options: { actor?: string; key?: string | null } = {},
+    ) {
+      const headers: Record<string, string> = {
+        'content-type': 'application/json',
+        'x-demo-user-id': options.actor ?? DEMO_ACTOR_IDS.founder,
+      };
+      if (options.key !== null) headers['Idempotency-Key'] = options.key ?? `key-${Math.random()}`;
+      const response = await fetch(`${baseUrl}${path}`, { method: 'POST', headers, body: JSON.stringify(body) });
+      return { status: response.status, body: await response.json() };
+    }
+
+    it('records a bill with 201 and the invoice shape, then lists it', async () => {
+      const baseUrl = await startServer();
+      const { status, body } = await send(baseUrl, '/api/v1/invoices', billBody());
+      expect(status).toBe(201);
+      expect(body.data).toMatchObject({
+        vyaparBillNumber: 'VYP-501',
+        status: 'issued',
+        clientId: CLIENT_2,
+        issueDate: '2026-10-01',
+        dueDate: '2026-10-31',
+        totalPaise: 1000000,
+        taxPaise: 0,
+        balancePaise: 1000000,
+        payments: [],
+      });
+      expect(body.data.items).toHaveLength(1);
+      const list = await fetch(`${baseUrl}/api/v1/invoices`, { headers: { 'x-demo-user-id': DEMO_ACTOR_IDS.founder } });
+      expect((await list.json()).data.some((invoice: { id: string }) => invoice.id === body.data.id)).toBe(true);
+    });
+
+    it('requires an Idempotency-Key on every fee mutation', async () => {
+      const baseUrl = await startServer();
+      const created = await send(baseUrl, '/api/v1/invoices', billBody());
+      const invoiceId = created.body.data.id as string;
+      const calls: Array<[string, unknown]> = [
+        ['/api/v1/invoices', billBody({ vyaparBillNumber: 'VYP-502' })],
+        [`/api/v1/invoices/${invoiceId}/void`, { reason: 'Entered in error' }],
+        ['/api/v1/payment-receipts', paymentBody(invoiceId)],
+        ['/api/v1/payment-receipts/71000000-0000-4000-a000-000000000001/void', { reason: 'Bounced' }],
+      ];
+      for (const [path, body] of calls) {
+        const response = await send(baseUrl, path, body, { key: null });
+        expect(response.status).toBe(400);
+        expect(response.body.error.code).toBe('idempotency_key_required');
+      }
+    });
+
+    it('replays an identical bill request and rejects a different payload on the same key with 409', async () => {
+      const baseUrl = await startServer();
+      const first = await send(baseUrl, '/api/v1/invoices', billBody(), { key: 'bill-key' });
+      const replay = await send(baseUrl, '/api/v1/invoices', billBody(), { key: 'bill-key' });
+      expect(replay.status).toBe(201);
+      expect(replay.body.data).toEqual(first.body.data);
+      const different = await send(baseUrl, '/api/v1/invoices', billBody({ amountPaise: 2000000 }), { key: 'bill-key' });
+      expect(different.status).toBe(409);
+      expect(different.body.error.code).toBe('conflict');
+      const list = await fetch(`${baseUrl}/api/v1/invoices`, { headers: { 'x-demo-user-id': DEMO_ACTOR_IDS.founder } });
+      const matches = (await list.json()).data.filter((invoice: { vyaparBillNumber: string | null }) => invoice.vyaparBillNumber === 'VYP-501');
+      expect(matches).toHaveLength(1);
+    });
+
+    it('validates the bill body with 422 and field details', async () => {
+      const baseUrl = await startServer();
+      const invalid: Array<Record<string, unknown>> = [
+        { vyaparBillNumber: '   ' },
+        { vyaparBillNumber: 'X'.repeat(31) },
+        { billDate: '2026-02-30' },
+        { billDate: '30/10/2026' },
+        { dueDate: '2026-09-30' },
+        { amountPaise: 0 },
+        { amountPaise: 10.5 },
+        { amountPaise: 99_999_999_999_901 },
+        { amountPaise: '1000' },
+        { description: 'x' },
+        { description: 'D'.repeat(301) },
+        { clientId: 'not-a-uuid' },
+        { unexpected: true },
+      ];
+      for (const overrides of invalid) {
+        const response = await send(baseUrl, '/api/v1/invoices', billBody(overrides));
+        expect(response.status, JSON.stringify(overrides)).toBe(422);
+        expect(response.body.error.code).toBe('validation_failed');
+      }
+      const atLimit = await send(baseUrl, '/api/v1/invoices', billBody({ amountPaise: 99_999_999_999_900, vyaparBillNumber: 'X'.repeat(30) }));
+      expect(atLimit.status).toBe(201);
+    });
+
+    it('applies the business rules for bills: future date, unknown client, duplicate number', async () => {
+      const baseUrl = await startServer();
+      const future = await send(baseUrl, '/api/v1/invoices', billBody({ billDate: '2026-10-31', dueDate: '2026-11-30' }));
+      expect(future.status).toBe(422);
+      const unknown = await send(baseUrl, '/api/v1/invoices', billBody({ clientId: '10000000-0000-4000-a000-0000000000ff' }));
+      expect(unknown.status).toBe(404);
+      expect(unknown.body.error.message).toBe('Client was not found.');
+      await send(baseUrl, '/api/v1/invoices', billBody());
+      const duplicate = await send(baseUrl, '/api/v1/invoices', billBody({ vyaparBillNumber: 'vyp-501' }));
+      expect(duplicate.status).toBe(409);
+      expect(duplicate.body.error).toMatchObject({
+        code: 'duplicate_vyapar_bill',
+        message: 'Vyapar bill vyp-501 is already recorded for 2026–27.',
+      });
+    });
+
+    it('records a payment with 201 and cancels it, with the bill status following', async () => {
+      const baseUrl = await startServer();
+      const bill = (await send(baseUrl, '/api/v1/invoices', billBody())).body.data;
+      const payment = await send(baseUrl, '/api/v1/payment-receipts', paymentBody(bill.id, { reference: ' NEFT-9 ', notes: 'Part payment' }));
+      expect(payment.status).toBe(201);
+      expect(payment.body.data).toMatchObject({
+        status: 'received',
+        clientId: CLIENT_2,
+        amountPaise: 400000,
+        method: 'upi',
+        reference: 'NEFT-9',
+        notes: 'Part payment',
+        allocatedPaise: 400000,
+        unallocatedPaise: 0,
+      });
+      expect(payment.body.data.allocations).toEqual([{ invoiceId: bill.id, invoiceCode: bill.code, amountPaise: 400000 }]);
+
+      const invoices = async () =>
+        (await (await fetch(`${baseUrl}/api/v1/invoices`, { headers: { 'x-demo-user-id': DEMO_ACTOR_IDS.founder } })).json()).data as Array<{ id: string; status: string }>;
+      expect((await invoices()).find((invoice) => invoice.id === bill.id)?.status).toBe('part_paid');
+
+      const voided = await send(baseUrl, `/api/v1/payment-receipts/${payment.body.data.id}/void`, { reason: 'Cheque bounced' });
+      expect(voided.status).toBe(200);
+      expect(voided.body.data).toMatchObject({ status: 'voided', voidReason: 'Cheque bounced' });
+      expect((await invoices()).find((invoice) => invoice.id === bill.id)?.status).toBe('issued');
+
+      const again = await send(baseUrl, `/api/v1/payment-receipts/${payment.body.data.id}/void`, { reason: 'Again' });
+      expect(again.status).toBe(422);
+      expect(again.body.error.code).toBe('already_voided');
+    });
+
+    it('replays a payment without a second receipt and rejects a changed payload with 409', async () => {
+      const baseUrl = await startServer();
+      const bill = (await send(baseUrl, '/api/v1/invoices', billBody())).body.data;
+      const first = await send(baseUrl, '/api/v1/payment-receipts', paymentBody(bill.id), { key: 'pay-key' });
+      const replay = await send(baseUrl, '/api/v1/payment-receipts', paymentBody(bill.id), { key: 'pay-key' });
+      expect(replay.status).toBe(201);
+      expect(replay.body.data).toEqual(first.body.data);
+      const changed = await send(baseUrl, '/api/v1/payment-receipts', paymentBody(bill.id, { amountPaise: 1 }), { key: 'pay-key' });
+      expect(changed.status).toBe(409);
+      const receipts = await (await fetch(`${baseUrl}/api/v1/payment-receipts`, { headers: { 'x-demo-user-id': DEMO_ACTOR_IDS.founder } })).json();
+      expect(receipts.data.filter((receipt: { clientId: string }) => receipt.clientId === CLIENT_2)).toHaveLength(1);
+    });
+
+    it('validates the payment body and applies its business rules', async () => {
+      const baseUrl = await startServer();
+      const bill = (await send(baseUrl, '/api/v1/invoices', billBody())).body.data;
+      const invalid: Array<Record<string, unknown>> = [
+        { amountPaise: 0 },
+        { amountPaise: 1.5 },
+        { method: 'barter' },
+        { receivedOn: '2026-13-01' },
+        { reference: 'R'.repeat(101) },
+        { notes: 'N'.repeat(501) },
+        { invoiceId: 'nope' },
+        { unexpected: 1 },
+      ];
+      for (const overrides of invalid) {
+        const response = await send(baseUrl, '/api/v1/payment-receipts', paymentBody(bill.id, overrides));
+        expect(response.status, JSON.stringify(overrides)).toBe(422);
+        expect(response.body.error.code).toBe('validation_failed');
+      }
+      const future = await send(baseUrl, '/api/v1/payment-receipts', paymentBody(bill.id, { receivedOn: '2026-10-31' }));
+      expect(future.status).toBe(422);
+      const unknown = await send(baseUrl, '/api/v1/payment-receipts', paymentBody('70000000-0000-4000-a000-0000000000ff'));
+      expect(unknown.status).toBe(404);
+      expect(unknown.body.error.message).toBe('Invoice was not found.');
+      const over = await send(baseUrl, '/api/v1/payment-receipts', paymentBody(bill.id, { amountPaise: 1000001 }));
+      expect(over.status).toBe(422);
+      expect(over.body.error).toMatchObject({
+        code: 'payment_exceeds_balance',
+        message: 'The payment is more than the ₹10,000 still pending on this bill.',
+      });
+      await send(baseUrl, '/api/v1/payment-receipts', paymentBody(bill.id, { amountPaise: 1000000 }));
+      const closed = await send(baseUrl, '/api/v1/payment-receipts', paymentBody(bill.id, { amountPaise: 1 }));
+      expect(closed.status).toBe(422);
+      expect(closed.body.error).toMatchObject({ code: 'bill_not_open', message: 'This bill is already paid or cancelled.' });
+    });
+
+    it('cancels a bill, refusing while payments are received and a second cancel', async () => {
+      const baseUrl = await startServer();
+      const bill = (await send(baseUrl, '/api/v1/invoices', billBody())).body.data;
+      const payment = (await send(baseUrl, '/api/v1/payment-receipts', paymentBody(bill.id))).body.data;
+      const blocked = await send(baseUrl, `/api/v1/invoices/${bill.id}/void`, { reason: 'Entered twice' });
+      expect(blocked.status).toBe(422);
+      expect(blocked.body.error).toMatchObject({ code: 'bill_has_payments', message: 'Cancel the payments on this bill first.' });
+      await send(baseUrl, `/api/v1/payment-receipts/${payment.id}/void`, { reason: 'Refunded' });
+      const voided = await send(baseUrl, `/api/v1/invoices/${bill.id}/void`, { reason: 'Entered twice' }, { key: 'void-key' });
+      expect(voided.status).toBe(200);
+      expect(voided.body.data).toMatchObject({ status: 'voided', voidReason: 'Entered twice' });
+      const replay = await send(baseUrl, `/api/v1/invoices/${bill.id}/void`, { reason: 'Entered twice' }, { key: 'void-key' });
+      expect(replay.body.data).toEqual(voided.body.data);
+      const again = await send(baseUrl, `/api/v1/invoices/${bill.id}/void`, { reason: 'Again' });
+      expect(again.status).toBe(422);
+      expect(again.body.error.code).toBe('already_voided');
+    });
+
+    it('validates the void reason and the route identifier', async () => {
+      const baseUrl = await startServer();
+      const bill = (await send(baseUrl, '/api/v1/invoices', billBody())).body.data;
+      for (const reason of ['ab', '  a  ', 'R'.repeat(501)]) {
+        const response = await send(baseUrl, `/api/v1/invoices/${bill.id}/void`, { reason });
+        expect(response.status).toBe(422);
+        expect(response.body.error.code).toBe('validation_failed');
+      }
+      const extra = await send(baseUrl, `/api/v1/invoices/${bill.id}/void`, { reason: 'Valid reason', extra: 1 });
+      expect(extra.status).toBe(422);
+      const badId = await send(baseUrl, '/api/v1/invoices/not-a-uuid/void', { reason: 'Valid reason' });
+      expect(badId.status).toBe(422);
+      expect(badId.body.error.code).toBe('invalid_identifier');
+      const missing = await send(baseUrl, '/api/v1/payment-receipts/71000000-0000-4000-a000-0000000000ff/void', { reason: 'Valid reason' });
+      expect(missing.status).toBe(404);
+    });
+
+    it('lets Staff pay only for clients they look after and see only those bills', async () => {
+      const baseUrl = await startServer();
+      const mine = (await send(baseUrl, '/api/v1/invoices', billBody())).body.data;
+      const theirs = (await send(baseUrl, '/api/v1/invoices', billBody({ clientId: CLIENT_1, vyaparBillNumber: 'VYP-502' }))).body.data;
+      const staff = { actor: DEMO_ACTOR_IDS.staff };
+
+      const list = await fetch(`${baseUrl}/api/v1/invoices`, { headers: { 'x-demo-user-id': DEMO_ACTOR_IDS.staff } });
+      expect(list.status).toBe(200);
+      const visible = (await list.json()).data as Array<{ id: string; clientId: string }>;
+      expect(visible.some((invoice) => invoice.id === mine.id)).toBe(true);
+      expect(visible.some((invoice) => invoice.id === theirs.id)).toBe(false);
+      expect(visible.every((invoice) => invoice.clientId === CLIENT_2)).toBe(true);
+
+      const denied = await send(baseUrl, '/api/v1/payment-receipts', paymentBody(theirs.id), staff);
+      expect(denied.status).toBe(404);
+      const allowed = await send(baseUrl, '/api/v1/payment-receipts', paymentBody(mine.id), staff);
+      expect(allowed.status).toBe(201);
+      expect(allowed.body.data.clientId).toBe(CLIENT_2);
+    });
+
+    it.each([
+      ['senior_staff', DEMO_ACTOR_IDS.senior],
+      ['staff', DEMO_ACTOR_IDS.staff],
+      ['trainee', DEMO_ACTOR_IDS.trainee],
+    ] as const)('returns 403 for %s recording or cancelling bills and cancelling payments', async (_role, actor) => {
+      const baseUrl = await startServer();
+      const bill = (await send(baseUrl, '/api/v1/invoices', billBody())).body.data;
+      const payment = (await send(baseUrl, '/api/v1/payment-receipts', paymentBody(bill.id))).body.data;
+      const attempts: Array<[string, unknown]> = [
+        ['/api/v1/invoices', billBody({ vyaparBillNumber: 'VYP-503' })],
+        [`/api/v1/invoices/${bill.id}/void`, { reason: 'Not allowed' }],
+        [`/api/v1/payment-receipts/${payment.id}/void`, { reason: 'Not allowed' }],
+      ];
+      for (const [path, body] of attempts) {
+        const response = await send(baseUrl, path, body, { actor });
+        expect(response.status, path).toBe(403);
+        expect(response.body.error.code).toBe('role_not_permitted');
+      }
+    });
+
+    it('returns 403 for a Trainee on every fee route, including reads and payments', async () => {
+      const baseUrl = await startServer();
+      const bill = (await send(baseUrl, '/api/v1/invoices', billBody())).body.data;
+      const trainee = { actor: DEMO_ACTOR_IDS.trainee };
+      const payment = await send(baseUrl, '/api/v1/payment-receipts', paymentBody(bill.id), trainee);
+      expect(payment.status).toBe(403);
+      expect(payment.body.error.message).toBe('Fee records are not available to Trainees.');
+      for (const path of ['/api/v1/invoices', '/api/v1/payment-receipts']) {
+        const response = await fetch(`${baseUrl}${path}`, { headers: { 'x-demo-user-id': DEMO_ACTOR_IDS.trainee } });
+        expect(response.status).toBe(403);
       }
     });
   });

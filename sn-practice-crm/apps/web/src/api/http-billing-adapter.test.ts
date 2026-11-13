@@ -8,6 +8,7 @@ import { ROLE_TO_DEMO_ACTOR_ID } from './dev-auth';
 const invoice: InvoiceDto = {
   id: '70000000-0000-4000-a000-000000000002',
   code: 'INV-0001002',
+  vyaparBillNumber: null,
   clientId: '10000000-0000-4000-a000-000000000001',
   clientCode: 'CL-001001',
   clientName: 'Aster Foods',

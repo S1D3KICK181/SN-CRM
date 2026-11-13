@@ -38,6 +38,9 @@ import {
   type PaymentMethod,
   type PaymentReceiptDto,
   type PaymentReceiptStatus,
+  type RecordVyaparBillInput,
+  type RecordPaymentInput,
+  type VoidFeeRecordInput,
 } from './index';
 
 describe('Contracts Single Status Truth & Runtime Tuples', () => {
@@ -462,9 +465,29 @@ describe('Billing contracts (BIL-01a)', () => {
     expectTypeOf<InvoiceDto['currency']>().toEqualTypeOf<'INR'>();
     expectTypeOf<InvoiceDto['balancePaise']>().toEqualTypeOf<number>();
     expectTypeOf<InvoiceDto['assignmentCode']>().toEqualTypeOf<string | null>();
+    expectTypeOf<InvoiceDto['vyaparBillNumber']>().toEqualTypeOf<string | null>();
+    expectTypeOf<InvoiceDto['vyaparBillNumber']>().toEqualTypeOf<string | null>();
     expectTypeOf<InvoiceDto['items'][number]['quantity']>().toEqualTypeOf<number>();
     expectTypeOf<InvoiceDto['payments'][number]['receiptStatus']>().toEqualTypeOf<PaymentReceiptStatus>();
     expectTypeOf<PaymentReceiptDto['unallocatedPaise']>().toEqualTypeOf<number>();
     expectTypeOf<PaymentReceiptDto['allocations'][number]['invoiceCode']>().toEqualTypeOf<string>();
+  });
+});
+
+describe('Vyapar bill and payment contracts (FEE-01a)', () => {
+  it('keeps the input shapes aligned with the brief', () => {
+    expectTypeOf<RecordVyaparBillInput['clientId']>().toEqualTypeOf<string>();
+    expectTypeOf<RecordVyaparBillInput['vyaparBillNumber']>().toEqualTypeOf<string>();
+    expectTypeOf<RecordVyaparBillInput['billDate']>().toEqualTypeOf<string>();
+    expectTypeOf<RecordVyaparBillInput['dueDate']>().toEqualTypeOf<string>();
+    expectTypeOf<RecordVyaparBillInput['amountPaise']>().toEqualTypeOf<number>();
+    expectTypeOf<RecordVyaparBillInput['description']>().toEqualTypeOf<string>();
+    expectTypeOf<RecordPaymentInput['invoiceId']>().toEqualTypeOf<string>();
+    expectTypeOf<RecordPaymentInput['receivedOn']>().toEqualTypeOf<string>();
+    expectTypeOf<RecordPaymentInput['amountPaise']>().toEqualTypeOf<number>();
+    expectTypeOf<RecordPaymentInput['method']>().toEqualTypeOf<PaymentMethod>();
+    expectTypeOf<RecordPaymentInput['reference']>().toEqualTypeOf<string | null | undefined>();
+    expectTypeOf<RecordPaymentInput['notes']>().toEqualTypeOf<string | null | undefined>();
+    expectTypeOf<VoidFeeRecordInput['reason']>().toEqualTypeOf<string>();
   });
 });

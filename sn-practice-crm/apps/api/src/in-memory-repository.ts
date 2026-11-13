@@ -21,7 +21,7 @@ import type {
   UpdateRecurringScheduleInput,
   WorkItemDto,
 } from '@sn/contracts';
-import { ApiError } from './errors';
+import { ApiError, notFound } from './errors';
 import { maskGstinForRoutineRead, maskPanForRoutineRead } from './client-privacy';
 import { computeRequestHash } from './idempotency';
 import type {
@@ -33,12 +33,24 @@ import type {
   DevActorDirectory,
   EmployeeRecord,
   MutateEngagementCommand,
+  RecordPaymentCommand,
+  RecordVyaparBillCommand,
   RepositoryContext,
   ServiceReference,
   UpdateAssignmentCommand,
   UpdateAssignmentReviewersCommand,
   UpdateAssignmentStatusCommand,
   UpdateWorkItemStatusCommand,
+  VoidFeeRecordCommand,
+} from './repository';
+import {
+  alreadyVoided,
+  billHasPayments,
+  billNotOpen,
+  duplicateVyaparBill,
+  financialYearStart,
+  kolkataToday,
+  paymentExceedsBalance,
 } from './repository';
 
 export interface StoredOperationReceipt {
@@ -63,6 +75,7 @@ export type ClientSeedRecord = Omit<
 export interface InvoiceSeedRecord {
   id: string;
   code: string;
+  vyaparBillNumber?: string | null;
   clientId: string;
   assignmentId: string | null;
   issueDate: string;
@@ -109,15 +122,8 @@ export interface InMemoryRepositoryOptions {
   readonly now?: () => Date;
 }
 
-/** Today's calendar date (YYYY-MM-DD) in Asia/Kolkata, matching the SQL read path. */
-export function kolkataToday(now: Date): string {
-  return new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'Asia/Kolkata',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).format(now);
-}
+// Kept as a re-export so existing imports from this module keep working.
+export { kolkataToday };
 
 function wholeDaysBetween(fromDate: string, toDate: string): number {
   return Math.round((Date.parse(`${toDate}T00:00:00.000Z`) - Date.parse(`${fromDate}T00:00:00.000Z`)) / 86400000);
@@ -197,11 +203,21 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
   private scheduleCounter = 1000;
   private clientCounter = 1000;
   private engagementCounter = 1000;
+  private invoiceCounter = 1000;
+  private receiptCounter = 1000;
 
   constructor(seed: DemoSeed, options: InMemoryRepositoryOptions = {}) {
     this.now = options.now ?? (() => new Date());
     this.invoiceSeeds = copy(seed.invoices ?? []);
     this.paymentReceipts = copy(seed.paymentReceipts ?? []);
+    for (const invoice of this.invoiceSeeds) {
+      const num = Number.parseInt(invoice.code.match(/INV-(\d+)/)?.[1] ?? '', 10);
+      if (!Number.isNaN(num) && num > this.invoiceCounter) this.invoiceCounter = num;
+    }
+    for (const receipt of this.paymentReceipts) {
+      const num = Number.parseInt(receipt.code.match(/RCT-(\d+)/)?.[1] ?? '', 10);
+      if (!Number.isNaN(num) && num > this.receiptCounter) this.receiptCounter = num;
+    }
     seed.employees.forEach((value) => this.employees.set(value.id, copy(value)));
 
     seed.clients.forEach((value) => {
@@ -993,103 +1009,342 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
     return copy(entry);
   }
 
-  // --- Billing (BIL-01a, read-only) ---
+  // --- Billing (BIL-01a reads, FEE-01a writes) ---
 
-  async listInvoices(_ctx: RepositoryContext): Promise<InvoiceDto[]> {
-    const today = kolkataToday(this.now());
-    const dtos = this.invoiceSeeds.map((invoice): InvoiceDto => {
-      const client = this.clients.get(invoice.clientId);
-      const assignment = invoice.assignmentId ? this.assignments.get(invoice.assignmentId) : undefined;
-      const payments: InvoicePaymentDto[] = [];
-      for (const receipt of this.paymentReceipts) {
-        for (const allocation of receipt.allocations) {
-          if (allocation.invoiceId !== invoice.id) continue;
-          payments.push({
-            receiptId: receipt.id,
-            receiptCode: receipt.code,
-            receivedOn: receipt.receivedOn,
-            amountPaise: allocation.amountPaise,
-            receiptStatus: receipt.status,
-          });
-        }
+  // Mirrors fee_visible: management, or Senior Staff/Staff who own the client relationship or own/review
+  // one of its assignments. Work-item involvement does not count.
+  private isFeeVisible(actor: EmployeeRecord, clientId: string): boolean {
+    if (this.isManagement(actor)) return true;
+    if (actor.role !== 'senior_staff' && actor.role !== 'staff') return false;
+    if (this.clients.get(clientId)?.relationshipOwnerId === actor.id) return true;
+    for (const assignment of this.assignments.values()) {
+      if (
+        assignment.clientId === clientId &&
+        (assignment.ownerId === actor.id || assignment.reviewerIds.includes(actor.id))
+      ) {
+        return true;
       }
-      payments.sort((a, b) => a.receivedOn.localeCompare(b.receivedOn) || a.receiptCode.localeCompare(b.receiptCode));
+    }
+    return false;
+  }
 
-      const subtotalPaise = invoice.items.reduce((sum, item) => sum + item.lineSubtotalPaise, 0);
-      const taxPaise = invoice.items.reduce((sum, item) => sum + item.lineTaxPaise, 0);
-      const totalPaise = subtotalPaise + taxPaise;
-      const amountReceivedPaise = payments
-        .filter((payment) => payment.receiptStatus === 'received')
-        .reduce((sum, payment) => sum + payment.amountPaise, 0);
-      const carriesBalance = invoice.status === 'issued' || invoice.status === 'part_paid' || invoice.status === 'paid';
-      const isOpen = invoice.status === 'issued' || invoice.status === 'part_paid';
+  private forbiddenOperation(): ApiError {
+    return new ApiError(403, 'forbidden', 'You do not have permission to perform this operation.');
+  }
 
-      return {
-        id: invoice.id,
-        code: invoice.code,
-        clientId: invoice.clientId,
-        clientCode: client?.code ?? '',
-        clientName: client?.displayName ?? '',
-        assignmentId: invoice.assignmentId,
-        assignmentCode: assignment?.code ?? null,
-        issueDate: invoice.issueDate,
-        dueDate: invoice.dueDate,
-        currency: 'INR',
-        subtotalPaise,
-        taxPaise,
-        totalPaise,
-        amountReceivedPaise,
-        balancePaise: carriesBalance ? totalPaise - amountReceivedPaise : 0,
-        daysOverdue: isOpen && invoice.dueDate < today ? wholeDaysBetween(invoice.dueDate, today) : 0,
-        status: invoice.status,
-        notes: invoice.notes,
-        issuedAt: invoice.issuedAt,
-        voidReason: invoice.voidReason,
-        voidedAt: invoice.voidedAt,
-        items: invoice.items,
-        payments,
-        createdAt: invoice.createdAt,
-        updatedAt: invoice.updatedAt,
-      };
-    });
+  private toInvoiceDto(invoice: InvoiceSeedRecord, today: string): InvoiceDto {
+    const client = this.clients.get(invoice.clientId);
+    const assignment = invoice.assignmentId ? this.assignments.get(invoice.assignmentId) : undefined;
+    const payments: InvoicePaymentDto[] = [];
+    for (const receipt of this.paymentReceipts) {
+      for (const allocation of receipt.allocations) {
+        if (allocation.invoiceId !== invoice.id) continue;
+        payments.push({
+          receiptId: receipt.id,
+          receiptCode: receipt.code,
+          receivedOn: receipt.receivedOn,
+          amountPaise: allocation.amountPaise,
+          receiptStatus: receipt.status,
+        });
+      }
+    }
+    payments.sort((a, b) => a.receivedOn.localeCompare(b.receivedOn) || a.receiptCode.localeCompare(b.receiptCode));
+
+    const subtotalPaise = invoice.items.reduce((sum, item) => sum + item.lineSubtotalPaise, 0);
+    const taxPaise = invoice.items.reduce((sum, item) => sum + item.lineTaxPaise, 0);
+    const totalPaise = subtotalPaise + taxPaise;
+    const amountReceivedPaise = payments
+      .filter((payment) => payment.receiptStatus === 'received')
+      .reduce((sum, payment) => sum + payment.amountPaise, 0);
+    const carriesBalance = invoice.status === 'issued' || invoice.status === 'part_paid' || invoice.status === 'paid';
+    const isOpen = invoice.status === 'issued' || invoice.status === 'part_paid';
+
+    return {
+      id: invoice.id,
+      code: invoice.code,
+      vyaparBillNumber: invoice.vyaparBillNumber ?? null,
+      clientId: invoice.clientId,
+      clientCode: client?.code ?? '',
+      clientName: client?.displayName ?? '',
+      assignmentId: invoice.assignmentId,
+      assignmentCode: assignment?.code ?? null,
+      issueDate: invoice.issueDate,
+      dueDate: invoice.dueDate,
+      currency: 'INR',
+      subtotalPaise,
+      taxPaise,
+      totalPaise,
+      amountReceivedPaise,
+      balancePaise: carriesBalance ? totalPaise - amountReceivedPaise : 0,
+      daysOverdue: isOpen && invoice.dueDate < today ? wholeDaysBetween(invoice.dueDate, today) : 0,
+      status: invoice.status,
+      notes: invoice.notes,
+      issuedAt: invoice.issuedAt,
+      voidReason: invoice.voidReason,
+      voidedAt: invoice.voidedAt,
+      items: invoice.items,
+      payments,
+      createdAt: invoice.createdAt,
+      updatedAt: invoice.updatedAt,
+    };
+  }
+
+  private toReceiptDto(receipt: PaymentReceiptSeedRecord): PaymentReceiptDto {
+    const invoiceCodes = new Map(this.invoiceSeeds.map((invoice) => [invoice.id, invoice.code]));
+    const client = this.clients.get(receipt.clientId);
+    const allocations: PaymentAllocationDto[] = receipt.allocations
+      .map((allocation) => ({
+        invoiceId: allocation.invoiceId,
+        invoiceCode: invoiceCodes.get(allocation.invoiceId) ?? '',
+        amountPaise: allocation.amountPaise,
+      }))
+      .sort((a, b) => a.invoiceCode.localeCompare(b.invoiceCode));
+    const allocatedPaise = allocations.reduce((sum, allocation) => sum + allocation.amountPaise, 0);
+    return {
+      id: receipt.id,
+      code: receipt.code,
+      clientId: receipt.clientId,
+      clientCode: client?.code ?? '',
+      clientName: client?.displayName ?? '',
+      receivedOn: receipt.receivedOn,
+      amountPaise: receipt.amountPaise,
+      method: receipt.method,
+      reference: receipt.reference,
+      notes: receipt.notes,
+      status: receipt.status,
+      voidReason: receipt.voidReason,
+      voidedAt: receipt.voidedAt,
+      allocatedPaise,
+      unallocatedPaise: receipt.amountPaise - allocatedPaise,
+      allocations,
+      createdAt: receipt.createdAt,
+    };
+  }
+
+  // Mirrors recompute_invoice_payment_state: paid/part-paid/issued follows the received allocations.
+  private recomputeInvoiceStatus(invoice: InvoiceSeedRecord): void {
+    if (invoice.status !== 'issued' && invoice.status !== 'part_paid' && invoice.status !== 'paid') return;
+    let received = 0;
+    for (const receipt of this.paymentReceipts) {
+      if (receipt.status !== 'received') continue;
+      for (const allocation of receipt.allocations) {
+        if (allocation.invoiceId === invoice.id) received += allocation.amountPaise;
+      }
+    }
+    const total = invoice.items.reduce((sum, item) => sum + item.lineTotalPaise, 0);
+    invoice.status = received === 0 ? 'issued' : received < total ? 'part_paid' : 'paid';
+    invoice.updatedAt = this.now().toISOString();
+  }
+
+  private findVisibleInvoice(actor: EmployeeRecord, invoiceId: string): InvoiceSeedRecord | null {
+    const invoice = this.invoiceSeeds.find((candidate) => candidate.id === invoiceId);
+    return invoice && this.isFeeVisible(actor, invoice.clientId) ? invoice : null;
+  }
+
+  private findVisibleReceipt(actor: EmployeeRecord, receiptId: string): PaymentReceiptSeedRecord | null {
+    const receipt = this.paymentReceipts.find((candidate) => candidate.id === receiptId);
+    return receipt && this.isFeeVisible(actor, receipt.clientId) ? receipt : null;
+  }
+
+  async listInvoices(ctx: RepositoryContext): Promise<InvoiceDto[]> {
+    const actor = this.getActor(ctx);
+    if (!actor) return [];
+    const today = kolkataToday(this.now());
+    const dtos = this.invoiceSeeds
+      .filter((invoice) => this.isFeeVisible(actor, invoice.clientId))
+      .map((invoice) => this.toInvoiceDto(invoice, today));
     dtos.sort((a, b) => b.issueDate.localeCompare(a.issueDate) || b.code.localeCompare(a.code));
     return copy(dtos);
   }
 
-  async listPaymentReceipts(_ctx: RepositoryContext): Promise<PaymentReceiptDto[]> {
-    const invoiceCodes = new Map(this.invoiceSeeds.map((invoice) => [invoice.id, invoice.code]));
-    const dtos = this.paymentReceipts.map((receipt): PaymentReceiptDto => {
-      const client = this.clients.get(receipt.clientId);
-      const allocations: PaymentAllocationDto[] = receipt.allocations
-        .map((allocation) => ({
-          invoiceId: allocation.invoiceId,
-          invoiceCode: invoiceCodes.get(allocation.invoiceId) ?? '',
-          amountPaise: allocation.amountPaise,
-        }))
-        .sort((a, b) => a.invoiceCode.localeCompare(b.invoiceCode));
-      const allocatedPaise = allocations.reduce((sum, allocation) => sum + allocation.amountPaise, 0);
-      return {
-        id: receipt.id,
-        code: receipt.code,
-        clientId: receipt.clientId,
-        clientCode: client?.code ?? '',
-        clientName: client?.displayName ?? '',
-        receivedOn: receipt.receivedOn,
-        amountPaise: receipt.amountPaise,
-        method: receipt.method,
-        reference: receipt.reference,
-        notes: receipt.notes,
-        status: receipt.status,
-        voidReason: receipt.voidReason,
-        voidedAt: receipt.voidedAt,
-        allocatedPaise,
-        unallocatedPaise: receipt.amountPaise - allocatedPaise,
-        allocations,
-        createdAt: receipt.createdAt,
-      };
-    });
+  async listPaymentReceipts(ctx: RepositoryContext): Promise<PaymentReceiptDto[]> {
+    const actor = this.getActor(ctx);
+    if (!actor) return [];
+    const dtos = this.paymentReceipts
+      .filter((receipt) => this.isFeeVisible(actor, receipt.clientId))
+      .map((receipt) => this.toReceiptDto(receipt));
     dtos.sort((a, b) => b.receivedOn.localeCompare(a.receivedOn) || b.code.localeCompare(a.code));
     return copy(dtos);
+  }
+
+  // Shared idempotency wrapper, keyed on (actor, key) like operation_receipts. The work callback
+  // validates before it mutates, so a refusal leaves no receipt and no partial change.
+  private runIdempotent<T>(
+    ctx: RepositoryContext,
+    idempotencyKey: string,
+    operationType: string,
+    payload: unknown,
+    work: () => { result: T; isDemo: boolean },
+  ): T {
+    const trimmedKey = idempotencyKey.trim();
+    if (trimmedKey.length < 1 || trimmedKey.length > 255) {
+      throw new ApiError(422, 'validation_failed', 'idempotencyKey must be between 1 and 255 characters.');
+    }
+    const requestHash = computeRequestHash(payload);
+    const receiptKey = `${ctx.actorId}:${trimmedKey}`;
+    const existing = this.operationReceipts.get(receiptKey);
+    if (existing) {
+      if (existing.operationType !== operationType || existing.requestHash !== requestHash) {
+        throw new ApiError(
+          409,
+          'conflict',
+          'Idempotency key was previously used with a different operation or payload.',
+        );
+      }
+      return copy(existing.result as T);
+    }
+
+    const { result, isDemo } = work();
+    this.operationReceipts.set(receiptKey, {
+      actorId: ctx.actorId,
+      idempotencyKey: trimmedKey,
+      operationType,
+      requestHash,
+      result: copy(result),
+      isDemo,
+      createdAt: this.now().toISOString(),
+    });
+    return copy(result);
+  }
+
+  async recordVyaparBill(ctx: RepositoryContext, command: RecordVyaparBillCommand): Promise<InvoiceDto> {
+    const { idempotencyKey, ...payload } = command;
+    return this.runIdempotent<InvoiceDto>(ctx, idempotencyKey, 'recordVyaparBill', payload, () => {
+      const actor = this.getActor(ctx);
+      if (!actor || !this.isManagement(actor)) throw this.forbiddenOperation();
+      const visible = this.getVisibleClientRecord(ctx, command.clientId);
+      if (!visible) throw notFound('Client');
+
+      const vyaparBillNumber = command.vyaparBillNumber.trim();
+      const fiscalYear = financialYearStart(command.billDate);
+      const duplicate = this.invoiceSeeds.some(
+        (invoice) =>
+          invoice.vyaparBillNumber != null &&
+          invoice.status !== 'voided' &&
+          invoice.vyaparBillNumber.trim().toUpperCase() === vyaparBillNumber.toUpperCase() &&
+          financialYearStart(invoice.issueDate) === fiscalYear,
+      );
+      if (duplicate) throw duplicateVyaparBill(vyaparBillNumber, command.billDate);
+
+      const nowIso = this.now().toISOString();
+      this.invoiceCounter += 1;
+      const invoice: InvoiceSeedRecord = {
+        id: crypto.randomUUID(),
+        code: `INV-${String(this.invoiceCounter).padStart(7, '0')}`,
+        vyaparBillNumber,
+        clientId: command.clientId,
+        assignmentId: null,
+        issueDate: command.billDate,
+        dueDate: command.dueDate,
+        status: 'issued',
+        notes: null,
+        issuedAt: nowIso,
+        voidReason: null,
+        voidedAt: null,
+        items: [
+          {
+            id: crypto.randomUUID(),
+            description: command.description.trim(),
+            quantity: 1,
+            unitPricePaise: command.amountPaise,
+            taxRatePercent: 0,
+            lineSubtotalPaise: command.amountPaise,
+            lineTaxPaise: 0,
+            lineTotalPaise: command.amountPaise,
+          },
+        ],
+        createdAt: nowIso,
+        updatedAt: nowIso,
+      };
+      this.invoiceSeeds.push(invoice);
+      return {
+        result: this.toInvoiceDto(invoice, kolkataToday(this.now())),
+        isDemo: visible.client.isDemo ?? false,
+      };
+    });
+  }
+
+  async recordPayment(ctx: RepositoryContext, command: RecordPaymentCommand): Promise<PaymentReceiptDto> {
+    const { idempotencyKey, ...payload } = command;
+    return this.runIdempotent<PaymentReceiptDto>(ctx, idempotencyKey, 'recordPayment', payload, () => {
+      const actor = this.getActor(ctx);
+      if (!actor || actor.role === 'trainee') throw this.forbiddenOperation();
+      const invoice = this.findVisibleInvoice(actor, command.invoiceId);
+      if (!invoice) throw notFound('Invoice');
+      if (invoice.status !== 'issued' && invoice.status !== 'part_paid') throw billNotOpen();
+      const bill = this.toInvoiceDto(invoice, kolkataToday(this.now()));
+      if (command.amountPaise > bill.balancePaise) throw paymentExceedsBalance(bill.balancePaise);
+
+      const nowIso = this.now().toISOString();
+      this.receiptCounter += 1;
+      const receipt: PaymentReceiptSeedRecord = {
+        id: crypto.randomUUID(),
+        code: `RCT-${String(this.receiptCounter).padStart(7, '0')}`,
+        clientId: invoice.clientId,
+        receivedOn: command.receivedOn,
+        amountPaise: command.amountPaise,
+        method: command.method,
+        reference: command.reference?.trim() || null,
+        notes: command.notes?.trim() || null,
+        status: 'received',
+        voidReason: null,
+        voidedAt: null,
+        allocations: [{ invoiceId: invoice.id, amountPaise: command.amountPaise }],
+        createdAt: nowIso,
+      };
+      this.paymentReceipts.push(receipt);
+      this.recomputeInvoiceStatus(invoice);
+      return {
+        result: this.toReceiptDto(receipt),
+        isDemo: this.clients.get(invoice.clientId)?.isDemo ?? false,
+      };
+    });
+  }
+
+  async voidInvoice(ctx: RepositoryContext, command: VoidFeeRecordCommand): Promise<InvoiceDto> {
+    const { idempotencyKey, ...payload } = command;
+    return this.runIdempotent<InvoiceDto>(ctx, idempotencyKey, 'voidInvoice', payload, () => {
+      const actor = this.getActor(ctx);
+      if (!actor || !this.isManagement(actor)) throw this.forbiddenOperation();
+      const invoice = this.findVisibleInvoice(actor, command.id);
+      if (!invoice) throw notFound('Invoice');
+      if (invoice.status === 'voided') throw alreadyVoided();
+      const today = kolkataToday(this.now());
+      if (this.toInvoiceDto(invoice, today).amountReceivedPaise > 0) throw billHasPayments();
+
+      const nowIso = this.now().toISOString();
+      invoice.status = 'voided';
+      invoice.voidReason = command.reason.trim();
+      invoice.voidedAt = nowIso;
+      invoice.updatedAt = nowIso;
+      return {
+        result: this.toInvoiceDto(invoice, today),
+        isDemo: this.clients.get(invoice.clientId)?.isDemo ?? false,
+      };
+    });
+  }
+
+  async voidPaymentReceipt(ctx: RepositoryContext, command: VoidFeeRecordCommand): Promise<PaymentReceiptDto> {
+    const { idempotencyKey, ...payload } = command;
+    return this.runIdempotent<PaymentReceiptDto>(ctx, idempotencyKey, 'voidPaymentReceipt', payload, () => {
+      const actor = this.getActor(ctx);
+      if (!actor || !this.isManagement(actor)) throw this.forbiddenOperation();
+      const receipt = this.findVisibleReceipt(actor, command.id);
+      if (!receipt) throw notFound('Payment receipt');
+      if (receipt.status === 'voided') throw alreadyVoided();
+
+      receipt.status = 'voided';
+      receipt.voidReason = command.reason.trim();
+      receipt.voidedAt = this.now().toISOString();
+      for (const allocation of receipt.allocations) {
+        const invoice = this.invoiceSeeds.find((candidate) => candidate.id === allocation.invoiceId);
+        if (invoice) this.recomputeInvoiceStatus(invoice);
+      }
+      return {
+        result: this.toReceiptDto(receipt),
+        isDemo: this.clients.get(receipt.clientId)?.isDemo ?? false,
+      };
+    });
   }
 
   // --- Engagements (ENG-01) ---

@@ -6,6 +6,8 @@ import type {
   CreateAssignmentInput,
   CreateRecurringScheduleInput,
   LedgerEntryDto,
+  RecordPaymentInput,
+  RecordVyaparBillInput,
   RecurringScheduleDto,
   ReportingLineDto,
   WorkItemDto,
@@ -956,6 +958,18 @@ describe("CrmApplication authority and workflow rules", () => {
         async listPaymentReceipts(ctx: RepositoryContext) {
           throw new Error(`Unexpected billing repository call: listPaymentReceipts(${ctx.actorId})`);
         },
+        async recordVyaparBill(ctx: RepositoryContext) {
+          throw new Error(`Unexpected billing repository call: recordVyaparBill(${ctx.actorId})`);
+        },
+        async recordPayment(ctx: RepositoryContext) {
+          throw new Error(`Unexpected billing repository call: recordPayment(${ctx.actorId})`);
+        },
+        async voidInvoice(ctx: RepositoryContext) {
+          throw new Error(`Unexpected billing repository call: voidInvoice(${ctx.actorId})`);
+        },
+        async voidPaymentReceipt(ctx: RepositoryContext) {
+          throw new Error(`Unexpected billing repository call: voidPaymentReceipt(${ctx.actorId})`);
+        },
         async listEngagements(ctx: RepositoryContext) {
           throw new Error(`Unexpected engagement repository call: listEngagements(${ctx.actorId})`);
         },
@@ -1706,7 +1720,7 @@ describe("CrmApplication authority and workflow rules", () => {
   describe("BIL-01a billing read authority", () => {
     it.each([
       ["founder", DEMO_ACTOR_IDS.founder], ["manager", DEMO_ACTOR_IDS.manager],
-    ] as const)("lets %s list invoices and payment receipts", async (_role, actorId) => {
+    ] as const)("lets %s list every invoice and payment receipts", async (_role, actorId) => {
       const { application } = createFixture();
       const actor = await application.requireActor(actorId);
       const invoices = await application.listInvoices(actor);
@@ -1716,7 +1730,7 @@ describe("CrmApplication authority and workflow rules", () => {
     });
 
     it.each([
-      ["senior_staff", DEMO_ACTOR_IDS.senior], ["staff", DEMO_ACTOR_IDS.staff], ["trainee", DEMO_ACTOR_IDS.trainee],
+      ["trainee", DEMO_ACTOR_IDS.trainee],
     ] as const)("denies %s with 403 before any billing repository access", async (_role, actorId) => {
       const { application, repository } = createFixture();
       const actor = await application.requireActor(actorId);
@@ -1726,6 +1740,276 @@ describe("CrmApplication authority and workflow rules", () => {
       await expect(application.listPaymentReceipts(actor)).rejects.toMatchObject({ status: 403, code: "role_not_permitted" });
       expect(invoicesSpy).not.toHaveBeenCalled();
       expect(receiptsSpy).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("FEE-01a Vyapar bills and payments", () => {
+    const CLIENT_1 = "10000000-0000-4000-a000-000000000001"; // relationship owner: manager; staff not involved
+    const CLIENT_2 = "10000000-0000-4000-a000-000000000002"; // relationship owner and assignment owner: staff
+    const billInput = (overrides: Partial<RecordVyaparBillInput> = {}): RecordVyaparBillInput => ({
+      clientId: CLIENT_2,
+      vyaparBillNumber: "VYP-201",
+      billDate: "2026-10-01",
+      dueDate: "2026-10-31",
+      amountPaise: 1000000,
+      description: "Monthly accounting fee",
+      ...overrides,
+    });
+    const paymentInput = (invoiceId: string, overrides: Partial<RecordPaymentInput> = {}): RecordPaymentInput => ({
+      invoiceId,
+      receivedOn: "2026-10-20",
+      amountPaise: 400000,
+      method: "bank_transfer",
+      reference: "NEFT-1",
+      ...overrides,
+    });
+    let keyCounter = 0;
+    const key = () => `key-${++keyCounter}`;
+
+    async function actorFor(application: CrmApplication, id: string) {
+      return application.requireActor(id);
+    }
+
+    it("lets the Founder record a bill as an issued, single-line, untaxed invoice", async () => {
+      const { application } = createFixture();
+      const founder = await actorFor(application, DEMO_ACTOR_IDS.founder);
+      const bill = await application.recordVyaparBill(founder, billInput({ vyaparBillNumber: "  VYP-201 " }), key());
+      expect(bill).toMatchObject({
+        vyaparBillNumber: "VYP-201",
+        status: "issued",
+        clientId: CLIENT_2,
+        issueDate: "2026-10-01",
+        dueDate: "2026-10-31",
+        subtotalPaise: 1000000,
+        taxPaise: 0,
+        totalPaise: 1000000,
+        amountReceivedPaise: 0,
+        balancePaise: 1000000,
+        assignmentId: null,
+        payments: [],
+      });
+      expect(bill.items).toHaveLength(1);
+      expect(bill.items[0]).toMatchObject({ description: "Monthly accounting fee", quantity: 1, unitPricePaise: 1000000, taxRatePercent: 0 });
+      expect((await application.listInvoices(founder)).some((invoice) => invoice.id === bill.id)).toBe(true);
+    });
+
+    it("replays an identical request without creating a second bill and rejects a different payload on the same key", async () => {
+      const { application } = createFixture();
+      const founder = await actorFor(application, DEMO_ACTOR_IDS.founder);
+      const first = await application.recordVyaparBill(founder, billInput(), "same-key");
+      const before = (await application.listInvoices(founder)).length;
+      const replay = await application.recordVyaparBill(founder, billInput(), "same-key");
+      expect(replay).toEqual(first);
+      expect((await application.listInvoices(founder)).length).toBe(before);
+      await expect(
+        application.recordVyaparBill(founder, billInput({ amountPaise: 2000000 }), "same-key"),
+      ).rejects.toMatchObject({ status: 409, code: "conflict" });
+    });
+
+    it("refuses a future bill date and a due date before the bill date", async () => {
+      const { application } = createFixture();
+      const founder = await actorFor(application, DEMO_ACTOR_IDS.founder);
+      await expect(application.recordVyaparBill(founder, billInput({ billDate: "2026-10-31", dueDate: "2026-11-30" }), key()))
+        .rejects.toMatchObject({ status: 422, code: "validation_failed" });
+      await expect(application.recordVyaparBill(founder, billInput({ billDate: "2026-10-30", dueDate: "2026-10-29" }), key()))
+        .rejects.toMatchObject({ status: 422, code: "validation_failed" });
+      // The Kolkata calendar day is used: 12:00 UTC on 30 Oct is still 30 Oct, so today is accepted
+      await expect(application.recordVyaparBill(founder, billInput({ billDate: "2026-10-30", dueDate: "2026-10-30" }), key()))
+        .resolves.toMatchObject({ issueDate: "2026-10-30" });
+    });
+
+    it("returns 404 for a client that does not exist", async () => {
+      const { application } = createFixture();
+      const founder = await actorFor(application, DEMO_ACTOR_IDS.founder);
+      await expect(
+        application.recordVyaparBill(founder, billInput({ clientId: "10000000-0000-4000-a000-0000000000ff" }), key()),
+      ).rejects.toMatchObject({ status: 404, code: "not_found", message: "Client was not found." });
+    });
+
+    it("refuses a duplicate Vyapar number in the same financial year, ignoring case and spaces", async () => {
+      const { application } = createFixture();
+      const founder = await actorFor(application, DEMO_ACTOR_IDS.founder);
+      await application.recordVyaparBill(founder, billInput(), key());
+      await expect(
+        application.recordVyaparBill(founder, billInput({ clientId: CLIENT_1, vyaparBillNumber: " vyp-201", billDate: "2026-04-01", dueDate: "2026-05-01" }), key()),
+      ).rejects.toMatchObject({
+        status: 409,
+        code: "duplicate_vyapar_bill",
+        message: "Vyapar bill vyp-201 is already recorded for 2026–27.",
+      });
+    });
+
+    it("accepts the same number in the next financial year and after the first bill is cancelled", async () => {
+      const { application } = createFixture();
+      const founder = await actorFor(application, DEMO_ACTOR_IDS.founder);
+      const first = await application.recordVyaparBill(founder, billInput({ billDate: "2026-03-31", dueDate: "2026-04-30" }), key());
+      // 31 Mar 2026 is in FY 2025-26, 1 Apr 2026 starts FY 2026-27
+      await expect(application.recordVyaparBill(founder, billInput({ billDate: "2026-04-01", dueDate: "2026-04-30" }), key()))
+        .resolves.toMatchObject({ vyaparBillNumber: "VYP-201" });
+      await expect(application.recordVyaparBill(founder, billInput({ billDate: "2026-03-01", dueDate: "2026-04-30" }), key()))
+        .rejects.toMatchObject({ status: 409, message: "Vyapar bill VYP-201 is already recorded for 2025–26." });
+      await application.voidInvoice(founder, first.id, { reason: "Entered in error" }, key());
+      await expect(application.recordVyaparBill(founder, billInput({ billDate: "2026-03-01", dueDate: "2026-04-30" }), key()))
+        .resolves.toMatchObject({ status: "issued" });
+    });
+
+    it("lets Staff record payments only for clients they look after, moving the bill issued, part paid, paid", async () => {
+      const { application } = createFixture();
+      const founder = await actorFor(application, DEMO_ACTOR_IDS.founder);
+      const staff = await actorFor(application, DEMO_ACTOR_IDS.staff);
+      const mine = await application.recordVyaparBill(founder, billInput(), key());
+      const theirs = await application.recordVyaparBill(founder, billInput({ clientId: CLIENT_1, vyaparBillNumber: "VYP-202" }), key());
+
+      const visible = await application.listInvoices(staff);
+      expect(visible.some((invoice) => invoice.id === mine.id)).toBe(true);
+      expect(visible.some((invoice) => invoice.id === theirs.id)).toBe(false);
+      expect((await application.listPaymentReceipts(staff)).every((receipt) => receipt.clientId !== CLIENT_1)).toBe(true);
+
+      await expect(application.recordPayment(staff, paymentInput(theirs.id), key()))
+        .rejects.toMatchObject({ status: 404, message: "Invoice was not found." });
+
+      const part = await application.recordPayment(staff, paymentInput(mine.id, { amountPaise: 400000 }), key());
+      expect(part).toMatchObject({
+        status: "received",
+        clientId: CLIENT_2,
+        amountPaise: 400000,
+        method: "bank_transfer",
+        reference: "NEFT-1",
+        notes: null,
+        allocatedPaise: 400000,
+        unallocatedPaise: 0,
+      });
+      expect(part.allocations).toEqual([{ invoiceId: mine.id, invoiceCode: mine.code, amountPaise: 400000 }]);
+      let bill = (await application.listInvoices(staff)).find((invoice) => invoice.id === mine.id)!;
+      expect(bill).toMatchObject({ status: "part_paid", amountReceivedPaise: 400000, balancePaise: 600000 });
+
+      await application.recordPayment(staff, paymentInput(mine.id, { amountPaise: 600000, reference: "  ", notes: " settled " }), key());
+      bill = (await application.listInvoices(staff)).find((invoice) => invoice.id === mine.id)!;
+      expect(bill).toMatchObject({ status: "paid", amountReceivedPaise: 1000000, balancePaise: 0 });
+      expect(bill.payments).toHaveLength(2);
+    });
+
+    it("refuses a payment on a paid, cancelled or draft bill and one above the balance", async () => {
+      const { application } = createFixture();
+      const founder = await actorFor(application, DEMO_ACTOR_IDS.founder);
+      const bill = await application.recordVyaparBill(founder, billInput({ amountPaise: 1250050 }), key());
+      await expect(application.recordPayment(founder, paymentInput(bill.id, { amountPaise: 1250051 }), key()))
+        .rejects.toMatchObject({
+          status: 422,
+          code: "payment_exceeds_balance",
+          message: "The payment is more than the ₹12,500.50 still pending on this bill.",
+        });
+      await application.recordPayment(founder, paymentInput(bill.id, { amountPaise: 1250050 }), key());
+      await expect(application.recordPayment(founder, paymentInput(bill.id, { amountPaise: 1 }), key()))
+        .rejects.toMatchObject({ status: 422, code: "bill_not_open", message: "This bill is already paid or cancelled." });
+
+      const cancelled = await application.recordVyaparBill(founder, billInput({ vyaparBillNumber: "VYP-203" }), key());
+      await application.voidInvoice(founder, cancelled.id, { reason: "Wrong client" }, key());
+      await expect(application.recordPayment(founder, paymentInput(cancelled.id), key()))
+        .rejects.toMatchObject({ status: 422, code: "bill_not_open" });
+
+      // INV-0001004 is a draft in the demo data
+      const draft = (await application.listInvoices(founder)).find((invoice) => invoice.status === "draft")!;
+      await expect(application.recordPayment(founder, paymentInput(draft.id), key()))
+        .rejects.toMatchObject({ status: 422, code: "bill_not_open" });
+    });
+
+    it("refuses a future payment date and an unknown bill", async () => {
+      const { application } = createFixture();
+      const founder = await actorFor(application, DEMO_ACTOR_IDS.founder);
+      const bill = await application.recordVyaparBill(founder, billInput(), key());
+      await expect(application.recordPayment(founder, paymentInput(bill.id, { receivedOn: "2026-10-31" }), key()))
+        .rejects.toMatchObject({ status: 422, code: "validation_failed" });
+      await expect(application.recordPayment(founder, paymentInput("70000000-0000-4000-a000-0000000000ff"), key()))
+        .rejects.toMatchObject({ status: 404, message: "Invoice was not found." });
+    });
+
+    it("replays a payment without a second receipt, and a replay still succeeds after the bill is fully paid", async () => {
+      const { application } = createFixture();
+      const founder = await actorFor(application, DEMO_ACTOR_IDS.founder);
+      const bill = await application.recordVyaparBill(founder, billInput(), key());
+      const input = paymentInput(bill.id, { amountPaise: 1000000 });
+      const first = await application.recordPayment(founder, input, "pay-key");
+      const receiptsBefore = (await application.listPaymentReceipts(founder)).length;
+      const replay = await application.recordPayment(founder, input, "pay-key");
+      expect(replay).toEqual(first);
+      expect((await application.listPaymentReceipts(founder)).length).toBe(receiptsBefore);
+      await expect(application.recordPayment(founder, { ...input, amountPaise: 999999 }, "pay-key"))
+        .rejects.toMatchObject({ status: 409, code: "conflict" });
+    });
+
+    it("cancels a payment, returning the bill to part paid or issued, and refuses a second cancel", async () => {
+      const { application } = createFixture();
+      const founder = await actorFor(application, DEMO_ACTOR_IDS.founder);
+      const bill = await application.recordVyaparBill(founder, billInput(), key());
+      const one = await application.recordPayment(founder, paymentInput(bill.id, { amountPaise: 400000 }), key());
+      const two = await application.recordPayment(founder, paymentInput(bill.id, { amountPaise: 600000 }), key());
+
+      const voidedTwo = await application.voidPaymentReceipt(founder, two.id, { reason: " Cheque bounced " }, key());
+      expect(voidedTwo).toMatchObject({ status: "voided", voidReason: "Cheque bounced" });
+      expect(voidedTwo.voidedAt).toEqual(expect.any(String));
+      let current = (await application.listInvoices(founder)).find((invoice) => invoice.id === bill.id)!;
+      expect(current).toMatchObject({ status: "part_paid", amountReceivedPaise: 400000 });
+
+      await application.voidPaymentReceipt(founder, one.id, { reason: "Wrong bill" }, key());
+      current = (await application.listInvoices(founder)).find((invoice) => invoice.id === bill.id)!;
+      expect(current).toMatchObject({ status: "issued", amountReceivedPaise: 0, balancePaise: 1000000 });
+
+      await expect(application.voidPaymentReceipt(founder, one.id, { reason: "Again" }, key()))
+        .rejects.toMatchObject({ status: 422, code: "already_voided" });
+      await expect(application.voidPaymentReceipt(founder, "71000000-0000-4000-a000-0000000000ff", { reason: "None" }, key()))
+        .rejects.toMatchObject({ status: 404 });
+    });
+
+    it("refuses to cancel a bill with received payments until those payments are cancelled", async () => {
+      const { application } = createFixture();
+      const founder = await actorFor(application, DEMO_ACTOR_IDS.founder);
+      const bill = await application.recordVyaparBill(founder, billInput(), key());
+      const payment = await application.recordPayment(founder, paymentInput(bill.id), key());
+      await expect(application.voidInvoice(founder, bill.id, { reason: "Entered twice" }, key()))
+        .rejects.toMatchObject({ status: 422, code: "bill_has_payments", message: "Cancel the payments on this bill first." });
+      await application.voidPaymentReceipt(founder, payment.id, { reason: "Refunded" }, key());
+      const voided = await application.voidInvoice(founder, bill.id, { reason: "Entered twice" }, key());
+      expect(voided).toMatchObject({ status: "voided", voidReason: "Entered twice", balancePaise: 0 });
+      await expect(application.voidInvoice(founder, bill.id, { reason: "Again" }, key()))
+        .rejects.toMatchObject({ status: 422, code: "already_voided" });
+      await expect(application.voidInvoice(founder, "70000000-0000-4000-a000-0000000000ff", { reason: "None" }, key()))
+        .rejects.toMatchObject({ status: 404, message: "Invoice was not found." });
+    });
+
+    it.each([
+      ["senior_staff", DEMO_ACTOR_IDS.senior], ["staff", DEMO_ACTOR_IDS.staff], ["trainee", DEMO_ACTOR_IDS.trainee],
+    ] as const)("denies %s recording or cancelling bills with 403 before any repository write", async (_role, actorId) => {
+      const { application, repository } = createFixture();
+      const actor = await actorFor(application, actorId);
+      const spies = [
+        vi.spyOn(repository, "recordVyaparBill"),
+        vi.spyOn(repository, "voidInvoice"),
+        vi.spyOn(repository, "voidPaymentReceipt"),
+      ];
+      await expect(application.recordVyaparBill(actor, billInput(), key())).rejects.toMatchObject({ status: 403, code: "role_not_permitted" });
+      await expect(application.voidInvoice(actor, "70000000-0000-4000-a000-000000000003", { reason: "No" }, key()))
+        .rejects.toMatchObject({ status: 403, code: "role_not_permitted" });
+      await expect(application.voidPaymentReceipt(actor, "71000000-0000-4000-a000-000000000001", { reason: "No" }, key()))
+        .rejects.toMatchObject({ status: 403, code: "role_not_permitted" });
+      for (const spy of spies) expect(spy).not.toHaveBeenCalled();
+    });
+
+    it("denies a Trainee reading and recording payments with 403", async () => {
+      const { application, repository } = createFixture();
+      const trainee = await actorFor(application, DEMO_ACTOR_IDS.trainee);
+      const spy = vi.spyOn(repository, "recordPayment");
+      await expect(application.recordPayment(trainee, paymentInput("70000000-0000-4000-a000-000000000003"), key()))
+        .rejects.toMatchObject({ status: 403, code: "role_not_permitted", message: "Fee records are not available to Trainees." });
+      expect(spy).not.toHaveBeenCalled();
+    });
+
+    it("lets Senior Staff see only the fee-visible clients, including clients they review", async () => {
+      const { application } = createFixture();
+      const senior = await actorFor(application, DEMO_ACTOR_IDS.senior);
+      const invoices = await application.listInvoices(senior);
+      // Senior Staff reviews the assignments of clients 1 and 3 and owns neither client 2 nor its assignment
+      expect(invoices.map((invoice) => invoice.code).sort()).toEqual(["INV-0001001", "INV-0001002", "INV-0001003"]);
     });
   });
 

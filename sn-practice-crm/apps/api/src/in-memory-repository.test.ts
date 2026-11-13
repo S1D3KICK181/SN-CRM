@@ -5,6 +5,8 @@ import type {
   CreateAssignmentRecord,
   CreateClientRecord,
   CreateWorkItemRecord,
+  RecordPaymentCommand,
+  RecordVyaparBillCommand,
   RepositoryContext,
   UpdateAssignmentStatusCommand,
   UpdateWorkItemStatusCommand,
@@ -1153,5 +1155,141 @@ describe('InMemoryCrmRepository billing reads (BIL-01a)', () => {
     expect(receipts[0]).toMatchObject({ amountPaise: 1000000, allocatedPaise: 600000, unallocatedPaise: 400000, method: 'upi' });
     expect(receipts[1]!.allocations.map((allocation) => allocation.invoiceCode)).toEqual(['INV-0001001', 'INV-0001002']);
     expect(receipts[1]).toMatchObject({ allocatedPaise: 4000000, unallocatedPaise: 0, clientCode: 'CL-001001' });
+  });
+});
+
+describe('InMemoryCrmRepository Vyapar bills and payments (FEE-01a)', () => {
+  const founder: RepositoryContext = { actorId: DEMO_ACTOR_IDS.founder };
+  const manager: RepositoryContext = { actorId: DEMO_ACTOR_IDS.manager };
+  const senior: RepositoryContext = { actorId: DEMO_ACTOR_IDS.senior };
+  const staff: RepositoryContext = { actorId: DEMO_ACTOR_IDS.staff };
+  const trainee: RepositoryContext = { actorId: DEMO_ACTOR_IDS.trainee };
+  const now = new Date('2026-11-13T12:00:00.000Z');
+  const build = () => new InMemoryCrmRepository(createDemoSeed(now), { now: () => now });
+  // Client 2 is looked after by Staff (relationship owner and assignment owner); client 1 is not.
+  const CLIENT_1 = '10000000-0000-4000-a000-000000000001';
+  const CLIENT_2 = '10000000-0000-4000-a000-000000000002';
+  const bill = (overrides: Partial<RecordVyaparBillCommand> = {}): RecordVyaparBillCommand => ({
+    clientId: CLIENT_2,
+    vyaparBillNumber: 'VYP-300',
+    billDate: '2026-11-01',
+    dueDate: '2026-11-30',
+    amountPaise: 500000,
+    description: 'Retainer fee',
+    idempotencyKey: 'bill-1',
+    ...overrides,
+  });
+  const payment = (invoiceId: string, overrides: Partial<RecordPaymentCommand> = {}): RecordPaymentCommand => ({
+    invoiceId,
+    receivedOn: '2026-11-10',
+    amountPaise: 200000,
+    method: 'upi',
+    idempotencyKey: 'pay-1',
+    ...overrides,
+  });
+
+  it('gives the demo bills Vyapar numbers and leaves the draft without one', async () => {
+    const invoices = await build().listInvoices(founder);
+    const byCode = Object.fromEntries(invoices.map((invoice) => [invoice.code, invoice.vyaparBillNumber]));
+    expect(byCode).toEqual({
+      'INV-0001001': 'VYP-118',
+      'INV-0001002': 'VYP-124',
+      'INV-0001003': 'VYP-131',
+      'INV-0001004': null,
+    });
+  });
+
+  it('numbers new bills and receipts after the existing codes and stores the bill issued', async () => {
+    const repository = build();
+    const created = await repository.recordVyaparBill(founder, bill());
+    expect(created).toMatchObject({ code: 'INV-0001005', status: 'issued', vyaparBillNumber: 'VYP-300', totalPaise: 500000 });
+    expect(created.issuedAt).toBe(now.toISOString());
+    const receipt = await repository.recordPayment(founder, payment(created.id));
+    expect(receipt.code).toBe('RCT-0001003');
+  });
+
+  it('shows Staff only the bills and payments of clients they look after', async () => {
+    const repository = build();
+    expect((await repository.listInvoices(staff)).map((invoice) => invoice.clientId)).toEqual([CLIENT_2]);
+    expect(await repository.listPaymentReceipts(staff)).toEqual([]);
+    expect(await repository.listInvoices(trainee)).toEqual([]);
+    expect((await repository.listInvoices(senior)).map((invoice) => invoice.code).sort()).toEqual([
+      'INV-0001001',
+      'INV-0001002',
+      'INV-0001003',
+    ]);
+    expect(await repository.listInvoices({ actorId: '00000000-0000-4000-a000-0000000000ff' })).toEqual([]);
+  });
+
+  it('lets only the Founder or Manager record a bill', async () => {
+    const repository = build();
+    for (const ctx of [senior, staff, trainee]) {
+      await expect(repository.recordVyaparBill(ctx, bill({ idempotencyKey: 'denied' }))).rejects.toMatchObject({ status: 403 });
+    }
+    await expect(repository.recordVyaparBill(manager, bill())).resolves.toMatchObject({ status: 'issued' });
+  });
+
+  it('lets Staff pay only fee-visible bills and never lets a Trainee pay', async () => {
+    const repository = build();
+    const mine = await repository.recordVyaparBill(founder, bill());
+    const theirs = await repository.recordVyaparBill(
+      founder,
+      bill({ clientId: CLIENT_1, vyaparBillNumber: 'VYP-301', idempotencyKey: 'bill-2' }),
+    );
+    await expect(repository.recordPayment(staff, payment(theirs.id))).rejects.toMatchObject({ status: 404 });
+    await expect(repository.recordPayment(trainee, payment(mine.id, { idempotencyKey: 'pay-2' }))).rejects.toMatchObject({ status: 403 });
+    await expect(repository.recordPayment(staff, payment(mine.id))).resolves.toMatchObject({ status: 'received', clientId: CLIENT_2 });
+    expect((await repository.listInvoices(staff)).find((invoice) => invoice.id === mine.id)).toMatchObject({
+      status: 'part_paid',
+      amountReceivedPaise: 200000,
+    });
+  });
+
+  it('lets only the Founder or Manager cancel bills and payments', async () => {
+    const repository = build();
+    const created = await repository.recordVyaparBill(founder, bill());
+    const receipt = await repository.recordPayment(founder, payment(created.id));
+    for (const ctx of [senior, staff, trainee]) {
+      await expect(repository.voidPaymentReceipt(ctx, { id: receipt.id, reason: 'No', idempotencyKey: 'v-1' })).rejects.toMatchObject({ status: 403 });
+      await expect(repository.voidInvoice(ctx, { id: created.id, reason: 'No', idempotencyKey: 'v-2' })).rejects.toMatchObject({ status: 403 });
+    }
+    await expect(
+      repository.voidPaymentReceipt(manager, { id: receipt.id, reason: 'Bounced', idempotencyKey: 'v-3' }),
+    ).resolves.toMatchObject({ status: 'voided' });
+  });
+
+  it('keeps a refused call out of the idempotency store so the key can be reused', async () => {
+    const repository = build();
+    await repository.recordVyaparBill(founder, bill());
+    await expect(repository.recordVyaparBill(founder, bill({ idempotencyKey: 'dup-key' }))).rejects.toMatchObject({ code: 'duplicate_vyapar_bill' });
+    // The refused call stored nothing, so the same key works for a corrected request
+    await expect(
+      repository.recordVyaparBill(founder, bill({ vyaparBillNumber: 'VYP-302', idempotencyKey: 'dup-key' })),
+    ).resolves.toMatchObject({ vyaparBillNumber: 'VYP-302' });
+  });
+
+  it('replays per actor and refuses the same key with another operation', async () => {
+    const repository = build();
+    const first = await repository.recordVyaparBill(founder, bill());
+    expect(await repository.recordVyaparBill(founder, bill())).toEqual(first);
+    // Another actor's identical key is a separate receipt, so it hits the duplicate rule instead of replaying
+    await expect(repository.recordVyaparBill(manager, bill())).rejects.toMatchObject({ code: 'duplicate_vyapar_bill' });
+    await expect(repository.recordPayment(founder, payment(first.id, { idempotencyKey: 'bill-1' }))).rejects.toMatchObject({ status: 409, code: 'conflict' });
+    await expect(repository.recordVyaparBill(founder, bill({ idempotencyKey: ' ' }))).rejects.toMatchObject({ status: 422 });
+  });
+
+  it('derives status as payments are recorded and cancelled and refuses overpayment', async () => {
+    const repository = build();
+    const created = await repository.recordVyaparBill(founder, bill());
+    const a = await repository.recordPayment(founder, payment(created.id, { amountPaise: 300000, idempotencyKey: 'p-a' }));
+    await expect(repository.recordPayment(founder, payment(created.id, { amountPaise: 200001, idempotencyKey: 'p-b' }))).rejects.toMatchObject({
+      code: 'payment_exceeds_balance',
+      message: 'The payment is more than the ₹2,000 still pending on this bill.',
+    });
+    await repository.recordPayment(founder, payment(created.id, { amountPaise: 200000, idempotencyKey: 'p-c' }));
+    const status = async () => (await repository.listInvoices(founder)).find((invoice) => invoice.id === created.id)!.status;
+    expect(await status()).toBe('paid');
+    await repository.voidPaymentReceipt(founder, { id: a.id, reason: 'Bounced', idempotencyKey: 'v-a' });
+    expect(await status()).toBe('part_paid');
   });
 });

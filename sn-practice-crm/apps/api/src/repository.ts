@@ -15,6 +15,8 @@ import type {
   LedgerEntryDto,
   OfficeAccountsSummaryDto,
   PaymentReceiptDto,
+  RecordPaymentInput,
+  RecordVyaparBillInput,
   RecurringScheduleDto,
   ReportingLineDto,
   ReviseEngagementDraftInput,
@@ -24,6 +26,7 @@ import type {
   WorkItemKind,
   WorkItemStatus,
 } from '@sn/contracts';
+import { ApiError } from './errors';
 
 export interface EmployeeRecord extends SessionActor {
   readonly active: boolean;
@@ -172,6 +175,76 @@ export type MutateEngagementCommand =
       readonly idempotencyKey: string;
     } & EndEngagementInput);
 
+// --- Vyapar bill and payment commands (FEE-01a) ---
+// Stateful business rules (duplicate number, open bill, balance, void state) are enforced by the
+// repositories inside the same transaction as the idempotency lookup, so a replay returns the stored
+// result instead of re-running a check the first call already changed the answer to.
+
+export type RecordVyaparBillCommand = RecordVyaparBillInput & { readonly idempotencyKey: string };
+export type RecordPaymentCommand = RecordPaymentInput & { readonly idempotencyKey: string };
+export interface VoidFeeRecordCommand {
+  readonly id: string; // RFC 4122 UUID of the bill or payment receipt
+  readonly reason: string;
+  readonly idempotencyKey: string;
+}
+
+/** Today's calendar date (YYYY-MM-DD) in Asia/Kolkata, matching the SQL read path. */
+export function kolkataToday(now: Date): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Kolkata',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(now);
+}
+
+/** Financial year (April to March) in which a YYYY-MM-DD date falls, as its starting calendar year. */
+export function financialYearStart(date: string): number {
+  const year = Number.parseInt(date.slice(0, 4), 10);
+  const month = Number.parseInt(date.slice(5, 7), 10);
+  return month < 4 ? year - 1 : year;
+}
+
+/** Display label for a financial year, e.g. 2026–27. */
+export function financialYearLabel(startYear: number): string {
+  return `${startYear}–${String((startYear + 1) % 100).padStart(2, '0')}`;
+}
+
+function formatRupees(paise: number): string {
+  return new Intl.NumberFormat('en-IN', {
+    minimumFractionDigits: paise % 100 === 0 ? 0 : 2,
+    maximumFractionDigits: 2,
+  }).format(paise / 100);
+}
+
+export function duplicateVyaparBill(vyaparBillNumber: string, billDate: string): ApiError {
+  return new ApiError(
+    409,
+    'duplicate_vyapar_bill',
+    `Vyapar bill ${vyaparBillNumber} is already recorded for ${financialYearLabel(financialYearStart(billDate))}.`,
+  );
+}
+
+export function billNotOpen(): ApiError {
+  return new ApiError(422, 'bill_not_open', 'This bill is already paid or cancelled.');
+}
+
+export function paymentExceedsBalance(balancePaise: number): ApiError {
+  return new ApiError(
+    422,
+    'payment_exceeds_balance',
+    `The payment is more than the ₹${formatRupees(balancePaise)} still pending on this bill.`,
+  );
+}
+
+export function alreadyVoided(): ApiError {
+  return new ApiError(422, 'already_voided', 'This record is already cancelled.');
+}
+
+export function billHasPayments(): ApiError {
+  return new ApiError(422, 'bill_has_payments', 'Cancel the payments on this bill first.');
+}
+
 export interface CrmRepository {
   // Clients
   getClient(ctx: RepositoryContext, clientId: string): Promise<ClientDto | null>;
@@ -246,6 +319,12 @@ export interface CrmRepository {
   // Billing (BIL-01a, read-only)
   listInvoices(ctx: RepositoryContext): Promise<InvoiceDto[]>;
   listPaymentReceipts(ctx: RepositoryContext): Promise<PaymentReceiptDto[]>;
+
+  // Vyapar bills and payments (FEE-01a); every mutation is idempotent on (actor, key)
+  recordVyaparBill(ctx: RepositoryContext, command: RecordVyaparBillCommand): Promise<InvoiceDto>;
+  recordPayment(ctx: RepositoryContext, command: RecordPaymentCommand): Promise<PaymentReceiptDto>;
+  voidInvoice(ctx: RepositoryContext, command: VoidFeeRecordCommand): Promise<InvoiceDto>;
+  voidPaymentReceipt(ctx: RepositoryContext, command: VoidFeeRecordCommand): Promise<PaymentReceiptDto>;
 
   // Office Accounts & Ledger
   getOfficeAccountsSummary(ctx: RepositoryContext): Promise<OfficeAccountsSummaryDto>;

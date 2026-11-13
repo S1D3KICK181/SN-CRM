@@ -729,3 +729,84 @@ test('migration 0008 links recurring schedules to engagements and stops them whe
   assert.match(materializer, /recurring_schedule_id,\s+engagement_id,\s+title,/i);
   assert.match(materializer, /v_schedule\.id,\s+v_schedule\.engagement_id,\s+v_schedule\.title,/i);
 });
+
+test('migration 0009 tracks Vyapar bills with a per-financial-year unique number and fee-visible access', () => {
+  const migration0009Path = new URL('../../supabase/migrations/20261113120000_fee01_vyapar_bills.sql', import.meta.url);
+  const sql0009 = readMigration(migration0009Path, 'Migration 0009');
+
+  // 1. Nullable Vyapar number, length check, immutable FY expression, partial unique index
+  expectSql(sql0009, /add column vyapar_bill_number text;/i, 'nullable vyapar_bill_number');
+  assert.doesNotMatch(sql0009, /vyapar_bill_number text not null/i, 'existing rows stay null');
+  expectSql(sql0009, /vyapar_bill_number is null or char_length\(btrim\(vyapar_bill_number\)\) between 1 and 30/i, 'length check');
+  const fy = functionBlock(sql0009, 'financial_year_start');
+  assert.match(fy, /\bimmutable\b/i);
+  assert.match(fy, /extract\(month from p_date\) < 4/i);
+  expectSql(
+    sql0009,
+    /create unique index invoices_vyapar_bill_fy_uidx\s+on public\.invoices \(upper\(btrim\(vyapar_bill_number\)\), public\.financial_year_start\(issue_date\)\)\s+where vyapar_bill_number is not null and status <> 'voided';/i,
+    'unique per FY, case-insensitive, ignoring voided',
+  );
+
+  // 2. Invoice guard: Vyapar number immutable, recompute may pass for staff, management otherwise
+  const invoiceGuard = functionBlock(sql0009, 'guard_invoice_write');
+  assert.match(invoiceGuard, /security definer/i);
+  assert.match(invoiceGuard, /set search_path = public, pg_temp/i);
+  assert.match(invoiceGuard, /new\.vyapar_bill_number is distinct from old\.vyapar_bill_number/i);
+  assert.match(invoiceGuard, /v_actor is not null and not v_internal_recompute and not public\.is_management\(v_actor\)/i);
+  assert.match(invoiceGuard, /A new Invoice must begin as an empty Draft\./i);
+
+  // 3. Fee visibility helpers: security definer, pinned search_path, management or owner/reviewer
+  for (const name of ['user_fee_visible', 'fee_visible']) {
+    const helper = functionBlock(sql0009, name);
+    assert.match(helper, /security definer/i, `${name} is security definer`);
+    assert.match(helper, /set search_path = public, pg_temp/i, `${name} pins search_path`);
+  }
+  const userFee = functionBlock(sql0009, 'user_fee_visible');
+  assert.match(userFee, /public\.is_management\(p_user_id\)/i);
+  assert.match(userFee, /public\.role_of\(p_user_id\) in \('senior_staff', 'staff'\)/i);
+  assert.match(userFee, /c\.relationship_owner_id = p_user_id/i);
+  assert.match(userFee, /a\.owner_id = p_user_id/i);
+  assert.match(userFee, /ar\.reviewer_id = p_user_id/i);
+  assert.match(functionBlock(sql0009, 'fee_visible'), /public\.user_fee_visible\(auth\.uid\(\), p_client_id\)/i);
+
+  // 4. RLS: fee-visible selects, fee-visible receipt/allocation inserts, everything else untouched
+  expectSql(sql0009, /create policy invoices_select on public\.invoices\s+for select to authenticated\s+using \(public\.fee_visible\(client_id\)\);/i, 'invoices select');
+  expectSql(sql0009, /create policy invoice_items_select on public\.invoice_items[\s\S]*?public\.fee_visible\(i\.client_id\)/i, 'invoice items select via invoice');
+  expectSql(sql0009, /create policy payment_receipts_select on public\.payment_receipts\s+for select to authenticated\s+using \(public\.fee_visible\(client_id\)\);/i, 'receipts select');
+  expectSql(sql0009, /create policy payment_receipts_insert on public\.payment_receipts\s+for insert to authenticated\s+with check \(public\.fee_visible\(client_id\) and created_by = auth\.uid\(\)\);/i, 'receipts insert');
+  expectSql(sql0009, /create policy payment_allocations_select on public\.payment_allocations[\s\S]*?public\.fee_visible\(pr\.client_id\)/i, 'allocations select via receipt');
+  expectSql(sql0009, /create policy payment_allocations_insert on public\.payment_allocations[\s\S]*?created_by = auth\.uid\(\)[\s\S]*?public\.fee_visible\(pr\.client_id\)/i, 'allocations insert');
+  for (const untouched of ['invoices_insert', 'invoices_update', 'invoice_items_insert', 'invoice_items_update', 'invoice_items_delete', 'payment_receipts_update', 'payment_allocations_update', 'payment_allocations_delete']) {
+    assert.doesNotMatch(sql0009, new RegExp(`policy ${untouched} on`, 'i'), `${untouched} stays management-only`);
+  }
+
+  // 5. Receipt guard: staff insert only for fee-visible clients, never with a ledger entry; updates management-only
+  const receiptGuard = functionBlock(sql0009, 'guard_payment_receipt_write');
+  assert.match(receiptGuard, /security definer/i);
+  assert.match(receiptGuard, /set search_path = public, pg_temp/i);
+  assert.match(receiptGuard, /if tg_op <> 'INSERT' then\s+raise exception 'Only the Founder or Manager may operate payment receipts\.'\s+using errcode = '42501';/i);
+  assert.match(receiptGuard, /not public\.user_fee_visible\(v_actor, new\.client_id\)\s+or new\.ledger_entry_id is not null/i);
+  assert.match(receiptGuard, /Only the Founder or Manager, or staff looking after this client, may record payments\./i);
+  assert.match(receiptGuard, /errcode = '42501'/i);
+
+  // 6. Allocation guard: staff insert for fee-visible receipt client; update and delete management-only
+  const allocationGuard = functionBlock(sql0009, 'guard_payment_allocation_write');
+  assert.match(allocationGuard, /security definer/i);
+  assert.match(allocationGuard, /set search_path = public, pg_temp/i);
+  assert.match(allocationGuard, /if tg_op <> 'INSERT' then\s+raise exception 'Only the Founder or Manager may allocate payments\.' using errcode = '42501';/i);
+  assert.match(allocationGuard, /public\.user_fee_visible\(v_actor, pr\.client_id\)/i);
+  assert.match(allocationGuard, /Payment allocations exceed the Invoice balance\./i);
+
+  // 7. Operation receipts: fee-capable roles, still actor-isolated
+  expectSql(
+    sql0009,
+    /create policy operation_receipts_select on public\.operation_receipts\s+for select to authenticated\s+using \(\s*public\.current_app_role\(\) in \('founder', 'manager', 'senior_staff', 'staff'\)\s+and actor_id = auth\.uid\(\)\s*\);/i,
+    'operation receipts select',
+  );
+  expectSql(
+    sql0009,
+    /create policy operation_receipts_insert on public\.operation_receipts\s+for insert to authenticated\s+with check \(\s*public\.current_app_role\(\) in \('founder', 'manager', 'senior_staff', 'staff'\)\s+and actor_id = auth\.uid\(\)\s*\);/i,
+    'operation receipts insert',
+  );
+  assert.doesNotMatch(sql0009, /create policy [a-z_]+ on public\.operation_receipts\s+for (update|delete)/i, 'still no update or delete policy');
+});

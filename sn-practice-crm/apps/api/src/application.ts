@@ -22,12 +22,15 @@ import type {
   LedgerEntryDto,
   OfficeAccountsSummaryDto,
   PaymentReceiptDto,
+  RecordPaymentInput,
+  RecordVyaparBillInput,
   RecurringScheduleDto,
   ReportingLineDto,
   ServiceCatalogItemDto,
   SessionActor,
   UpdateAssignmentInput,
   UpdateRecurringScheduleInput,
+  VoidFeeRecordInput,
   WorkItemDto,
   WorkItemStatus,
   WorkItemTransition,
@@ -43,6 +46,7 @@ import type {
   ServiceReference,
   UpdateAssignmentCommand,
 } from './repository';
+import { kolkataToday } from './repository';
 import { parseIsoInstant } from './schemas';
 
 export interface ApplicationOptions {
@@ -116,6 +120,86 @@ export class CrmApplication {
   async listPaymentReceipts(actor: SessionActor): Promise<PaymentReceiptDto[]> {
     requireAuthority({ action: 'billing.read', actor: asActor(actor) });
     return this.repository.listPaymentReceipts({ actorId: actor.id });
+  }
+
+  // --- Vyapar bills and payments (FEE-01a) ---
+  // Authority first, then the date rules that depend on today's date. Rules that depend on stored state
+  // (duplicate number, open bill, balance, void state) run in the repository, after the idempotency
+  // lookup, so a replay returns the stored result.
+
+  async recordVyaparBill(
+    actor: SessionActor,
+    input: RecordVyaparBillInput,
+    idempotencyKey: string,
+  ): Promise<InvoiceDto> {
+    requireAuthority({ action: 'billing.record_bill', actor: asActor(actor) });
+    if (input.billDate > kolkataToday(this.now())) {
+      throw new ApiError(422, 'validation_failed', 'The bill date cannot be in the future.');
+    }
+    if (input.dueDate < input.billDate) {
+      throw new ApiError(422, 'validation_failed', 'The due date cannot be before the bill date.');
+    }
+    return this.repository.recordVyaparBill(
+      { actorId: actor.id },
+      {
+        clientId: input.clientId,
+        vyaparBillNumber: input.vyaparBillNumber.trim(),
+        billDate: input.billDate,
+        dueDate: input.dueDate,
+        amountPaise: input.amountPaise,
+        description: input.description.trim(),
+        idempotencyKey: normalizeIdempotencyKey(idempotencyKey),
+      },
+    );
+  }
+
+  async recordPayment(
+    actor: SessionActor,
+    input: RecordPaymentInput,
+    idempotencyKey: string,
+  ): Promise<PaymentReceiptDto> {
+    requireAuthority({ action: 'billing.record_payment', actor: asActor(actor) });
+    if (input.receivedOn > kolkataToday(this.now())) {
+      throw new ApiError(422, 'validation_failed', 'The payment date cannot be in the future.');
+    }
+    return this.repository.recordPayment(
+      { actorId: actor.id },
+      {
+        invoiceId: input.invoiceId,
+        receivedOn: input.receivedOn,
+        amountPaise: input.amountPaise,
+        method: input.method,
+        reference: input.reference?.trim() || null,
+        notes: input.notes?.trim() || null,
+        idempotencyKey: normalizeIdempotencyKey(idempotencyKey),
+      },
+    );
+  }
+
+  async voidInvoice(
+    actor: SessionActor,
+    invoiceId: string,
+    input: VoidFeeRecordInput,
+    idempotencyKey: string,
+  ): Promise<InvoiceDto> {
+    requireAuthority({ action: 'billing.void', actor: asActor(actor) });
+    return this.repository.voidInvoice(
+      { actorId: actor.id },
+      { id: invoiceId, reason: input.reason.trim(), idempotencyKey: normalizeIdempotencyKey(idempotencyKey) },
+    );
+  }
+
+  async voidPaymentReceipt(
+    actor: SessionActor,
+    receiptId: string,
+    input: VoidFeeRecordInput,
+    idempotencyKey: string,
+  ): Promise<PaymentReceiptDto> {
+    requireAuthority({ action: 'billing.void', actor: asActor(actor) });
+    return this.repository.voidPaymentReceipt(
+      { actorId: actor.id },
+      { id: receiptId, reason: input.reason.trim(), idempotencyKey: normalizeIdempotencyKey(idempotencyKey) },
+    );
   }
 
   async listEngagements(actor: SessionActor): Promise<EngagementDto[]> {

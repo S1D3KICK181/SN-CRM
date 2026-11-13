@@ -232,16 +232,35 @@ describe('ENG-01 engagement authority matrix across all five roles', () => {
   );
 });
 
-describe('BIL-01a billing read authority', () => {
-  it.each(['founder', 'manager'] as const)('allows %s to read billing records', (role) => {
+describe('FEE-01a fee record authority', () => {
+  it.each(['founder', 'manager', 'senior_staff', 'staff'] as const)('allows %s to read billing records', (role) => {
     expect(authorize({ action: 'billing.read', actor: actor(role) })).toEqual({ allowed: true });
   });
 
-  it.each(['senior_staff', 'staff', 'trainee'] as const)('denies %s reading billing records', (role) => {
-    expect(authorize({ action: 'billing.read', actor: actor(role) })).toEqual({
+  it.each(['billing.read', 'billing.record_payment'] as const)('denies a Trainee %s', (action) => {
+    expect(authorize({ action, actor: actor('trainee') })).toEqual({
       allowed: false,
       code: 'role_not_permitted',
-      reason: 'Billing records are reserved for the Founder or Manager.',
+      reason: 'Fee records are not available to Trainees.',
     });
+  });
+
+  it.each(['founder', 'manager', 'senior_staff', 'staff'] as const)('allows %s to record a payment', (role) => {
+    expect(authorize({ action: 'billing.record_payment', actor: actor(role) })).toEqual({ allowed: true });
+  });
+
+  it.each(['billing.record_bill', 'billing.void'] as const)('allows the Founder and Manager to use %s', (action) => {
+    expect(authorize({ action, actor: actor('founder') })).toEqual({ allowed: true });
+    expect(authorize({ action, actor: actor('manager') })).toEqual({ allowed: true });
+  });
+
+  it.each(['billing.record_bill', 'billing.void'] as const)('denies Senior Staff, Staff and Trainees %s', (action) => {
+    for (const role of ['senior_staff', 'staff', 'trainee'] as const) {
+      expect(authorize({ action, actor: actor(role) })).toEqual({
+        allowed: false,
+        code: 'role_not_permitted',
+        reason: 'Only the Founder or Manager may record or cancel Vyapar bills.',
+      });
+    }
   });
 });

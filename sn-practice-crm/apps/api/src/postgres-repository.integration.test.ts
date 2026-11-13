@@ -1972,13 +1972,400 @@ describe('PostgresCrmRepository Integration Suite', () => {
       });
     });
 
-    it('IT-35: a staff user context reads no invoices or receipts', async () => {
+    it('IT-35: a staff user context reads no invoices or receipts of a client it does not look after', async () => {
       await runIsolatedTest(async (repo, tx) => {
-        const client = (await repo.listClientReferences({ actorId: FOUNDER_ID }))[0]!;
-        await createBillingFixtures(tx, client.id);
+        const unrelated = await repo.createClient(
+          { actorId: FOUNDER_ID },
+          {
+            id: crypto.randomUUID(),
+            displayName: 'IT-35 unrelated client',
+            relationshipOwnerId: MANAGER_ID,
+            createdAt: '2026-11-13T12:00:00.000Z',
+            updatedAt: '2026-11-13T12:00:00.000Z',
+          },
+        );
+        const fixtures = await createBillingFixtures(tx, unrelated.id);
 
-        expect(await repo.listInvoices({ actorId: STAFF_ID })).toEqual([]);
-        expect(await repo.listPaymentReceipts({ actorId: STAFF_ID })).toEqual([]);
+        const invoices = await repo.listInvoices({ actorId: STAFF_ID });
+        expect(invoices.some((invoice) => invoice.clientId === unrelated.id || invoice.code === fixtures.invoiceCode)).toBe(false);
+        const receipts = await repo.listPaymentReceipts({ actorId: STAFF_ID });
+        expect(receipts.some((receipt) => receipt.clientId === unrelated.id || receipt.code === fixtures.receiptCode)).toBe(false);
+      });
+    });
+  });
+
+  describe('FEE-01a Vyapar bills and payments', () => {
+    let invoiceSeq: { last_value: string; is_called: boolean } | undefined;
+    let receiptSeq: { last_value: string; is_called: boolean } | undefined;
+    let sequenceNumber = 0;
+
+    // The fixtures roll back, but sequence draws do not; put both code sequences back afterwards.
+    beforeAll(async () => {
+      const invoiceRows = await rootClient`SELECT last_value::text, is_called FROM public.invoice_code_seq`;
+      const receiptRows = await rootClient`SELECT last_value::text, is_called FROM public.receipt_code_seq`;
+      invoiceSeq = { last_value: String(invoiceRows[0]!['last_value']), is_called: Boolean(invoiceRows[0]!['is_called']) };
+      receiptSeq = { last_value: String(receiptRows[0]!['last_value']), is_called: Boolean(receiptRows[0]!['is_called']) };
+    });
+
+    afterAll(async () => {
+      if (invoiceSeq) await rootClient`SELECT setval('public.invoice_code_seq', ${invoiceSeq.last_value}::bigint, ${invoiceSeq.is_called})`;
+      if (receiptSeq) await rootClient`SELECT setval('public.receipt_code_seq', ${receiptSeq.last_value}::bigint, ${receiptSeq.is_called})`;
+    });
+
+    const founderCtx = { actorId: FOUNDER_ID };
+    const staffCtx = { actorId: STAFF_ID };
+
+    // Same role handling as the materializer tests: user-context calls leave the role on `authenticated`.
+    async function asServerRole(tx: postgres.TransactionSql) {
+      await tx`RESET ROLE`;
+      await tx`SELECT set_config('request.jwt.claim.sub', '', true)`;
+      await tx`SELECT set_config('request.jwt.claim.role', '', true)`;
+    }
+
+    async function asUser(tx: postgres.TransactionSql, actorId: string) {
+      await tx`SELECT set_config('request.jwt.claim.sub', ${actorId}, true)`;
+      await tx`SELECT set_config('request.jwt.claim.role', 'authenticated', true)`;
+      await tx`SELECT set_config('role', 'authenticated', true)`;
+    }
+
+    // A fresh client whose relationship owner decides who looks after it (Staff or the Manager).
+    async function newClient(repo: PostgresCrmRepository, ownerId: string) {
+      sequenceNumber += 1;
+      return repo.createClient(founderCtx, {
+        id: crypto.randomUUID(),
+        displayName: `FEE Integration Client ${sequenceNumber}`,
+        relationshipOwnerId: ownerId,
+        createdAt: '2026-11-13T12:00:00.000Z',
+        updatedAt: '2026-11-13T12:00:00.000Z',
+      });
+    }
+
+    function billCommand(clientId: string, overrides: Record<string, unknown> = {}) {
+      sequenceNumber += 1;
+      return {
+        clientId,
+        vyaparBillNumber: `IT-${sequenceNumber}`,
+        billDate: '2026-11-01',
+        dueDate: '2026-11-30',
+        amountPaise: 1000000,
+        description: 'Monthly accounting fee',
+        idempotencyKey: `it-bill-${crypto.randomUUID()}`,
+        ...overrides,
+      };
+    }
+
+    function paymentCommand(invoiceId: string, amountPaise: number, overrides: Record<string, unknown> = {}) {
+      return {
+        invoiceId,
+        receivedOn: '2026-11-10',
+        amountPaise,
+        method: 'upi' as const,
+        reference: 'UPI-IT',
+        idempotencyKey: `it-pay-${crypto.randomUUID()}`,
+        ...overrides,
+      };
+    }
+
+    it('IT-36: the founder records a Vyapar bill as an issued, single-line invoice with totals in paise', async () => {
+      await runIsolatedTest(async (repo, tx) => {
+        const client = await newClient(repo, STAFF_ID);
+        const command = billCommand(client.id, { vyaparBillNumber: 'VYP-IT-36', amountPaise: 1234567 });
+        const bill = await repo.recordVyaparBill(founderCtx, command as Parameters<typeof repo.recordVyaparBill>[1]);
+
+        expect(bill).toMatchObject({
+          vyaparBillNumber: 'VYP-IT-36',
+          clientId: client.id,
+          clientCode: client.code,
+          status: 'issued',
+          issueDate: '2026-11-01',
+          dueDate: '2026-11-30',
+          subtotalPaise: 1234567,
+          taxPaise: 0,
+          totalPaise: 1234567,
+          amountReceivedPaise: 0,
+          balancePaise: 1234567,
+          assignmentId: null,
+          payments: [],
+        });
+        expect(bill.issuedAt).toEqual(expect.any(String));
+        expect(bill.items).toHaveLength(1);
+        expect(bill.items[0]).toMatchObject({
+          description: 'Monthly accounting fee',
+          quantity: 1,
+          unitPricePaise: 1234567,
+          taxRatePercent: 0,
+          lineTotalPaise: 1234567,
+        });
+
+        const listed = (await repo.listInvoices(founderCtx)).find((invoice) => invoice.id === bill.id);
+        expect(listed?.vyaparBillNumber).toBe('VYP-IT-36');
+
+        await asServerRole(tx);
+        const raw = await tx`SELECT is_demo, created_by, status FROM public.invoices WHERE id = ${bill.id}::uuid`;
+        expect(raw[0]).toMatchObject({ is_demo: false, created_by: FOUNDER_ID, status: 'issued' });
+        const items = await tx`SELECT is_demo FROM public.invoice_items WHERE invoice_id = ${bill.id}::uuid`;
+        expect(items.map((row) => row['is_demo'])).toEqual([false]);
+      });
+    });
+
+    it('IT-37: a Vyapar number is unique per financial year, case-insensitively, until the bill is cancelled', async () => {
+      await runIsolatedTest(async (repo, tx) => {
+        const client = await newClient(repo, STAFF_ID);
+        const first = await repo.recordVyaparBill(
+          founderCtx,
+          billCommand(client.id, { vyaparBillNumber: 'VYP-IT-37', billDate: '2026-04-01', dueDate: '2026-05-01' }) as Parameters<typeof repo.recordVyaparBill>[1],
+        );
+
+        const duplicate = billCommand(client.id, { vyaparBillNumber: ' vyp-it-37 ', billDate: '2027-03-31', dueDate: '2027-04-30' });
+        await expect(repo.recordVyaparBill(founderCtx, duplicate as Parameters<typeof repo.recordVyaparBill>[1])).rejects.toMatchObject({
+          status: 409,
+          code: 'duplicate_vyapar_bill',
+          message: 'Vyapar bill vyp-it-37 is already recorded for 2026–27.',
+        });
+
+        // 31 Mar 2026 belongs to the previous financial year, 1 Apr 2027 to the next one
+        for (const billDate of ['2026-03-31', '2027-04-01']) {
+          await expect(
+            repo.recordVyaparBill(founderCtx, billCommand(client.id, { vyaparBillNumber: 'VYP-IT-37', billDate, dueDate: '2027-06-30' }) as Parameters<typeof repo.recordVyaparBill>[1]),
+          ).resolves.toMatchObject({ vyaparBillNumber: 'VYP-IT-37', status: 'issued' });
+        }
+
+        // The unique index itself backs the pre-check
+        await asServerRole(tx);
+        await expect(
+          tx.savepoint(async (sp) => {
+            await sp`
+              INSERT INTO public.invoices (client_id, issue_date, due_date, vyapar_bill_number, created_by)
+              VALUES (${client.id}::uuid, '2026-08-01', '2026-08-31', 'VYP-IT-37', ${FOUNDER_ID}::uuid)`;
+          }),
+        ).rejects.toMatchObject({ code: '23505', constraint_name: 'invoices_vyapar_bill_fy_uidx' });
+
+        await repo.voidInvoice(founderCtx, { id: first.id, reason: 'Entered in error', idempotencyKey: `it-void-${crypto.randomUUID()}` });
+        await expect(
+          repo.recordVyaparBill(founderCtx, duplicate as Parameters<typeof repo.recordVyaparBill>[1]),
+        ).resolves.toMatchObject({ status: 'issued' });
+      });
+    });
+
+    it('IT-38: Staff who look after the client see its bills and record payments, moving the bill to paid', async () => {
+      await runIsolatedTest(async (repo, tx) => {
+        const client = await newClient(repo, STAFF_ID);
+        const bill = await repo.recordVyaparBill(founderCtx, billCommand(client.id) as Parameters<typeof repo.recordVyaparBill>[1]);
+
+        const seen = (await repo.listInvoices(staffCtx)).find((invoice) => invoice.id === bill.id);
+        expect(seen).toMatchObject({ vyaparBillNumber: bill.vyaparBillNumber, status: 'issued', items: expect.any(Array) });
+        expect(seen?.items).toHaveLength(1);
+
+        const first = await repo.recordPayment(staffCtx, paymentCommand(bill.id, 400000) as Parameters<typeof repo.recordPayment>[1]);
+        expect(first).toMatchObject({
+          clientId: client.id,
+          status: 'received',
+          amountPaise: 400000,
+          method: 'upi',
+          reference: 'UPI-IT',
+          allocatedPaise: 400000,
+          unallocatedPaise: 0,
+        });
+        let current = (await repo.listInvoices(staffCtx)).find((invoice) => invoice.id === bill.id)!;
+        expect(current).toMatchObject({ status: 'part_paid', amountReceivedPaise: 400000, balancePaise: 600000 });
+        expect((await repo.listPaymentReceipts(staffCtx)).some((receipt) => receipt.id === first.id)).toBe(true);
+
+        await repo.recordPayment(staffCtx, paymentCommand(bill.id, 600000) as Parameters<typeof repo.recordPayment>[1]);
+        current = (await repo.listInvoices(staffCtx)).find((invoice) => invoice.id === bill.id)!;
+        expect(current).toMatchObject({ status: 'paid', amountReceivedPaise: 1000000, balancePaise: 0 });
+        expect(current.payments).toHaveLength(2);
+
+        await asServerRole(tx);
+        const raw = await tx`SELECT created_by, is_demo FROM public.payment_receipts WHERE id = ${first.id}::uuid`;
+        expect(raw[0]).toMatchObject({ created_by: STAFF_ID, is_demo: false });
+        const allocation = await tx`SELECT created_by FROM public.payment_allocations WHERE receipt_id = ${first.id}::uuid`;
+        expect(allocation[0]?.['created_by']).toBe(STAFF_ID);
+        const invoiceRow = await tx`SELECT amount_received::text AS received FROM public.invoices WHERE id = ${bill.id}::uuid`;
+        expect(invoiceRow[0]?.['received']).toBe('10000.00');
+      });
+    });
+
+    it('IT-39: Staff who do not look after the client see none of its bills and cannot record a payment', async () => {
+      await runIsolatedTest(async (repo, tx) => {
+        const client = await newClient(repo, MANAGER_ID);
+        const bill = await repo.recordVyaparBill(founderCtx, billCommand(client.id) as Parameters<typeof repo.recordVyaparBill>[1]);
+        const receipt = await repo.recordPayment(founderCtx, paymentCommand(bill.id, 100000) as Parameters<typeof repo.recordPayment>[1]);
+
+        expect((await repo.listInvoices(staffCtx)).some((invoice) => invoice.clientId === client.id)).toBe(false);
+        expect((await repo.listPaymentReceipts(staffCtx)).some((item) => item.clientId === client.id)).toBe(false);
+        await expect(
+          repo.recordPayment(staffCtx, paymentCommand(bill.id, 100000) as Parameters<typeof repo.recordPayment>[1]),
+        ).rejects.toMatchObject({ status: 404, message: 'Invoice was not found.' });
+
+        // The database refuses the same write made directly, not only the repository
+        await asUser(tx, STAFF_ID);
+        expect(await tx`SELECT id FROM public.invoices WHERE client_id = ${client.id}::uuid`).toHaveLength(0);
+        expect(await tx`SELECT id FROM public.invoice_items WHERE invoice_id = ${bill.id}::uuid`).toHaveLength(0);
+        expect(await tx`SELECT id FROM public.payment_receipts WHERE id = ${receipt.id}::uuid`).toHaveLength(0);
+        expect(await tx`SELECT id FROM public.payment_allocations WHERE receipt_id = ${receipt.id}::uuid`).toHaveLength(0);
+        await expect(
+          tx.savepoint(async (sp) => {
+            await sp`
+              INSERT INTO public.payment_receipts (client_id, received_on, amount, method, created_by)
+              VALUES (${client.id}::uuid, '2026-11-10', 10.00, 'cash', ${STAFF_ID}::uuid)`;
+          }),
+        ).rejects.toMatchObject({ code: '42501' });
+      });
+    });
+
+    it('IT-40: Staff cannot insert an invoice, void a receipt, or attach a ledger entry to a receipt', async () => {
+      await runIsolatedTest(async (repo, tx) => {
+        const client = await newClient(repo, STAFF_ID);
+        const bill = await repo.recordVyaparBill(founderCtx, billCommand(client.id) as Parameters<typeof repo.recordVyaparBill>[1]);
+        const receipt = await repo.recordPayment(staffCtx, paymentCommand(bill.id, 100000) as Parameters<typeof repo.recordPayment>[1]);
+
+        await asUser(tx, STAFF_ID);
+        await expect(
+          tx.savepoint(async (sp) => {
+            await sp`
+              INSERT INTO public.invoices (client_id, issue_date, due_date, vyapar_bill_number, created_by)
+              VALUES (${client.id}::uuid, '2026-11-01', '2026-11-30', 'STAFF-DIRECT', ${STAFF_ID}::uuid)`;
+          }),
+        ).rejects.toMatchObject({ code: '42501' });
+
+        // Row level security hides the receipt from the update, so nothing changes
+        const voided = await tx`
+          UPDATE public.payment_receipts SET status = 'voided', void_reason = 'Staff attempt'
+          WHERE id = ${receipt.id}::uuid
+          RETURNING id`;
+        expect(voided).toHaveLength(0);
+        const stillReceived = await tx`SELECT status FROM public.payment_receipts WHERE id = ${receipt.id}::uuid`;
+        expect(stillReceived[0]?.['status']).toBe('received');
+
+        await expect(
+          tx.savepoint(async (sp) => {
+            await sp`
+              INSERT INTO public.payment_receipts (client_id, received_on, amount, method, ledger_entry_id, created_by)
+              VALUES (${client.id}::uuid, '2026-11-10', 10.00, 'cash', ${crypto.randomUUID()}::uuid, ${STAFF_ID}::uuid)`;
+          }),
+        ).rejects.toMatchObject({ code: '42501', message: 'Only the Founder or Manager, or staff looking after this client, may record payments.' });
+
+        // Neither may Staff edit or remove an allocation
+        const allocationUpdate = await tx`UPDATE public.payment_allocations SET amount = 1.00 WHERE receipt_id = ${receipt.id}::uuid RETURNING id`;
+        expect(allocationUpdate).toHaveLength(0);
+        const allocationDelete = await tx`DELETE FROM public.payment_allocations WHERE receipt_id = ${receipt.id}::uuid RETURNING id`;
+        expect(allocationDelete).toHaveLength(0);
+      });
+    });
+
+    it('IT-41: overpayment is refused and cancelling payments and bills follows the rules', async () => {
+      await runIsolatedTest(async (repo, tx) => {
+        const client = await newClient(repo, STAFF_ID);
+        const bill = await repo.recordVyaparBill(founderCtx, billCommand(client.id) as Parameters<typeof repo.recordVyaparBill>[1]);
+        const statusOf = async () => (await repo.listInvoices(founderCtx)).find((invoice) => invoice.id === bill.id)!;
+
+        await expect(
+          repo.recordPayment(founderCtx, paymentCommand(bill.id, 1000001) as Parameters<typeof repo.recordPayment>[1]),
+        ).rejects.toMatchObject({
+          status: 422,
+          code: 'payment_exceeds_balance',
+          message: 'The payment is more than the ₹10,000 still pending on this bill.',
+        });
+
+        const one = await repo.recordPayment(founderCtx, paymentCommand(bill.id, 400000) as Parameters<typeof repo.recordPayment>[1]);
+        const two = await repo.recordPayment(founderCtx, paymentCommand(bill.id, 600000) as Parameters<typeof repo.recordPayment>[1]);
+        expect((await statusOf()).status).toBe('paid');
+        await expect(
+          repo.recordPayment(founderCtx, paymentCommand(bill.id, 1) as Parameters<typeof repo.recordPayment>[1]),
+        ).rejects.toMatchObject({ status: 422, code: 'bill_not_open' });
+
+        await expect(
+          repo.voidInvoice(founderCtx, { id: bill.id, reason: 'Entered twice', idempotencyKey: `it-void-${crypto.randomUUID()}` }),
+        ).rejects.toMatchObject({ status: 422, code: 'bill_has_payments', message: 'Cancel the payments on this bill first.' });
+
+        const voidedTwo = await repo.voidPaymentReceipt(founderCtx, { id: two.id, reason: 'Cheque bounced', idempotencyKey: `it-void-${crypto.randomUUID()}` });
+        expect(voidedTwo).toMatchObject({ status: 'voided', voidReason: 'Cheque bounced' });
+        expect(await statusOf()).toMatchObject({ status: 'part_paid', amountReceivedPaise: 400000 });
+
+        await repo.voidPaymentReceipt(founderCtx, { id: one.id, reason: 'Wrong bill', idempotencyKey: `it-void-${crypto.randomUUID()}` });
+        expect(await statusOf()).toMatchObject({ status: 'issued', amountReceivedPaise: 0, balancePaise: 1000000 });
+        await expect(
+          repo.voidPaymentReceipt(founderCtx, { id: one.id, reason: 'Again', idempotencyKey: `it-void-${crypto.randomUUID()}` }),
+        ).rejects.toMatchObject({ status: 422, code: 'already_voided' });
+
+        const voidedBill = await repo.voidInvoice(founderCtx, { id: bill.id, reason: 'Entered twice', idempotencyKey: `it-void-${crypto.randomUUID()}` });
+        expect(voidedBill).toMatchObject({ status: 'voided', voidReason: 'Entered twice', balancePaise: 0 });
+        await expect(
+          repo.voidInvoice(founderCtx, { id: bill.id, reason: 'Again', idempotencyKey: `it-void-${crypto.randomUUID()}` }),
+        ).rejects.toMatchObject({ status: 422, code: 'already_voided' });
+        await expect(
+          repo.recordPayment(founderCtx, paymentCommand(bill.id, 100) as Parameters<typeof repo.recordPayment>[1]),
+        ).rejects.toMatchObject({ status: 422, code: 'bill_not_open' });
+
+        await asServerRole(tx);
+        const raw = await tx`SELECT voided_by FROM public.invoices WHERE id = ${bill.id}::uuid`;
+        expect(raw[0]?.['voided_by']).toBe(FOUNDER_ID);
+      });
+    });
+
+    it('IT-42: an idempotent replay creates no second receipt, and a changed payload on the same key is a 409', async () => {
+      await runIsolatedTest(async (repo, tx) => {
+        const client = await newClient(repo, STAFF_ID);
+        const billKey = `it-bill-${crypto.randomUUID()}`;
+        const command = billCommand(client.id, { idempotencyKey: billKey }) as Parameters<typeof repo.recordVyaparBill>[1];
+        const bill = await repo.recordVyaparBill(founderCtx, command);
+        const billReplay = await repo.recordVyaparBill(founderCtx, command);
+        expect(billReplay).toEqual(bill);
+        await expect(
+          repo.recordVyaparBill(founderCtx, { ...command, amountPaise: 2000000 }),
+        ).rejects.toMatchObject({ status: 409, code: 'conflict' });
+
+        const payment = paymentCommand(bill.id, 300000) as Parameters<typeof repo.recordPayment>[1];
+        const first = await repo.recordPayment(staffCtx, payment);
+        const replay = await repo.recordPayment(staffCtx, payment);
+        expect(replay).toEqual(first);
+        await expect(
+          repo.recordPayment(staffCtx, { ...payment, amountPaise: 300001 }),
+        ).rejects.toMatchObject({ status: 409, code: 'conflict' });
+
+        await asServerRole(tx);
+        const receipts = await tx`
+          SELECT pr.id FROM public.payment_receipts pr
+          JOIN public.payment_allocations pa ON pa.receipt_id = pr.id
+          WHERE pa.invoice_id = ${bill.id}::uuid`;
+        expect(receipts).toHaveLength(1);
+        const invoices = await tx`SELECT id FROM public.invoices WHERE client_id = ${client.id}::uuid`;
+        expect(invoices).toHaveLength(1);
+        const stored = await tx`
+          SELECT actor_id, operation_type FROM public.operation_receipts
+          WHERE idempotency_key IN (${billKey}, ${payment.idempotencyKey}) ORDER BY operation_type`;
+        expect(stored.map((row) => [row['actor_id'], row['operation_type']])).toEqual([
+          [STAFF_ID, 'recordPayment'],
+          [FOUNDER_ID, 'recordVyaparBill'],
+        ]);
+      });
+    });
+
+    it('IT-43: Senior Staff who review an assignment of the client see its bills; a Trainee sees none', async () => {
+      await runIsolatedTest(async (repo) => {
+        const client = await newClient(repo, MANAGER_ID);
+        const service = (await repo.listServiceReferences(founderCtx))[0]!;
+        await repo.createAssignment(founderCtx, {
+          id: crypto.randomUUID(),
+          clientId: client.id,
+          clientName: client.displayName,
+          serviceId: service.id,
+          service: service.name,
+          title: 'Fee visibility fixture',
+          ownerId: MANAGER_ID,
+          reviewerIds: [SENIOR_ID],
+          status: 'assigned',
+          dueAt: new Date(Date.now() + 86400000 * 7).toISOString(),
+          createdById: FOUNDER_ID,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        });
+        const bill = await repo.recordVyaparBill(founderCtx, billCommand(client.id) as Parameters<typeof repo.recordVyaparBill>[1]);
+
+        expect((await repo.listInvoices({ actorId: SENIOR_ID })).some((invoice) => invoice.id === bill.id)).toBe(true);
+        expect((await repo.listInvoices(staffCtx)).some((invoice) => invoice.id === bill.id)).toBe(false);
+        expect(await repo.listInvoices({ actorId: TRAINEE_ID })).toEqual([]);
+        expect(await repo.listPaymentReceipts({ actorId: TRAINEE_ID })).toEqual([]);
       });
     });
   });

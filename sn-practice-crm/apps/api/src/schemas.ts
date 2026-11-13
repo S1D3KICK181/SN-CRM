@@ -1,5 +1,11 @@
 import { z } from 'zod';
-import { ASSIGNMENT_TRANSITIONS, ENGAGEMENT_END_OUTCOMES, ENGAGEMENT_FEE_MODELS, WORK_ITEM_TRANSITIONS } from '@sn/contracts';
+import {
+  ASSIGNMENT_TRANSITIONS,
+  ENGAGEMENT_END_OUTCOMES,
+  ENGAGEMENT_FEE_MODELS,
+  PAYMENT_METHODS,
+  WORK_ITEM_TRANSITIONS,
+} from '@sn/contracts';
 import { ApiError } from './errors';
 
 export const entityUuid = z.string().uuid();
@@ -85,6 +91,41 @@ export const endEngagementSchema = z
     reason: z.string().trim().min(2).max(500),
     expectedUpdatedAt: isoInstantSchema,
   })
+  .strict();
+
+// --- Vyapar bills and payments (FEE-01a) ---
+
+const MAX_FEE_AMOUNT_PAISE = 99_999_999_999_900;
+const feeAmountPaise = z.number().int().min(1).max(MAX_FEE_AMOUNT_PAISE);
+
+export const recordVyaparBillSchema = z
+  .object({
+    clientId: entityUuid,
+    vyaparBillNumber: z.string().trim().min(1).max(30),
+    billDate: localDate,
+    dueDate: localDate,
+    amountPaise: feeAmountPaise,
+    description: z.string().trim().min(2).max(300),
+  })
+  .strict()
+  .refine((value) => value.dueDate >= value.billDate, {
+    message: 'dueDate cannot precede billDate',
+    path: ['dueDate'],
+  });
+
+export const recordPaymentSchema = z
+  .object({
+    invoiceId: entityUuid,
+    receivedOn: localDate,
+    amountPaise: feeAmountPaise,
+    method: z.enum(PAYMENT_METHODS),
+    reference: z.string().trim().max(100).nullable().optional(),
+    notes: z.string().trim().max(500).nullable().optional(),
+  })
+  .strict();
+
+export const voidFeeRecordSchema = z
+  .object({ reason: z.string().trim().min(3).max(500) })
   .strict();
 
 const PAN_REGEX = /^[A-Z]{5}[0-9]{4}[A-Z]$/;

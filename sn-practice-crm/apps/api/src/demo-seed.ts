@@ -1,5 +1,5 @@
 import type { InvoiceItemDto } from '@sn/contracts';
-import { kolkataToday } from './in-memory-repository';
+import { kolkataToday } from './repository';
 import type { ClientSeedRecord, DemoSeed, InvoiceSeedRecord, PaymentReceiptSeedRecord } from './in-memory-repository';
 import type { ServiceReference } from './repository';
 
@@ -157,6 +157,7 @@ function createDemoBilling(now: Date): { invoices: InvoiceSeedRecord[]; paymentR
       {
         id: invoicePaid,
         code: 'INV-0001001',
+        vyaparBillNumber: 'VYP-118',
         clientId: '10000000-0000-4000-a000-000000000001',
         assignmentId: null,
         issueDate: addDays(today, -75),
@@ -173,6 +174,7 @@ function createDemoBilling(now: Date): { invoices: InvoiceSeedRecord[]; paymentR
       {
         id: invoicePartPaid,
         code: 'INV-0001002',
+        vyaparBillNumber: 'VYP-124',
         clientId: '10000000-0000-4000-a000-000000000001',
         assignmentId: '30000000-0000-4000-a000-000000000001',
         issueDate: addDays(today, -20),
@@ -192,6 +194,7 @@ function createDemoBilling(now: Date): { invoices: InvoiceSeedRecord[]; paymentR
       {
         id: invoiceOverdue,
         code: 'INV-0001003',
+        vyaparBillNumber: 'VYP-131',
         clientId: '10000000-0000-4000-a000-000000000003',
         assignmentId: null,
         issueDate: addDays(today, -45),
@@ -208,6 +211,7 @@ function createDemoBilling(now: Date): { invoices: InvoiceSeedRecord[]; paymentR
       {
         id: invoiceDraft,
         code: 'INV-0001004',
+        vyaparBillNumber: null,
         clientId: '10000000-0000-4000-a000-000000000002',
         assignmentId: '30000000-0000-4000-a000-000000000002',
         issueDate: addDays(today, -2),

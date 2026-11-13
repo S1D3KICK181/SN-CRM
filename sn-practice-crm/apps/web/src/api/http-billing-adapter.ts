@@ -191,6 +191,7 @@ export function parseInvoiceDto(raw: unknown): InvoiceDto {
   return {
     id: readUuid(rec, 'id', 'invoice'),
     code: readString(rec, 'code', 'invoice'),
+    vyaparBillNumber: readNullableString(rec, 'vyaparBillNumber', 'invoice'),
     clientId: readUuid(rec, 'clientId', 'invoice'),
     clientCode: readString(rec, 'clientCode', 'invoice'),
     clientName: readString(rec, 'clientName', 'invoice'),

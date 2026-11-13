@@ -19,6 +19,9 @@ import {
   createRecurringScheduleSchema,
   createWorkItemSchema,
   entityUuid,
+  recordPaymentSchema,
+  recordVyaparBillSchema,
+  voidFeeRecordSchema,
   generateDueAssignmentsSchema,
   reportingLineSchema,
   updateAssignmentSchema,
@@ -376,6 +379,32 @@ export function createApiServer(application: CrmApplication, options: ApiServerO
 
       if (request.method === 'GET' && pathname === '/api/v1/payment-receipts') {
         sendData(response, context, allowedOrigins, 200, await application.listPaymentReceipts(actor));
+        return;
+      }
+      if (request.method === 'POST' && pathname === '/api/v1/invoices') {
+        const key = idempotencyKey(request);
+        const body = await readJson(request, recordVyaparBillSchema);
+        sendData(response, context, allowedOrigins, 201, await application.recordVyaparBill(actor, body, key));
+        return;
+      }
+      const invoiceVoidId = routeId(pathname, /^\/api\/v1\/invoices\/([^/]+)\/void$/);
+      if (request.method === 'POST' && invoiceVoidId) {
+        const key = idempotencyKey(request);
+        const body = await readJson(request, voidFeeRecordSchema);
+        sendData(response, context, allowedOrigins, 200, await application.voidInvoice(actor, invoiceVoidId, body, key));
+        return;
+      }
+      if (request.method === 'POST' && pathname === '/api/v1/payment-receipts') {
+        const key = idempotencyKey(request);
+        const body = await readJson(request, recordPaymentSchema);
+        sendData(response, context, allowedOrigins, 201, await application.recordPayment(actor, body, key));
+        return;
+      }
+      const receiptVoidId = routeId(pathname, /^\/api\/v1\/payment-receipts\/([^/]+)\/void$/);
+      if (request.method === 'POST' && receiptVoidId) {
+        const key = idempotencyKey(request);
+        const body = await readJson(request, voidFeeRecordSchema);
+        sendData(response, context, allowedOrigins, 200, await application.voidPaymentReceipt(actor, receiptVoidId, body, key));
         return;
       }
 

@@ -1,3 +1,4 @@
+import type postgres from 'postgres';
 import type {
   AssignmentDto,
   ClientDto,
@@ -21,7 +22,7 @@ import type {
 } from '@sn/contracts';
 import { DEV_ACTOR_ALIASES } from './auth';
 import { PostgresTransactionRunner, type SqlClient } from './db';
-import { ApiError } from './errors';
+import { ApiError, notFound } from './errors';
 import { maskGstinForRoutineRead, maskPanForRoutineRead } from './client-privacy';
 import { isProductionEnvironment } from './http';
 import { computeRequestHash } from './idempotency';
@@ -34,12 +35,23 @@ import type {
   DevActorDirectory,
   EmployeeRecord,
   MutateEngagementCommand,
+  RecordPaymentCommand,
+  RecordVyaparBillCommand,
   RepositoryContext,
   ServiceReference,
   UpdateAssignmentCommand,
   UpdateAssignmentReviewersCommand,
   UpdateAssignmentStatusCommand,
   UpdateWorkItemStatusCommand,
+  VoidFeeRecordCommand,
+} from './repository';
+import {
+  alreadyVoided,
+  billHasPayments,
+  billNotOpen,
+  duplicateVyaparBill,
+  financialYearStart,
+  paymentExceedsBalance,
 } from './repository';
 
 function sanitizeDatabaseError(error: unknown): never {
@@ -1482,192 +1494,470 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
     }
   }
 
+  private async queryInvoiceDtos(tx: SqlClient, invoiceId?: string): Promise<InvoiceDto[]> {
+    const whereClause = invoiceId ? tx`WHERE i.id = ${invoiceId}::uuid` : tx``;
+    // One query: items and payments are folded in as json_agg subqueries, so there is no N+1.
+    const rows = await tx`
+      SELECT
+        i.id,
+        i.code,
+        i.vyapar_bill_number AS "vyaparBillNumber",
+        i.client_id AS "clientId",
+        c.code AS "clientCode",
+        c.display_name AS "clientName",
+        i.assignment_id AS "assignmentId",
+        a.code AS "assignmentCode",
+        i.issue_date::text AS "issueDate",
+        i.due_date::text AS "dueDate",
+        i.currency,
+        round(i.subtotal_amount * 100)::bigint AS "subtotalPaise",
+        round(i.tax_amount * 100)::bigint AS "taxPaise",
+        round(i.total_amount * 100)::bigint AS "totalPaise",
+        round(i.amount_received * 100)::bigint AS "amountReceivedPaise",
+        CASE WHEN i.status IN ('issued', 'part_paid', 'paid')
+          THEN round((i.total_amount - i.amount_received) * 100)::bigint
+          ELSE 0::bigint
+        END AS "balancePaise",
+        CASE WHEN i.status IN ('issued', 'part_paid')
+                   AND i.due_date < (now() AT TIME ZONE 'Asia/Kolkata')::date
+          THEN ((now() AT TIME ZONE 'Asia/Kolkata')::date - i.due_date)
+          ELSE 0
+        END AS "daysOverdue",
+        i.status,
+        i.notes,
+        i.issued_at AS "issuedAt",
+        i.void_reason AS "voidReason",
+        i.voided_at AS "voidedAt",
+        i.created_at AS "createdAt",
+        i.updated_at AS "updatedAt",
+        COALESCE((
+          SELECT json_agg(json_build_object(
+            'id', ii.id,
+            'description', ii.description,
+            'quantity', ii.quantity,
+            'unitPricePaise', round(ii.unit_price * 100)::bigint,
+            'taxRatePercent', ii.tax_rate,
+            'lineSubtotalPaise', round(ii.line_subtotal * 100)::bigint,
+            'lineTaxPaise', round(ii.line_tax * 100)::bigint,
+            'lineTotalPaise', round(ii.line_total * 100)::bigint
+          ) ORDER BY ii.sort_order, ii.id)
+          FROM public.invoice_items ii
+          WHERE ii.invoice_id = i.id
+        ), '[]'::json) AS items,
+        COALESCE((
+          SELECT json_agg(json_build_object(
+            'receiptId', pr.id,
+            'receiptCode', pr.code,
+            'receivedOn', pr.received_on::text,
+            'amountPaise', round(pa.amount * 100)::bigint,
+            'receiptStatus', pr.status
+          ) ORDER BY pr.received_on, pr.code)
+          FROM public.payment_allocations pa
+          JOIN public.payment_receipts pr ON pr.id = pa.receipt_id
+          WHERE pa.invoice_id = i.id
+        ), '[]'::json) AS payments
+      FROM public.invoices i
+      JOIN public.clients c ON c.id = i.client_id
+      LEFT JOIN public.assignments a ON a.id = i.assignment_id
+      ${whereClause}
+      ORDER BY i.issue_date DESC, i.code DESC;
+    `;
+
+    return rows.map((row): InvoiceDto => {
+      const items: InvoiceItemDto[] = asRecordArray(row['items']).map((item) => ({
+        id: String(item['id']),
+        description: String(item['description']),
+        quantity: Number(item['quantity']),
+        unitPricePaise: toSafePaise(item['unitPricePaise'], 'unitPricePaise'),
+        taxRatePercent: Number(item['taxRatePercent']),
+        lineSubtotalPaise: toSafePaise(item['lineSubtotalPaise'], 'lineSubtotalPaise'),
+        lineTaxPaise: toSafePaise(item['lineTaxPaise'], 'lineTaxPaise'),
+        lineTotalPaise: toSafePaise(item['lineTotalPaise'], 'lineTotalPaise'),
+      }));
+      const payments: InvoicePaymentDto[] = asRecordArray(row['payments']).map((payment) => ({
+        receiptId: String(payment['receiptId']),
+        receiptCode: String(payment['receiptCode']),
+        receivedOn: String(payment['receivedOn']),
+        amountPaise: toSafePaise(payment['amountPaise'], 'amountPaise'),
+        receiptStatus: payment['receiptStatus'] as InvoicePaymentDto['receiptStatus'],
+      }));
+      return {
+        id: String(row['id']),
+        code: String(row['code']),
+        vyaparBillNumber: nullableText(row['vyaparBillNumber']),
+        clientId: String(row['clientId']),
+        clientCode: String(row['clientCode']),
+        clientName: String(row['clientName']),
+        assignmentId: nullableText(row['assignmentId']),
+        assignmentCode: nullableText(row['assignmentCode']),
+        issueDate: String(row['issueDate']),
+        dueDate: String(row['dueDate']),
+        currency: 'INR',
+        subtotalPaise: toSafePaise(row['subtotalPaise'], 'subtotalPaise'),
+        taxPaise: toSafePaise(row['taxPaise'], 'taxPaise'),
+        totalPaise: toSafePaise(row['totalPaise'], 'totalPaise'),
+        amountReceivedPaise: toSafePaise(row['amountReceivedPaise'], 'amountReceivedPaise'),
+        balancePaise: toSafePaise(row['balancePaise'], 'balancePaise'),
+        daysOverdue: Number(row['daysOverdue']),
+        status: row['status'] as InvoiceDto['status'],
+        notes: nullableText(row['notes']),
+        issuedAt: row['issuedAt'] ? toIsoString(row['issuedAt']) : null,
+        voidReason: nullableText(row['voidReason']),
+        voidedAt: row['voidedAt'] ? toIsoString(row['voidedAt']) : null,
+        items,
+        payments,
+        createdAt: toIsoString(row['createdAt']),
+        updatedAt: toIsoString(row['updatedAt']),
+      };
+    });
+  }
+
   async listInvoices(ctx: RepositoryContext): Promise<InvoiceDto[]> {
     try {
-      return await this.runner.withUserContext(ctx, async (tx) => {
-        // One query: items and payments are folded in as json_agg subqueries, so there is no N+1.
-        const rows = await tx`
-          SELECT
-            i.id,
-            i.code,
-            i.client_id AS "clientId",
-            c.code AS "clientCode",
-            c.display_name AS "clientName",
-            i.assignment_id AS "assignmentId",
-            a.code AS "assignmentCode",
-            i.issue_date::text AS "issueDate",
-            i.due_date::text AS "dueDate",
-            i.currency,
-            round(i.subtotal_amount * 100)::bigint AS "subtotalPaise",
-            round(i.tax_amount * 100)::bigint AS "taxPaise",
-            round(i.total_amount * 100)::bigint AS "totalPaise",
-            round(i.amount_received * 100)::bigint AS "amountReceivedPaise",
-            CASE WHEN i.status IN ('issued', 'part_paid', 'paid')
-              THEN round((i.total_amount - i.amount_received) * 100)::bigint
-              ELSE 0::bigint
-            END AS "balancePaise",
-            CASE WHEN i.status IN ('issued', 'part_paid')
-                       AND i.due_date < (now() AT TIME ZONE 'Asia/Kolkata')::date
-              THEN ((now() AT TIME ZONE 'Asia/Kolkata')::date - i.due_date)
-              ELSE 0
-            END AS "daysOverdue",
-            i.status,
-            i.notes,
-            i.issued_at AS "issuedAt",
-            i.void_reason AS "voidReason",
-            i.voided_at AS "voidedAt",
-            i.created_at AS "createdAt",
-            i.updated_at AS "updatedAt",
-            COALESCE((
-              SELECT json_agg(json_build_object(
-                'id', ii.id,
-                'description', ii.description,
-                'quantity', ii.quantity,
-                'unitPricePaise', round(ii.unit_price * 100)::bigint,
-                'taxRatePercent', ii.tax_rate,
-                'lineSubtotalPaise', round(ii.line_subtotal * 100)::bigint,
-                'lineTaxPaise', round(ii.line_tax * 100)::bigint,
-                'lineTotalPaise', round(ii.line_total * 100)::bigint
-              ) ORDER BY ii.sort_order, ii.id)
-              FROM public.invoice_items ii
-              WHERE ii.invoice_id = i.id
-            ), '[]'::json) AS items,
-            COALESCE((
-              SELECT json_agg(json_build_object(
-                'receiptId', pr.id,
-                'receiptCode', pr.code,
-                'receivedOn', pr.received_on::text,
-                'amountPaise', round(pa.amount * 100)::bigint,
-                'receiptStatus', pr.status
-              ) ORDER BY pr.received_on, pr.code)
-              FROM public.payment_allocations pa
-              JOIN public.payment_receipts pr ON pr.id = pa.receipt_id
-              WHERE pa.invoice_id = i.id
-            ), '[]'::json) AS payments
-          FROM public.invoices i
-          JOIN public.clients c ON c.id = i.client_id
-          LEFT JOIN public.assignments a ON a.id = i.assignment_id
-          ORDER BY i.issue_date DESC, i.code DESC;
-        `;
-
-        return rows.map((row): InvoiceDto => {
-          const items: InvoiceItemDto[] = asRecordArray(row['items']).map((item) => ({
-            id: String(item['id']),
-            description: String(item['description']),
-            quantity: Number(item['quantity']),
-            unitPricePaise: toSafePaise(item['unitPricePaise'], 'unitPricePaise'),
-            taxRatePercent: Number(item['taxRatePercent']),
-            lineSubtotalPaise: toSafePaise(item['lineSubtotalPaise'], 'lineSubtotalPaise'),
-            lineTaxPaise: toSafePaise(item['lineTaxPaise'], 'lineTaxPaise'),
-            lineTotalPaise: toSafePaise(item['lineTotalPaise'], 'lineTotalPaise'),
-          }));
-          const payments: InvoicePaymentDto[] = asRecordArray(row['payments']).map((payment) => ({
-            receiptId: String(payment['receiptId']),
-            receiptCode: String(payment['receiptCode']),
-            receivedOn: String(payment['receivedOn']),
-            amountPaise: toSafePaise(payment['amountPaise'], 'amountPaise'),
-            receiptStatus: payment['receiptStatus'] as InvoicePaymentDto['receiptStatus'],
-          }));
-          return {
-            id: String(row['id']),
-            code: String(row['code']),
-            clientId: String(row['clientId']),
-            clientCode: String(row['clientCode']),
-            clientName: String(row['clientName']),
-            assignmentId: nullableText(row['assignmentId']),
-            assignmentCode: nullableText(row['assignmentCode']),
-            issueDate: String(row['issueDate']),
-            dueDate: String(row['dueDate']),
-            currency: 'INR',
-            subtotalPaise: toSafePaise(row['subtotalPaise'], 'subtotalPaise'),
-            taxPaise: toSafePaise(row['taxPaise'], 'taxPaise'),
-            totalPaise: toSafePaise(row['totalPaise'], 'totalPaise'),
-            amountReceivedPaise: toSafePaise(row['amountReceivedPaise'], 'amountReceivedPaise'),
-            balancePaise: toSafePaise(row['balancePaise'], 'balancePaise'),
-            daysOverdue: Number(row['daysOverdue']),
-            status: row['status'] as InvoiceDto['status'],
-            notes: nullableText(row['notes']),
-            issuedAt: row['issuedAt'] ? toIsoString(row['issuedAt']) : null,
-            voidReason: nullableText(row['voidReason']),
-            voidedAt: row['voidedAt'] ? toIsoString(row['voidedAt']) : null,
-            items,
-            payments,
-            createdAt: toIsoString(row['createdAt']),
-            updatedAt: toIsoString(row['updatedAt']),
-          };
-        });
-      });
+      return await this.runner.withUserContext(ctx, (tx) => this.queryInvoiceDtos(tx));
     } catch (error) {
       sanitizeDatabaseError(error);
     }
   }
 
+  private async queryPaymentReceiptDtos(tx: SqlClient, receiptId?: string): Promise<PaymentReceiptDto[]> {
+    const whereClause = receiptId ? tx`WHERE pr.id = ${receiptId}::uuid` : tx``;
+    const rows = await tx`
+      SELECT
+        pr.id,
+        pr.code,
+        pr.client_id AS "clientId",
+        c.code AS "clientCode",
+        c.display_name AS "clientName",
+        pr.received_on::text AS "receivedOn",
+        round(pr.amount * 100)::bigint AS "amountPaise",
+        pr.method,
+        pr.reference,
+        pr.notes,
+        pr.status,
+        pr.void_reason AS "voidReason",
+        pr.voided_at AS "voidedAt",
+        round(COALESCE((
+          SELECT sum(pa.amount) FROM public.payment_allocations pa WHERE pa.receipt_id = pr.id
+        ), 0) * 100)::bigint AS "allocatedPaise",
+        COALESCE((
+          SELECT json_agg(json_build_object(
+            'invoiceId', i.id,
+            'invoiceCode', i.code,
+            'amountPaise', round(pa.amount * 100)::bigint
+          ) ORDER BY i.code)
+          FROM public.payment_allocations pa
+          JOIN public.invoices i ON i.id = pa.invoice_id
+          WHERE pa.receipt_id = pr.id
+        ), '[]'::json) AS allocations,
+        pr.created_at AS "createdAt"
+      FROM public.payment_receipts pr
+      JOIN public.clients c ON c.id = pr.client_id
+      ${whereClause}
+      ORDER BY pr.received_on DESC, pr.code DESC;
+    `;
+
+    return rows.map((row): PaymentReceiptDto => {
+      const amountPaise = toSafePaise(row['amountPaise'], 'amountPaise');
+      const allocatedPaise = toSafePaise(row['allocatedPaise'], 'allocatedPaise');
+      const allocations: PaymentAllocationDto[] = asRecordArray(row['allocations']).map((allocation) => ({
+        invoiceId: String(allocation['invoiceId']),
+        invoiceCode: String(allocation['invoiceCode']),
+        amountPaise: toSafePaise(allocation['amountPaise'], 'amountPaise'),
+      }));
+      return {
+        id: String(row['id']),
+        code: String(row['code']),
+        clientId: String(row['clientId']),
+        clientCode: String(row['clientCode']),
+        clientName: String(row['clientName']),
+        receivedOn: String(row['receivedOn']),
+        amountPaise,
+        method: row['method'] as PaymentReceiptDto['method'],
+        reference: nullableText(row['reference']),
+        notes: nullableText(row['notes']),
+        status: row['status'] as PaymentReceiptDto['status'],
+        voidReason: nullableText(row['voidReason']),
+        voidedAt: row['voidedAt'] ? toIsoString(row['voidedAt']) : null,
+        allocatedPaise,
+        unallocatedPaise: amountPaise - allocatedPaise,
+        allocations,
+        createdAt: toIsoString(row['createdAt']),
+      };
+    });
+  }
+
   async listPaymentReceipts(ctx: RepositoryContext): Promise<PaymentReceiptDto[]> {
     try {
-      return await this.runner.withUserContext(ctx, async (tx) => {
-        const rows = await tx`
-          SELECT
-            pr.id,
-            pr.code,
-            pr.client_id AS "clientId",
-            c.code AS "clientCode",
-            c.display_name AS "clientName",
-            pr.received_on::text AS "receivedOn",
-            round(pr.amount * 100)::bigint AS "amountPaise",
-            pr.method,
-            pr.reference,
-            pr.notes,
-            pr.status,
-            pr.void_reason AS "voidReason",
-            pr.voided_at AS "voidedAt",
-            round(COALESCE((
-              SELECT sum(pa.amount) FROM public.payment_allocations pa WHERE pa.receipt_id = pr.id
-            ), 0) * 100)::bigint AS "allocatedPaise",
-            COALESCE((
-              SELECT json_agg(json_build_object(
-                'invoiceId', i.id,
-                'invoiceCode', i.code,
-                'amountPaise', round(pa.amount * 100)::bigint
-              ) ORDER BY i.code)
-              FROM public.payment_allocations pa
-              JOIN public.invoices i ON i.id = pa.invoice_id
-              WHERE pa.receipt_id = pr.id
-            ), '[]'::json) AS allocations,
-            pr.created_at AS "createdAt"
-          FROM public.payment_receipts pr
-          JOIN public.clients c ON c.id = pr.client_id
-          ORDER BY pr.received_on DESC, pr.code DESC;
-        `;
+      return await this.runner.withUserContext(ctx, (tx) => this.queryPaymentReceiptDtos(tx));
+    } catch (error) {
+      sanitizeDatabaseError(error);
+    }
+  }
 
-        return rows.map((row): PaymentReceiptDto => {
-          const amountPaise = toSafePaise(row['amountPaise'], 'amountPaise');
-          const allocatedPaise = toSafePaise(row['allocatedPaise'], 'allocatedPaise');
-          const allocations: PaymentAllocationDto[] = asRecordArray(row['allocations']).map((allocation) => ({
-            invoiceId: String(allocation['invoiceId']),
-            invoiceCode: String(allocation['invoiceCode']),
-            amountPaise: toSafePaise(allocation['amountPaise'], 'amountPaise'),
-          }));
-          return {
-            id: String(row['id']),
-            code: String(row['code']),
-            clientId: String(row['clientId']),
-            clientCode: String(row['clientCode']),
-            clientName: String(row['clientName']),
-            receivedOn: String(row['receivedOn']),
-            amountPaise,
-            method: row['method'] as PaymentReceiptDto['method'],
-            reference: nullableText(row['reference']),
-            notes: nullableText(row['notes']),
-            status: row['status'] as PaymentReceiptDto['status'],
-            voidReason: nullableText(row['voidReason']),
-            voidedAt: row['voidedAt'] ? toIsoString(row['voidedAt']) : null,
-            allocatedPaise,
-            unallocatedPaise: amountPaise - allocatedPaise,
-            allocations,
-            createdAt: toIsoString(row['createdAt']),
-          };
-        });
-      });
+  // --- Vyapar bills and payments (FEE-01a) ---
+
+  // Shared idempotency wrapper: advisory lock, request-hash replay, receipt stored in the same
+  // transaction as the work. Mirrors mutateEngagement.
+  private async runIdempotent<T>(
+    tx: postgres.TransactionSql,
+    ctx: RepositoryContext,
+    idempotencyKey: string,
+    operationType: string,
+    payload: unknown,
+    work: () => Promise<{ result: T; isDemo: boolean }>,
+  ): Promise<T> {
+    const trimmedKey = idempotencyKey.trim();
+    if (trimmedKey.length < 1 || trimmedKey.length > 255) {
+      throw new ApiError(422, 'validation_failed', 'idempotencyKey must be between 1 and 255 characters.');
+    }
+
+    const lockStr = `${ctx.actorId}:${trimmedKey}`;
+    await tx`SELECT pg_advisory_xact_lock(hashtext(${lockStr}))`;
+
+    const requestHash = computeRequestHash(payload);
+    const receiptRows = await tx`
+      SELECT operation_type, request_hash, result
+      FROM public.operation_receipts
+      WHERE actor_id = ${ctx.actorId}::uuid
+        AND idempotency_key = ${trimmedKey};
+    `;
+    if (receiptRows.length > 0) {
+      const receipt = receiptRows[0]!;
+      if (receipt['operation_type'] !== operationType || receipt['request_hash'] !== requestHash) {
+        throw new ApiError(
+          409,
+          'conflict',
+          'Idempotency key was previously used with a different operation or payload.',
+        );
+      }
+      return receipt['result'] as T;
+    }
+
+    const { result, isDemo } = await work();
+
+    await tx`
+      INSERT INTO public.operation_receipts (
+        actor_id, idempotency_key, operation_type, request_hash, result, is_demo
+      ) VALUES (
+        ${ctx.actorId}::uuid,
+        ${trimmedKey},
+        ${operationType},
+        ${requestHash},
+        ${tx.json(result as unknown as postgres.JSONValue)},
+        ${isDemo}
+      );
+    `;
+    return result;
+  }
+
+  async recordVyaparBill(ctx: RepositoryContext, command: RecordVyaparBillCommand): Promise<InvoiceDto> {
+    const { idempotencyKey, ...payload } = command;
+    const vyaparBillNumber = command.vyaparBillNumber.trim();
+    try {
+      return await this.runner.withUserContext(ctx, (tx) =>
+        this.runIdempotent<InvoiceDto>(tx, ctx, idempotencyKey, 'recordVyaparBill', payload, async () => {
+          const clientRows = await tx`
+            SELECT is_demo FROM public.clients WHERE id = ${command.clientId}::uuid;
+          `;
+          if (clientRows.length === 0) throw notFound('Client');
+          // Records inherit is_demo from their client
+          const isDemo = Boolean(clientRows[0]!['is_demo']);
+
+          const duplicates = await tx`
+            SELECT 1
+            FROM public.invoices
+            WHERE upper(btrim(vyapar_bill_number)) = ${vyaparBillNumber.toUpperCase()}
+              AND public.financial_year_start(issue_date) = ${financialYearStart(command.billDate)}
+              AND status <> 'voided'
+            LIMIT 1;
+          `;
+          if (duplicates.length > 0) throw duplicateVyaparBill(vyaparBillNumber, command.billDate);
+
+          const invoiceId = crypto.randomUUID();
+          await tx`
+            INSERT INTO public.invoices (
+              id, client_id, issue_date, due_date, vyapar_bill_number, created_by, is_demo
+            ) VALUES (
+              ${invoiceId}::uuid,
+              ${command.clientId}::uuid,
+              ${command.billDate}::date,
+              ${command.dueDate}::date,
+              ${vyaparBillNumber},
+              ${ctx.actorId}::uuid,
+              ${isDemo}
+            );
+          `;
+          await tx`
+            INSERT INTO public.invoice_items (
+              invoice_id, description, quantity, unit_price, tax_rate, is_demo
+            ) VALUES (
+              ${invoiceId}::uuid,
+              ${command.description.trim()},
+              1,
+              ${command.amountPaise}::bigint::numeric / 100,
+              0,
+              ${isDemo}
+            );
+          `;
+          await tx`
+            UPDATE public.invoices SET status = 'issued'::public.invoice_status
+            WHERE id = ${invoiceId}::uuid;
+          `;
+
+          const created = (await this.queryInvoiceDtos(tx, invoiceId))[0];
+          if (!created) {
+            throw new ApiError(500, 'internal_error', 'Recorded bill could not be retrieved.');
+          }
+          return { result: created, isDemo };
+        }),
+      );
+    } catch (error) {
+      const pgErr = error as { code?: string; constraint_name?: string };
+      if (pgErr?.code === '23505' && pgErr.constraint_name === 'invoices_vyapar_bill_fy_uidx') {
+        throw duplicateVyaparBill(vyaparBillNumber, command.billDate);
+      }
+      sanitizeDatabaseError(error);
+    }
+  }
+
+  async recordPayment(ctx: RepositoryContext, command: RecordPaymentCommand): Promise<PaymentReceiptDto> {
+    const { idempotencyKey, ...payload } = command;
+    try {
+      return await this.runner.withUserContext(ctx, (tx) =>
+        this.runIdempotent<PaymentReceiptDto>(tx, ctx, idempotencyKey, 'recordPayment', payload, async () => {
+          await tx`SELECT pg_advisory_xact_lock(hashtext(${`invoice:${command.invoiceId}`}))`;
+          const invoiceRows = await tx`
+            SELECT
+              i.client_id,
+              i.status,
+              i.is_demo,
+              round((i.total_amount - i.amount_received) * 100)::bigint AS balance_paise
+            FROM public.invoices i
+            WHERE i.id = ${command.invoiceId}::uuid;
+          `;
+          const invoice = invoiceRows[0];
+          if (!invoice) throw notFound('Invoice');
+          if (invoice['status'] !== 'issued' && invoice['status'] !== 'part_paid') throw billNotOpen();
+          const balancePaise = toSafePaise(invoice['balance_paise'], 'balance_paise');
+          if (command.amountPaise > balancePaise) throw paymentExceedsBalance(balancePaise);
+
+          const isDemo = Boolean(invoice['is_demo']);
+          const receiptId = crypto.randomUUID();
+          await tx`
+            INSERT INTO public.payment_receipts (
+              id, client_id, received_on, amount, method, reference, notes, created_by, is_demo
+            ) VALUES (
+              ${receiptId}::uuid,
+              ${String(invoice['client_id'])}::uuid,
+              ${command.receivedOn}::date,
+              ${command.amountPaise}::bigint::numeric / 100,
+              ${command.method}::public.payment_method,
+              ${command.reference?.trim() || null},
+              ${command.notes?.trim() || null},
+              ${ctx.actorId}::uuid,
+              ${isDemo}
+            );
+          `;
+          await tx`
+            INSERT INTO public.payment_allocations (
+              receipt_id, invoice_id, amount, created_by, is_demo
+            ) VALUES (
+              ${receiptId}::uuid,
+              ${command.invoiceId}::uuid,
+              ${command.amountPaise}::bigint::numeric / 100,
+              ${ctx.actorId}::uuid,
+              ${isDemo}
+            );
+          `;
+
+          const created = (await this.queryPaymentReceiptDtos(tx, receiptId))[0];
+          if (!created) {
+            throw new ApiError(500, 'internal_error', 'Recorded payment could not be retrieved.');
+          }
+          return { result: created, isDemo };
+        }),
+      );
+    } catch (error) {
+      sanitizeDatabaseError(error);
+    }
+  }
+
+  async voidInvoice(ctx: RepositoryContext, command: VoidFeeRecordCommand): Promise<InvoiceDto> {
+    const { idempotencyKey, ...payload } = command;
+    try {
+      return await this.runner.withUserContext(ctx, (tx) =>
+        this.runIdempotent<InvoiceDto>(tx, ctx, idempotencyKey, 'voidInvoice', payload, async () => {
+          await tx`SELECT pg_advisory_xact_lock(hashtext(${`invoice:${command.id}`}))`;
+          const rows = await tx`
+            SELECT status, is_demo, round(amount_received * 100)::bigint AS received_paise
+            FROM public.invoices
+            WHERE id = ${command.id}::uuid;
+          `;
+          const invoice = rows[0];
+          if (!invoice) throw notFound('Invoice');
+          if (invoice['status'] === 'voided') throw alreadyVoided();
+          if (toSafePaise(invoice['received_paise'], 'received_paise') > 0) throw billHasPayments();
+
+          const voidedRows = await tx`
+            UPDATE public.invoices
+            SET status = 'voided'::public.invoice_status,
+                void_reason = ${command.reason.trim()}
+            WHERE id = ${command.id}::uuid
+            RETURNING id;
+          `;
+          // Row-level security silently skips an update the actor may not make
+          if (voidedRows.length === 0) throw new ApiError(403, 'forbidden', 'You do not have permission to perform this operation.');
+          const voided = (await this.queryInvoiceDtos(tx, command.id))[0];
+          if (!voided) {
+            throw new ApiError(500, 'internal_error', 'Cancelled bill could not be retrieved.');
+          }
+          return { result: voided, isDemo: Boolean(invoice['is_demo']) };
+        }),
+      );
+    } catch (error) {
+      sanitizeDatabaseError(error);
+    }
+  }
+
+  async voidPaymentReceipt(ctx: RepositoryContext, command: VoidFeeRecordCommand): Promise<PaymentReceiptDto> {
+    const { idempotencyKey, ...payload } = command;
+    try {
+      return await this.runner.withUserContext(ctx, (tx) =>
+        this.runIdempotent<PaymentReceiptDto>(tx, ctx, idempotencyKey, 'voidPaymentReceipt', payload, async () => {
+          const rows = await tx`
+            SELECT status, is_demo FROM public.payment_receipts WHERE id = ${command.id}::uuid;
+          `;
+          const receipt = rows[0];
+          if (!receipt) throw notFound('Payment receipt');
+          if (receipt['status'] === 'voided') throw alreadyVoided();
+
+          // Lock the bills this payment settles, in a stable order, before changing it
+          const allocations = await tx`
+            SELECT DISTINCT invoice_id FROM public.payment_allocations
+            WHERE receipt_id = ${command.id}::uuid
+            ORDER BY invoice_id;
+          `;
+          for (const allocation of allocations) {
+            await tx`SELECT pg_advisory_xact_lock(hashtext(${`invoice:${String(allocation['invoice_id'])}`}))`;
+          }
+
+          const voidedRows = await tx`
+            UPDATE public.payment_receipts
+            SET status = 'voided'::public.payment_status,
+                void_reason = ${command.reason.trim()}
+            WHERE id = ${command.id}::uuid
+            RETURNING id;
+          `;
+          // Row-level security silently skips an update the actor may not make
+          if (voidedRows.length === 0) throw new ApiError(403, 'forbidden', 'You do not have permission to perform this operation.');
+          const voided = (await this.queryPaymentReceiptDtos(tx, command.id))[0];
+          if (!voided) {
+            throw new ApiError(500, 'internal_error', 'Cancelled payment could not be retrieved.');
+          }
+          return { result: voided, isDemo: Boolean(receipt['is_demo']) };
+        }),
+      );
     } catch (error) {
       sanitizeDatabaseError(error);
     }

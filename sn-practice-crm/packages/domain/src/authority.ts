@@ -38,7 +38,10 @@ export type AuthorityRequest =
     }
   | { action: 'task.create_internal'; actor: Actor; target: EmployeeRef }
   | { action: 'task.create_personal'; actor: Actor; ownerId: string }
-  | { action: 'client.read' | 'client.create' | 'billing.read'; actor: Actor }
+  | {
+      action: 'client.read' | 'client.create' | 'billing.read' | 'billing.record_bill' | 'billing.record_payment' | 'billing.void';
+      actor: Actor;
+    }
   | { action: 'finance.manage' | 'reports.view_practice' | 'team.manage_access'; actor: Actor }
   | { action: 'team.manage_reporting'; actor: Actor; subject: EmployeeRef; proposedManager: EmployeeRef | null }
   | {
@@ -173,9 +176,17 @@ export function authorize(request: AuthorityRequest): AuthorityDecision {
         : deny('role_not_permitted', 'Only Founder and Manager may create new clients.');
 
     case 'billing.read':
+    case 'billing.record_payment':
+      // Row scope for Senior Staff and Staff (fee-visible clients) is enforced by RLS.
+      return actor.role === 'trainee'
+        ? deny('role_not_permitted', 'Fee records are not available to Trainees.')
+        : ALLOWED;
+
+    case 'billing.record_bill':
+    case 'billing.void':
       return isLeadership(actor.role)
         ? ALLOWED
-        : deny('role_not_permitted', 'Billing records are reserved for the Founder or Manager.');
+        : deny('role_not_permitted', 'Only the Founder or Manager may record or cancel Vyapar bills.');
 
     case 'team.manage_access':
       return actor.role === 'founder'

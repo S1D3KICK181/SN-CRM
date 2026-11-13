@@ -10,6 +10,7 @@ import { useBilling } from './use-billing';
 const invoice: InvoiceDto = {
   id: '70000000-0000-4000-a000-000000000003',
   code: 'INV-0001003',
+  vyaparBillNumber: null,
   clientId: '10000000-0000-4000-a000-000000000003',
   clientCode: 'CL-001003',
   clientName: 'Sharma Retail',
