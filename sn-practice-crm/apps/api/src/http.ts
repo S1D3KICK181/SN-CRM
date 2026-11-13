@@ -369,6 +369,16 @@ export function createApiServer(application: CrmApplication, options: ApiServerO
         return;
       }
 
+      if (request.method === 'GET' && pathname === '/api/v1/invoices') {
+        sendData(response, context, allowedOrigins, 200, await application.listInvoices(actor));
+        return;
+      }
+
+      if (request.method === 'GET' && pathname === '/api/v1/payment-receipts') {
+        sendData(response, context, allowedOrigins, 200, await application.listPaymentReceipts(actor));
+        return;
+      }
+
       if (request.method === 'GET' && pathname === '/api/v1/engagements') {
         sendData(response, context, allowedOrigins, 200, await application.listEngagements(actor));
         return;

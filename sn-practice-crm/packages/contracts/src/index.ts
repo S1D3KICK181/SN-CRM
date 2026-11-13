@@ -648,3 +648,85 @@ export function validateEndEngagementInput(input: unknown): { success: true; dat
   if (errors.length > 0) return { success: false, errors };
   return { success: true, data: input as EndEngagementInput };
 }
+
+// --- Billing (BIL-01a, read-only) ---
+
+export const INVOICE_STATUSES = ['draft', 'issued', 'part_paid', 'paid', 'voided'] as const;
+export type InvoiceStatus = (typeof INVOICE_STATUSES)[number];
+export const PAYMENT_METHODS = ['cash', 'bank_transfer', 'cheque', 'upi', 'card', 'other'] as const;
+export type PaymentMethod = (typeof PAYMENT_METHODS)[number];
+export type PaymentReceiptStatus = 'received' | 'voided';
+
+export interface InvoiceItemDto {
+  readonly id: string;
+  readonly description: string;
+  readonly quantity: number; // numeric(12,3), e.g. 1 or 1.5
+  readonly unitPricePaise: number;
+  readonly taxRatePercent: number; // numeric(5,2), e.g. 18
+  readonly lineSubtotalPaise: number;
+  readonly lineTaxPaise: number;
+  readonly lineTotalPaise: number;
+}
+
+/** One allocation onto an invoice. */
+export interface InvoicePaymentDto {
+  readonly receiptId: string;
+  readonly receiptCode: string;
+  readonly receivedOn: string; // YYYY-MM-DD
+  readonly amountPaise: number;
+  readonly receiptStatus: PaymentReceiptStatus;
+}
+
+export interface InvoiceDto {
+  readonly id: string;
+  readonly code: string;
+  readonly clientId: string;
+  readonly clientCode: string;
+  readonly clientName: string;
+  readonly assignmentId: string | null;
+  readonly assignmentCode: string | null;
+  readonly issueDate: string; // YYYY-MM-DD
+  readonly dueDate: string; // YYYY-MM-DD
+  readonly currency: 'INR';
+  readonly subtotalPaise: number;
+  readonly taxPaise: number;
+  readonly totalPaise: number;
+  readonly amountReceivedPaise: number;
+  readonly balancePaise: number; // server-computed
+  readonly daysOverdue: number; // server-computed
+  readonly status: InvoiceStatus;
+  readonly notes: string | null;
+  readonly issuedAt: string | null;
+  readonly voidReason: string | null;
+  readonly voidedAt: string | null;
+  readonly items: readonly InvoiceItemDto[];
+  readonly payments: readonly InvoicePaymentDto[];
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+export interface PaymentAllocationDto {
+  readonly invoiceId: string;
+  readonly invoiceCode: string;
+  readonly amountPaise: number;
+}
+
+export interface PaymentReceiptDto {
+  readonly id: string;
+  readonly code: string;
+  readonly clientId: string;
+  readonly clientCode: string;
+  readonly clientName: string;
+  readonly receivedOn: string; // YYYY-MM-DD
+  readonly amountPaise: number;
+  readonly method: PaymentMethod;
+  readonly reference: string | null;
+  readonly notes: string | null;
+  readonly status: PaymentReceiptStatus;
+  readonly voidReason: string | null;
+  readonly voidedAt: string | null;
+  readonly allocatedPaise: number;
+  readonly unallocatedPaise: number; // amountPaise - allocatedPaise
+  readonly allocations: readonly PaymentAllocationDto[];
+  readonly createdAt: string;
+}

@@ -31,6 +31,13 @@ import {
   type ActivateEngagementInput,
   type AmendActiveEngagementInput,
   type EndEngagementInput,
+  INVOICE_STATUSES,
+  PAYMENT_METHODS,
+  type InvoiceDto,
+  type InvoiceStatus,
+  type PaymentMethod,
+  type PaymentReceiptDto,
+  type PaymentReceiptStatus,
 } from './index';
 
 describe('Contracts Single Status Truth & Runtime Tuples', () => {
@@ -439,5 +446,25 @@ describe('Contracts Single Status Truth & Runtime Tuples', () => {
       expect(validator({ ...baseInput, exclusions: null }).success).toBe(true);
       expect(validator({ ...baseInput, exclusions: 'Tax return preparation excluded' }).success).toBe(true);
     });
+  });
+});
+
+describe('Billing contracts (BIL-01a)', () => {
+  it('exports invoice statuses and payment methods matching the PostgreSQL enums', () => {
+    expect(INVOICE_STATUSES).toEqual(['draft', 'issued', 'part_paid', 'paid', 'voided']);
+    expect(PAYMENT_METHODS).toEqual(['cash', 'bank_transfer', 'cheque', 'upi', 'card', 'other']);
+  });
+
+  it('keeps the billing DTO shapes aligned with the brief', () => {
+    expectTypeOf<InvoiceStatus>().toEqualTypeOf<'draft' | 'issued' | 'part_paid' | 'paid' | 'voided'>();
+    expectTypeOf<PaymentMethod>().toEqualTypeOf<'cash' | 'bank_transfer' | 'cheque' | 'upi' | 'card' | 'other'>();
+    expectTypeOf<PaymentReceiptStatus>().toEqualTypeOf<'received' | 'voided'>();
+    expectTypeOf<InvoiceDto['currency']>().toEqualTypeOf<'INR'>();
+    expectTypeOf<InvoiceDto['balancePaise']>().toEqualTypeOf<number>();
+    expectTypeOf<InvoiceDto['assignmentCode']>().toEqualTypeOf<string | null>();
+    expectTypeOf<InvoiceDto['items'][number]['quantity']>().toEqualTypeOf<number>();
+    expectTypeOf<InvoiceDto['payments'][number]['receiptStatus']>().toEqualTypeOf<PaymentReceiptStatus>();
+    expectTypeOf<PaymentReceiptDto['unallocatedPaise']>().toEqualTypeOf<number>();
+    expectTypeOf<PaymentReceiptDto['allocations'][number]['invoiceCode']>().toEqualTypeOf<string>();
   });
 });

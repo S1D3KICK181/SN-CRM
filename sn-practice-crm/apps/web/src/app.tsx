@@ -33,6 +33,7 @@ import {
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import type { ClientDto, ReportingLineDto, ServiceCatalogItemDto, SessionActor } from '@sn/contracts';
 import { authorize, type CompanyRole } from '@sn/domain';
+import { useBilling } from './api/use-billing';
 import { useEngagements } from './api/use-engagements';
 import { SessionClient } from './api/auth/session-client';
 import { SessionManager } from './api/auth/session-manager';
@@ -91,9 +92,7 @@ import {
   CLIENTS,
   CLIENT_OUTSTANDING,
   DELEGATED_TASKS,
-  INVOICES,
   PERSONAL_TASKS,
-  RECEIPTS,
   RECURRING_SCHEDULES,
   ROLE_COPY,
   ROLE_LABELS,
@@ -105,8 +104,6 @@ import {
   type ClientType,
   type DelegatedTaskRecord,
   type InvoiceRecord,
-  type InvoiceStatus,
-  type PaymentMode,
   type PersonalTaskRecord,
   type ReceiptRecord,
   type RecurringScheduleRecord,
@@ -114,7 +111,7 @@ import {
   type ScheduleCadence,
 } from './data';
 
-type DialogMode = 'assignment' | 'personal' | 'delegated' | 'internal' | 'client' | 'schedule' | 'invoice' | 'receipt' | null;
+type DialogMode = 'assignment' | 'personal' | 'delegated' | 'internal' | 'client' | 'schedule' | null;
 
 export function App() {
   const { status, actor, error, retry, signOut, signInWithPassword } = useSessionActor();
@@ -182,7 +179,6 @@ function AuthenticatedApp({
     handleUpdateSchedule: updateScheduleLive,
     generateDueAssignments: generateDueLive,
     isGeneratingDue,
-    markAssignmentBilled,
   } = useAssignments(role, { onToast: setToast });
   const assignmentDialogOpen =
     (dialog === 'assignment' || dialog === 'schedule') && (role === 'founder' || role === 'manager');
@@ -228,11 +224,14 @@ function AuthenticatedApp({
     refresh: refreshWorkItems,
   } = useWorkItems(role, assignments, { onToast: setToast });
   const [selectedAssignmentForDrawer, setSelectedAssignmentForDrawer] = useState<AssignmentRow | null>(null);
-  const [invoices, setInvoices] = useState<InvoiceRecord[]>(INVOICES);
-  const [receipts, setReceipts] = useState<ReceiptRecord[]>(RECEIPTS);
+  const {
+    invoices,
+    receipts,
+    loading: billingLoading,
+    error: billingError,
+    retry: retryBilling,
+  } = useBilling(role);
   const [clients, setClients] = useState<ClientRecord[]>(CLIENTS);
-  const [presetInvoiceForReceipt, setPresetInvoiceForReceipt] = useState<InvoiceRecord | null>(null);
-  const [presetAssignmentForInvoice, setPresetAssignmentForInvoice] = useState<AssignmentRow | null>(null);
 
   const staffOptions = useMemo<readonly DialogStaffOption[]>(() => {
     if (!directoryLines || directoryLines.length === 0) return [];
@@ -316,12 +315,6 @@ function AuthenticatedApp({
     const saved = await updateAssignmentLive(updated);
     setSelectedAssignmentForDrawer((current) => resolveDrawerSave(current, saved, updated.id));
     return saved;
-  }
-
-  function handleOpenInvoiceForAssignment(asn: AssignmentRow) {
-    setPresetAssignmentForInvoice(asn);
-    setActivePage('Billing & Collections');
-    setDialog('invoice');
   }
 
   function handleCreateClient(newClient: ClientRecord, selectedObligations: string[], assignedOwner: string) {
@@ -520,58 +513,6 @@ function AuthenticatedApp({
     setToast(`Client ${newClient.name} onboarded with ${newSchedules.length} recurring schedules assigned to ${assignedOwner}`);
   }
 
-  function handleCreateInvoice(newInvoice: InvoiceRecord) {
-    setInvoices((prev) => [newInvoice, ...prev]);
-    if (presetAssignmentForInvoice) {
-      markAssignmentBilled(presetAssignmentForInvoice.id);
-      setPresetAssignmentForInvoice(null);
-    }
-    setToast(`Invoice ${newInvoice.invoiceNumber} raised for ${newInvoice.clientName}`);
-  }
-
-  function handleCreateReceipt(newReceipt: ReceiptRecord) {
-    setReceipts((prev) => [newReceipt, ...prev]);
-
-    setInvoices((prev) =>
-      prev.map((inv) => {
-        if (inv.id === newReceipt.invoiceId) {
-          const nextReceived = inv.amountReceived + newReceipt.amount;
-          const nextBalance = Math.max(0, inv.total - nextReceived);
-          const nextStatus: InvoiceStatus = nextBalance === 0 ? 'Paid' : 'Partially Paid';
-          return {
-            ...inv,
-            amountReceived: nextReceived,
-            balance: nextBalance,
-            status: nextStatus,
-          };
-        }
-        return inv;
-      })
-    );
-
-    setClients((prev) =>
-      prev.map((c) => {
-        if (c.id === newReceipt.clientId) {
-          const currentOut = parseInt(c.outstanding.replace(/[^0-9]/g, '') || '0', 10);
-          const rem = Math.max(0, currentOut - newReceipt.amount);
-          return {
-            ...c,
-            outstanding: formatINR(rem),
-            outstandingTone: rem === 0 ? 'success' : rem > 50000 ? 'danger' : 'warning',
-          };
-        }
-        return c;
-      })
-    );
-
-    setToast(`Receipt ${newReceipt.receiptNumber} of ${formatINR(newReceipt.amount)} recorded for ${newReceipt.clientName}`);
-  }
-
-  function openReceiptModalForInvoice(inv: InvoiceRecord) {
-    setPresetInvoiceForReceipt(inv);
-    setDialog('receipt');
-  }
-
   return (
     <ApplicationChrome
       actor={actor}
@@ -591,7 +532,6 @@ function AuthenticatedApp({
               onClose={() => setSelectedAssignmentForDrawer(null)}
               onToast={setToast}
               onUpdateAssignment={handleUpdateAssignment}
-              onOpenInvoice={handleOpenInvoiceForAssignment}
               teamMembers={staffOptions}
               services={services}
             />
@@ -622,21 +562,12 @@ function AuthenticatedApp({
               mode={dialog}
               role={role}
               clients={clients}
-              invoices={invoices}
               assignments={assignments}
               personalTasks={personalTasks}
               delegatedTasks={visibleDelegatedWork}
-              presetInvoice={presetInvoiceForReceipt}
-              presetAssignment={presetAssignmentForInvoice}
-              onClose={() => {
-                setDialog(null);
-                setPresetInvoiceForReceipt(null);
-                setPresetAssignmentForInvoice(null);
-              }}
+              onClose={() => setDialog(null)}
               onCreated={setToast}
               onClientCreated={handleCreateClient}
-              onInvoiceCreated={handleCreateInvoice}
-              onReceiptCreated={handleCreateReceipt}
               onAssignmentCreated={handleCreateAssignment}
               onPersonalTaskCreated={handleCreatePersonal}
               onDelegatedTaskCreated={handleCreateDelegated}
@@ -679,6 +610,9 @@ function AuthenticatedApp({
           assignments={assignments}
           invoices={invoices}
           receipts={receipts}
+          billingLoading={billingLoading}
+          billingError={billingError ? billingError.message : null}
+          onRetryBilling={retryBilling}
           assignmentsLoading={assignmentsLoading}
           assignmentsError={assignmentsError ? assignmentsError.message : null}
           onRetryAssignments={refreshAssignments}
@@ -709,8 +643,6 @@ function AuthenticatedApp({
           onUpdateSchedule={handleUpdateSchedule}
           onUpdateAssignment={handleUpdateAssignment}
           onSelectAssignment={setSelectedAssignmentForDrawer}
-          onRecordPaymentForInvoice={openReceiptModalForInvoice}
-          onOpenInvoiceForAssignment={handleOpenInvoiceForAssignment}
           onGenerateDue={generateDueLive}
           isGeneratingDue={isGeneratingDue}
         />
@@ -1391,8 +1323,9 @@ export function ModuleWorkspace({
   onUpdateSchedule,
   onUpdateAssignment,
   onSelectAssignment,
-  onRecordPaymentForInvoice,
-  onOpenInvoiceForAssignment,
+  billingLoading,
+  billingError,
+  onRetryBilling,
   onGenerateDue,
   isGeneratingDue,
   assignmentsLoading,
@@ -1419,8 +1352,9 @@ export function ModuleWorkspace({
   onUpdateSchedule: (updated: RecurringScheduleRecord) => void;
   onUpdateAssignment: (updated: AssignmentRow) => void;
   onSelectAssignment: (assignment: AssignmentRow) => void;
-  onRecordPaymentForInvoice: (inv: InvoiceRecord) => void;
-  onOpenInvoiceForAssignment: (asn: AssignmentRow) => void;
+  billingLoading?: boolean;
+  billingError?: string | null;
+  onRetryBilling?: () => void;
   onGenerateDue?: () => void;
   isGeneratingDue?: boolean;
   assignmentsLoading?: boolean;
@@ -1435,8 +1369,6 @@ export function ModuleWorkspace({
       ? 'New personal task'
       : page === 'Clients'
       ? undefined
-      : page === 'Billing & Collections'
-      ? (leadership ? 'Raise invoice' : 'Record receipt')
       : undefined;
   const primaryMode: DialogMode =
     page === 'Assignments'
@@ -1445,8 +1377,6 @@ export function ModuleWorkspace({
       ? 'personal'
       : page === 'Clients'
       ? null
-      : page === 'Billing & Collections'
-      ? (leadership ? 'invoice' : 'receipt')
       : null;
   return (
     <>
@@ -1497,13 +1427,10 @@ export function ModuleWorkspace({
           model={{
             invoices,
             receipts,
-            clients,
           }}
-          actions={{
-            compose: onCompose,
-            notify: onToast,
-            recordPaymentForInvoice: onRecordPaymentForInvoice,
-          }}
+          loading={billingLoading ?? false}
+          error={billingError ?? null}
+          onRetry={onRetryBilling ?? (() => undefined)}
         />
       ) : null}
       {page === 'My Tasks' ? (
@@ -1567,17 +1494,12 @@ export function ComposerDialog({
   mode,
   role,
   clients,
-  invoices,
   assignments,
   personalTasks,
   delegatedTasks,
-  presetInvoice,
-  presetAssignment,
   onClose,
   onCreated,
   onClientCreated,
-  onInvoiceCreated,
-  onReceiptCreated,
   onAssignmentCreated,
   onPersonalTaskCreated,
   onDelegatedTaskCreated,
@@ -1586,17 +1508,12 @@ export function ComposerDialog({
   mode: DialogMode;
   role: CompanyRole;
   clients: ClientRecord[];
-  invoices: InvoiceRecord[];
   assignments: AssignmentRow[];
   personalTasks: PersonalTaskRecord[];
   delegatedTasks: DelegatedTaskRecord[];
-  presetInvoice: InvoiceRecord | null;
-  presetAssignment?: AssignmentRow | null;
   onClose: () => void;
   onCreated: (message: string) => void;
   onClientCreated: (client: ClientRecord, services: string[], owner: string) => void;
-  onInvoiceCreated: (invoice: InvoiceRecord) => void;
-  onReceiptCreated: (receipt: ReceiptRecord) => void;
   onAssignmentCreated: (assignment: AssignmentRow) => Promise<boolean>;
   onPersonalTaskCreated: (input: CreatePersonalInput | any) => Promise<boolean> | void;
   onDelegatedTaskCreated: (input: CreateDelegatedInput | any) => Promise<boolean> | void;
@@ -1641,8 +1558,6 @@ export function ComposerDialog({
     internal: ['Delegate Office Task', 'Assign non-client administrative or menial office operations within your downward authority.'],
     client: ['New client record', 'Onboard a corporate, LLP, or individual client with Indian tax registrations.'],
     schedule: ['New Recurring Schedule', 'Configure an automated compliance cycle for GST, TDS, bookkeeping, or ROC.'],
-    invoice: ['Raise Tax Invoice', 'Generate a professional fee invoice with standard 18% GST (CGST 9% + SGST 9%).'],
-    receipt: ['Record Payment Receipt', 'Log client payment receipt with bank UTR and allocate against open invoice balance.'],
   };
   const [title, description] = titles[mode];
 
@@ -1840,60 +1755,6 @@ export function ComposerDialog({
         setSubmitting(false);
       }
       return;
-    } else if (mode === 'invoice') {
-      const clientId = fd.get('clientId') as string;
-      const targetClient = clients.find((c) => c.id === clientId);
-      const desc = fd.get('description') as string;
-      const subtotal = Number(fd.get('subtotal')) || 15000;
-      const gstAmount = Math.round(subtotal * 0.18);
-      const total = subtotal + gstAmount;
-      const dueDate = (fd.get('dueDate') as string) || '15/11/2026';
-
-      const nextInvNum = `SN/2026-27/008${invoices.length + 1}`;
-      const newInvoice: InvoiceRecord = {
-        id: `INV-2026-008${invoices.length + 1}`,
-        invoiceNumber: nextInvNum,
-        clientId,
-        clientName: targetClient?.name || 'Client',
-        description: desc,
-        invoiceDate: '30/10/2026',
-        dueDate,
-        subtotal,
-        gstAmount,
-        total,
-        amountReceived: 0,
-        balance: total,
-        status: 'Unpaid',
-        daysOverdue: 0,
-      };
-
-      onInvoiceCreated(newInvoice);
-    } else if (mode === 'receipt') {
-      const clientId = fd.get('clientId') as string;
-      const targetClient = clients.find((c) => c.id === clientId);
-      const invoiceId = fd.get('invoiceId') as string;
-      const targetInv = invoices.find((i) => i.id === invoiceId);
-      const amount = Number(fd.get('amount')) || (targetInv ? targetInv.balance : 15000);
-      const paymentMode = (fd.get('paymentMode') as PaymentMode) || 'NEFT';
-      const referenceNumber = (fd.get('referenceNumber') as string) || 'UTR-0091823';
-      const notes = (fd.get('notes') as string) || 'Settlement against open balance.';
-
-      const nextRecNum = `RCP/2026-27/004${invoices.length + 1}`;
-      const newReceipt: ReceiptRecord = {
-        id: `REC-2026-004${invoices.length + 1}`,
-        receiptNumber: nextRecNum,
-        clientId,
-        clientName: targetClient?.name || 'Client',
-        invoiceId,
-        invoiceNumber: targetInv?.invoiceNumber || '',
-        receiptDate: '30/10/2026',
-        amount,
-        paymentMode,
-        referenceNumber,
-        notes,
-      };
-
-      onReceiptCreated(newReceipt);
     } else {
       onCreated('Compliance item scheduled');
     }
@@ -1917,10 +1778,6 @@ export function ComposerDialog({
                 <Building2 />
               ) : mode === 'schedule' ? (
                 <Repeat2 />
-              ) : mode === 'invoice' ? (
-                <FileText />
-              ) : mode === 'receipt' ? (
-                <ReceiptIndianRupee />
               ) : (
                 <CalendarClock />
               )}
@@ -1944,10 +1801,6 @@ export function ComposerDialog({
               <InternalTaskFields role={role} />
             ) : mode === 'client' ? (
               <NewClientFields />
-            ) : mode === 'invoice' ? (
-              <NewInvoiceFields clients={clients} presetAssignment={presetAssignment} />
-            ) : mode === 'receipt' ? (
-              <NewReceiptFields clients={clients} invoices={invoices} presetInvoice={presetInvoice} />
             ) : (
               <PersonalTaskFields />
             )}
@@ -1963,10 +1816,6 @@ export function ComposerDialog({
                 ? 'Delegate task'
                 : mode === 'client'
                 ? 'Create client & activate schedules'
-                : mode === 'invoice'
-                ? 'Issue Invoice'
-                : mode === 'receipt'
-                ? 'Record & Allocate Receipt'
                 : 'Schedule task'}
             </button>
           </div>
@@ -2079,188 +1928,6 @@ function NewClientFields() {
           </label>
         </div>
       </div>
-    </>
-  );
-}
-
-function NewInvoiceFields({
-  clients,
-  presetAssignment,
-}: {
-  clients: ClientRecord[];
-  presetAssignment?: AssignmentRow | null;
-}) {
-  const matchedClient = presetAssignment
-    ? clients.find((c) => c.name.toLowerCase() === presetAssignment.client.toLowerCase())
-    : null;
-  const initialClientId = matchedClient?.id || clients[0]?.id || '';
-  const initialFee = presetAssignment?.fee
-    ? parseInt(String(presetAssignment.fee).replace(/[^0-9]/g, ''), 10) || 15000
-    : 15000;
-  const initialDescription = presetAssignment
-    ? `Professional Accounting Charges — ${presetAssignment.title} (${presetAssignment.id})`
-    : 'Monthly Accounting Charges & GST Compliance — November 2026';
-
-  const [selectedClient, setSelectedClient] = useState(initialClientId);
-  const [description, setDescription] = useState(initialDescription);
-  const [subtotal, setSubtotal] = useState(initialFee);
-  const gst = Math.round(subtotal * 0.18);
-  const total = subtotal + gst;
-
-  return (
-    <>
-      <Field label="Client entity" full>
-        <select
-          name="clientId"
-          required
-          value={selectedClient}
-          onChange={(e) => setSelectedClient(e.target.value)}
-        >
-          {clients.map((c) => (
-            <option key={c.id} value={c.id}>
-              {c.name} ({c.type})
-            </option>
-          ))}
-        </select>
-      </Field>
-      <Field label="Invoice description / service period" full>
-        <input
-          name="description"
-          required
-          value={description}
-          onChange={(e) => setDescription(e.target.value)}
-        />
-      </Field>
-      <Field label="Professional Fee (₹)">
-        <input
-          type="number"
-          name="subtotal"
-          required
-          value={subtotal}
-          onChange={(e) => setSubtotal(Number(e.target.value))}
-        />
-      </Field>
-      <Field label="GST Rate (18%)">
-        <input
-          disabled
-          value={`₹${gst.toLocaleString('en-IN')} (CGST 9% + SGST 9%)`}
-          style={{ background: 'var(--canvas)', color: 'var(--ink)' }}
-        />
-      </Field>
-      <Field label="Total Invoice Amount (₹)">
-        <input
-          disabled
-          value={`₹${total.toLocaleString('en-IN')}`}
-          style={{ background: 'var(--canvas)', fontWeight: 800, color: 'var(--brand)' }}
-        />
-      </Field>
-      <Field label="Due date">
-        <input type="date" name="dueDate" defaultValue="2026-11-15" required />
-      </Field>
-    </>
-  );
-}
-
-function NewReceiptFields({
-  clients,
-  invoices,
-  presetInvoice,
-}: {
-  clients: ClientRecord[];
-  invoices: InvoiceRecord[];
-  presetInvoice: InvoiceRecord | null;
-}) {
-  const [clientId, setClientId] = useState(presetInvoice?.clientId || clients[0]?.id || '');
-  const clientInvoices = invoices.filter((i) => i.clientId === clientId && i.balance > 0);
-  const [invoiceId, setInvoiceId] = useState(presetInvoice?.id || clientInvoices[0]?.id || '');
-  const targetInvoice = invoices.find((i) => i.id === invoiceId);
-  const [amount, setAmount] = useState<number>(targetInvoice ? targetInvoice.balance : 15000);
-
-  useEffect(() => {
-    if (presetInvoice) {
-      setClientId(presetInvoice.clientId);
-      setInvoiceId(presetInvoice.id);
-      setAmount(presetInvoice.balance);
-    }
-  }, [presetInvoice]);
-
-  return (
-    <>
-      <Field label="Client entity" full>
-        <select
-          name="clientId"
-          required
-          value={clientId}
-          onChange={(e) => {
-            setClientId(e.target.value);
-            const nextInvs = invoices.filter((i) => i.clientId === e.target.value && i.balance > 0);
-            const first = nextInvs[0];
-            if (first) {
-              setInvoiceId(first.id);
-              setAmount(first.balance);
-            }
-          }}
-        >
-          {clients.map((c) => (
-            <option key={c.id} value={c.id}>
-              {c.name} (Outstanding: {c.outstanding})
-            </option>
-          ))}
-        </select>
-      </Field>
-      <Field label="Allocate against invoice" full>
-        <select
-          name="invoiceId"
-          required
-          value={invoiceId}
-          onChange={(e) => {
-            setInvoiceId(e.target.value);
-            const inv = invoices.find((i) => i.id === e.target.value);
-            if (inv) setAmount(inv.balance);
-          }}
-        >
-          {clientInvoices.length === 0 ? (
-            <option value="">No pending invoices for this client</option>
-          ) : (
-            clientInvoices.map((inv) => (
-              <option key={inv.id} value={inv.id}>
-                {inv.invoiceNumber} · {inv.description} (Balance: ₹{inv.balance.toLocaleString('en-IN')})
-              </option>
-            ))
-          )}
-        </select>
-      </Field>
-      <Field label="Amount Received (₹)">
-        <input
-          type="number"
-          name="amount"
-          required
-          value={amount}
-          onChange={(e) => setAmount(Number(e.target.value))}
-        />
-      </Field>
-      <Field label="Payment Mode">
-        <select name="paymentMode" required defaultValue="NEFT">
-          <option value="NEFT">NEFT Bank Transfer</option>
-          <option value="RTGS">RTGS Bank Transfer</option>
-          <option value="UPI">UPI Payment</option>
-          <option value="Cheque">Account Payee Cheque</option>
-          <option value="Cash">Cash (Office Accounts)</option>
-        </select>
-      </Field>
-      <Field label="Bank UTR / Cheque / Ref Number" full>
-        <input
-          name="referenceNumber"
-          required
-          placeholder="e.g. HDFC202611019876 or CHQ-002931"
-        />
-      </Field>
-      <Field label="Receipt Notes / Remarks" full>
-        <input
-          name="notes"
-          placeholder="e.g. Full settlement against October GST compliance invoice."
-        />
-      </Field>
     </>
   );
 }

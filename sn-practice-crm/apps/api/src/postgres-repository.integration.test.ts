@@ -1800,4 +1800,186 @@ describe('PostgresCrmRepository Integration Suite', () => {
       });
     });
   });
+
+  describe('BIL-01a billing reads', () => {
+    let invoiceSeq: { last_value: string; is_called: boolean } | undefined;
+    let receiptSeq: { last_value: string; is_called: boolean } | undefined;
+
+    // The fixtures roll back, but sequence draws do not; put both code sequences back afterwards.
+    beforeAll(async () => {
+      const invoiceRows = await rootClient`SELECT last_value::text, is_called FROM public.invoice_code_seq`;
+      const receiptRows = await rootClient`SELECT last_value::text, is_called FROM public.receipt_code_seq`;
+      invoiceSeq = { last_value: String(invoiceRows[0]!['last_value']), is_called: Boolean(invoiceRows[0]!['is_called']) };
+      receiptSeq = { last_value: String(receiptRows[0]!['last_value']), is_called: Boolean(receiptRows[0]!['is_called']) };
+    });
+
+    afterAll(async () => {
+      if (invoiceSeq) await rootClient`SELECT setval('public.invoice_code_seq', ${invoiceSeq.last_value}::bigint, ${invoiceSeq.is_called})`;
+      if (receiptSeq) await rootClient`SELECT setval('public.receipt_code_seq', ${receiptSeq.last_value}::bigint, ${receiptSeq.is_called})`;
+    });
+
+    // Fixtures are built in the server role (no user claim), as the billing writers will be later.
+    async function createBillingFixtures(tx: postgres.TransactionSql, clientId: string) {
+      const draftRows = await tx`
+        INSERT INTO public.invoices (client_id, issue_date, due_date, created_by)
+        VALUES (
+          ${clientId}::uuid,
+          (now() AT TIME ZONE 'Asia/Kolkata')::date - 30,
+          (now() AT TIME ZONE 'Asia/Kolkata')::date - 10,
+          ${FOUNDER_ID}::uuid
+        )
+        RETURNING id, code`;
+      const invoice = draftRows[0]!;
+      await tx`
+        INSERT INTO public.invoice_items (invoice_id, description, quantity, unit_price, tax_rate, sort_order)
+        VALUES
+          (${invoice['id']}::uuid, 'Audit fee', 1, 10000.00, 18, 0),
+          (${invoice['id']}::uuid, 'Travel and filing costs', 1.5, 1000.50, 0, 1)`;
+      await tx`UPDATE public.invoices SET status = 'issued', notes = 'IT billing fixture' WHERE id = ${invoice['id']}::uuid`;
+
+      const staleDraftRows = await tx`
+        INSERT INTO public.invoices (client_id, issue_date, due_date, created_by)
+        VALUES (
+          ${clientId}::uuid,
+          (now() AT TIME ZONE 'Asia/Kolkata')::date - 40,
+          (now() AT TIME ZONE 'Asia/Kolkata')::date - 20,
+          ${FOUNDER_ID}::uuid
+        )
+        RETURNING id, code`;
+      const draft = staleDraftRows[0]!;
+
+      const receiptRows = await tx`
+        INSERT INTO public.payment_receipts (client_id, received_on, amount, method, reference, created_by)
+        VALUES (${clientId}::uuid, (now() AT TIME ZONE 'Asia/Kolkata')::date - 5, 5000.25, 'upi', 'UPI-IT-33', ${FOUNDER_ID}::uuid)
+        RETURNING id, code`;
+      const receipt = receiptRows[0]!;
+      await tx`
+        INSERT INTO public.payment_allocations (receipt_id, invoice_id, amount, created_by)
+        VALUES (${receipt['id']}::uuid, ${invoice['id']}::uuid, 3000.10, ${FOUNDER_ID}::uuid)`;
+
+      const voidedRows = await tx`
+        INSERT INTO public.payment_receipts (client_id, received_on, amount, method, created_by)
+        VALUES (${clientId}::uuid, (now() AT TIME ZONE 'Asia/Kolkata')::date - 3, 750.00, 'cheque', ${FOUNDER_ID}::uuid)
+        RETURNING id, code`;
+      const voided = voidedRows[0]!;
+      await tx`UPDATE public.payment_receipts SET status = 'voided', void_reason = 'Cheque bounced' WHERE id = ${voided['id']}::uuid`;
+
+      return {
+        invoiceId: String(invoice['id']),
+        invoiceCode: String(invoice['code']),
+        draftCode: String(draft['code']),
+        receiptId: String(receipt['id']),
+        receiptCode: String(receipt['code']),
+        voidedCode: String(voided['code']),
+      };
+    }
+
+    it('IT-33: the founder reads an issued invoice with paise totals, items, payments, balance and days overdue', async () => {
+      await runIsolatedTest(async (repo, tx) => {
+        const client = (await repo.listClientReferences({ actorId: FOUNDER_ID }))[0]!;
+        const fixtures = await createBillingFixtures(tx, client.id);
+
+        const invoices = await repo.listInvoices({ actorId: FOUNDER_ID });
+        const invoice = invoices.find((item) => item.code === fixtures.invoiceCode)!;
+        expect(invoice).toBeDefined();
+        expect(invoice).toMatchObject({
+          clientId: client.id,
+          clientCode: client.code,
+          clientName: client.name,
+          assignmentId: null,
+          assignmentCode: null,
+          currency: 'INR',
+          status: 'part_paid',
+          subtotalPaise: 1150075,
+          taxPaise: 180000,
+          totalPaise: 1330075,
+          amountReceivedPaise: 300010,
+          balancePaise: 1030065,
+          daysOverdue: 10,
+          notes: 'IT billing fixture',
+          voidReason: null,
+          voidedAt: null,
+        });
+        expect(invoice.issuedAt).toEqual(expect.any(String));
+        expect(invoice.items).toHaveLength(2);
+        expect(invoice.items[0]).toMatchObject({
+          description: 'Audit fee',
+          quantity: 1,
+          unitPricePaise: 1000000,
+          taxRatePercent: 18,
+          lineSubtotalPaise: 1000000,
+          lineTaxPaise: 180000,
+          lineTotalPaise: 1180000,
+        });
+        expect(invoice.items[1]).toMatchObject({
+          description: 'Travel and filing costs',
+          quantity: 1.5,
+          unitPricePaise: 100050,
+          taxRatePercent: 0,
+          lineSubtotalPaise: 150075,
+          lineTaxPaise: 0,
+          lineTotalPaise: 150075,
+        });
+        expect(invoice.payments).toEqual([
+          {
+            receiptId: fixtures.receiptId,
+            receiptCode: fixtures.receiptCode,
+            receivedOn: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/),
+            amountPaise: 300010,
+            receiptStatus: 'received',
+          },
+        ]);
+
+        const draft = invoices.find((item) => item.code === fixtures.draftCode)!;
+        expect(draft).toMatchObject({ status: 'draft', totalPaise: 0, balancePaise: 0, daysOverdue: 0, items: [], payments: [] });
+      });
+    });
+
+    it('IT-34: the founder reads receipts with allocations, unallocated amounts and voided status', async () => {
+      await runIsolatedTest(async (repo, tx) => {
+        const client = (await repo.listClientReferences({ actorId: FOUNDER_ID }))[0]!;
+        const fixtures = await createBillingFixtures(tx, client.id);
+
+        const receipts = await repo.listPaymentReceipts({ actorId: FOUNDER_ID });
+        const received = receipts.find((item) => item.code === fixtures.receiptCode)!;
+        expect(received).toMatchObject({
+          clientCode: client.code,
+          clientName: client.name,
+          amountPaise: 500025,
+          method: 'upi',
+          reference: 'UPI-IT-33',
+          status: 'received',
+          voidReason: null,
+          allocatedPaise: 300010,
+          unallocatedPaise: 200015,
+        });
+        expect(received.allocations).toEqual([
+          { invoiceId: fixtures.invoiceId, invoiceCode: fixtures.invoiceCode, amountPaise: 300010 },
+        ]);
+
+        const voided = receipts.find((item) => item.code === fixtures.voidedCode)!;
+        expect(voided).toMatchObject({
+          amountPaise: 75000,
+          method: 'cheque',
+          status: 'voided',
+          voidReason: 'Cheque bounced',
+          allocatedPaise: 0,
+          unallocatedPaise: 75000,
+          allocations: [],
+        });
+        expect(voided.voidedAt).toEqual(expect.any(String));
+        expect(receipts.indexOf(voided)).toBeLessThan(receipts.indexOf(received));
+      });
+    });
+
+    it('IT-35: a staff user context reads no invoices or receipts', async () => {
+      await runIsolatedTest(async (repo, tx) => {
+        const client = (await repo.listClientReferences({ actorId: FOUNDER_ID }))[0]!;
+        await createBillingFixtures(tx, client.id);
+
+        expect(await repo.listInvoices({ actorId: STAFF_ID })).toEqual([]);
+        expect(await repo.listPaymentReceipts({ actorId: STAFF_ID })).toEqual([]);
+      });
+    });
+  });
 });

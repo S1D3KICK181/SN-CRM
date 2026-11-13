@@ -176,6 +176,56 @@ describe('HTTP API', () => {
     expect((await list.json()).data).toEqual([]);
   });
 
+  describe('BIL-01a billing read routes', () => {
+    it('returns invoices and payment receipts in the DTO shape for a founder', async () => {
+      const baseUrl = await startServer();
+      const headers = { 'x-demo-user-id': DEMO_ACTOR_IDS.founder };
+
+      const invoices = await fetch(`${baseUrl}/api/v1/invoices`, { headers });
+      expect(invoices.status).toBe(200);
+      const invoiceBody = await invoices.json();
+      expect(invoiceBody.data).toHaveLength(4);
+      expect(invoiceBody.data[0]).toEqual(
+        expect.objectContaining({
+          id: expect.any(String),
+          code: expect.stringMatching(/^INV-/),
+          clientCode: expect.stringMatching(/^CL-/),
+          clientName: expect.any(String),
+          currency: 'INR',
+          totalPaise: expect.any(Number),
+          balancePaise: expect.any(Number),
+          daysOverdue: expect.any(Number),
+          items: expect.any(Array),
+          payments: expect.any(Array),
+        }),
+      );
+
+      const receipts = await fetch(`${baseUrl}/api/v1/payment-receipts`, { headers });
+      expect(receipts.status).toBe(200);
+      const receiptBody = await receipts.json();
+      expect(receiptBody.data).toHaveLength(2);
+      expect(receiptBody.data[0]).toEqual(
+        expect.objectContaining({
+          code: expect.stringMatching(/^RCT-/),
+          method: expect.any(String),
+          amountPaise: expect.any(Number),
+          unallocatedPaise: expect.any(Number),
+          allocations: expect.any(Array),
+        }),
+      );
+    });
+
+    it('returns 403 for staff on both routes', async () => {
+      const baseUrl = await startServer();
+      const headers = { 'x-demo-user-id': DEMO_ACTOR_IDS.staff };
+      for (const path of ['/api/v1/invoices', '/api/v1/payment-receipts']) {
+        const response = await fetch(`${baseUrl}${path}`, { headers });
+        expect(response.status).toBe(403);
+        expect((await response.json()).error.code).toBe('role_not_permitted');
+      }
+    });
+  });
+
   describe('ENG-01 authenticated engagement HTTP lifecycle', () => {
     const engagementTerms = (title = 'Annual compliance engagement') => ({
       title,

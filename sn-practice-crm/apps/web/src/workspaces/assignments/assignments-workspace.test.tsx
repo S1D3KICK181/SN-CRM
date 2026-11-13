@@ -46,8 +46,10 @@ describe('Assignments workspace source contracts', () => {
 
     // AssignmentDetailDrawer mount remains wired in app.tsx overlays
     expect(appSource).toMatch(
-      /<AssignmentDetailDrawer[\s\S]*?assignment=\{selectedAssignmentForDrawer\}[\s\S]*?leadership=\{role === 'founder' \|\| role === 'manager'\}[\s\S]*?role=\{role\}[\s\S]*?onClose=\{[^}]*\}[\s\S]*?onToast=\{setToast\}[\s\S]*?onUpdateAssignment=\{handleUpdateAssignment\}[\s\S]*?onOpenInvoice=\{handleOpenInvoiceForAssignment\}[\s\S]*?\/>/,
+      /<AssignmentDetailDrawer[\s\S]*?assignment=\{selectedAssignmentForDrawer\}[\s\S]*?leadership=\{role === 'founder' \|\| role === 'manager'\}[\s\S]*?role=\{role\}[\s\S]*?onClose=\{[^}]*\}[\s\S]*?onToast=\{setToast\}[\s\S]*?onUpdateAssignment=\{handleUpdateAssignment\}[\s\S]*?\/>/,
     );
+    // Raising an invoice from the drawer is not wired until invoices can be created live.
+    expect(appSource).not.toMatch(/onOpenInvoice=/);
   });
 
   it('verifies assignments-table exports AssignmentsTable with optional callbacks and default props', () => {

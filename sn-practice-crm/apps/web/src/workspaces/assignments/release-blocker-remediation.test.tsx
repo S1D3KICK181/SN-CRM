@@ -176,8 +176,6 @@ describe('AS-01 Release Blockers Remediation', () => {
             onUpdateSchedule={vi.fn()}
             onUpdateAssignment={vi.fn()}
             onSelectAssignment={vi.fn()}
-            onRecordPaymentForInvoice={vi.fn()}
-            onOpenInvoiceForAssignment={vi.fn()}
           />,
         );
 
@@ -207,8 +205,6 @@ describe('AS-01 Release Blockers Remediation', () => {
             onUpdateSchedule={vi.fn()}
             onUpdateAssignment={vi.fn()}
             onSelectAssignment={vi.fn()}
-            onRecordPaymentForInvoice={vi.fn()}
-            onOpenInvoiceForAssignment={vi.fn()}
           />,
         );
 

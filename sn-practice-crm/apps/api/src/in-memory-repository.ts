@@ -6,8 +6,16 @@ import type {
   EngagementDto,
   EngagementVersionDto,
   GenerateDueAssignmentsResult,
+  InvoiceDto,
+  InvoiceItemDto,
+  InvoicePaymentDto,
+  InvoiceStatus,
   LedgerEntryDto,
   OfficeAccountsSummaryDto,
+  PaymentAllocationDto,
+  PaymentMethod,
+  PaymentReceiptDto,
+  PaymentReceiptStatus,
   RecurringScheduleDto,
   ReportingLineDto,
   UpdateRecurringScheduleInput,
@@ -52,6 +60,39 @@ export type ClientSeedRecord = Omit<
   isDemo?: boolean;
 };
 
+export interface InvoiceSeedRecord {
+  id: string;
+  code: string;
+  clientId: string;
+  assignmentId: string | null;
+  issueDate: string;
+  dueDate: string;
+  status: InvoiceStatus;
+  notes: string | null;
+  issuedAt: string | null;
+  voidReason: string | null;
+  voidedAt: string | null;
+  items: InvoiceItemDto[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PaymentReceiptSeedRecord {
+  id: string;
+  code: string;
+  clientId: string;
+  receivedOn: string;
+  amountPaise: number;
+  method: PaymentMethod;
+  reference: string | null;
+  notes: string | null;
+  status: PaymentReceiptStatus;
+  voidReason: string | null;
+  voidedAt: string | null;
+  allocations: { invoiceId: string; amountPaise: number }[];
+  createdAt: string;
+}
+
 export interface DemoSeed {
   employees: EmployeeRecord[];
   clients: ClientSeedRecord[];
@@ -60,6 +101,26 @@ export interface DemoSeed {
   recurringSchedules: RecurringScheduleDto[];
   workItems: WorkItemDto[];
   ledgerEntries: LedgerEntryDto[];
+  invoices?: InvoiceSeedRecord[];
+  paymentReceipts?: PaymentReceiptSeedRecord[];
+}
+
+export interface InMemoryRepositoryOptions {
+  readonly now?: () => Date;
+}
+
+/** Today's calendar date (YYYY-MM-DD) in Asia/Kolkata, matching the SQL read path. */
+export function kolkataToday(now: Date): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Kolkata',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(now);
+}
+
+function wholeDaysBetween(fromDate: string, toDate: string): number {
+  return Math.round((Date.parse(`${toDate}T00:00:00.000Z`) - Date.parse(`${fromDate}T00:00:00.000Z`)) / 86400000);
 }
 
 function copy<T>(value: T): T {
@@ -127,6 +188,9 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
   private readonly engagementVersions = new Map<string, EngagementVersionDto[]>();
   private readonly operationReceipts = new Map<string, StoredOperationReceipt>();
   private readonly engagementIsDemo = new Map<string, boolean>();
+  private readonly invoiceSeeds: InvoiceSeedRecord[];
+  private readonly paymentReceipts: PaymentReceiptSeedRecord[];
+  private readonly now: () => Date;
 
   private assignmentCounter = 1000;
   private workItemCounter = 1000;
@@ -134,7 +198,10 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
   private clientCounter = 1000;
   private engagementCounter = 1000;
 
-  constructor(seed: DemoSeed) {
+  constructor(seed: DemoSeed, options: InMemoryRepositoryOptions = {}) {
+    this.now = options.now ?? (() => new Date());
+    this.invoiceSeeds = copy(seed.invoices ?? []);
+    this.paymentReceipts = copy(seed.paymentReceipts ?? []);
     seed.employees.forEach((value) => this.employees.set(value.id, copy(value)));
 
     seed.clients.forEach((value) => {
@@ -924,6 +991,105 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
     };
     this.ledgerEntries.set(entry.id, copy(entry));
     return copy(entry);
+  }
+
+  // --- Billing (BIL-01a, read-only) ---
+
+  async listInvoices(_ctx: RepositoryContext): Promise<InvoiceDto[]> {
+    const today = kolkataToday(this.now());
+    const dtos = this.invoiceSeeds.map((invoice): InvoiceDto => {
+      const client = this.clients.get(invoice.clientId);
+      const assignment = invoice.assignmentId ? this.assignments.get(invoice.assignmentId) : undefined;
+      const payments: InvoicePaymentDto[] = [];
+      for (const receipt of this.paymentReceipts) {
+        for (const allocation of receipt.allocations) {
+          if (allocation.invoiceId !== invoice.id) continue;
+          payments.push({
+            receiptId: receipt.id,
+            receiptCode: receipt.code,
+            receivedOn: receipt.receivedOn,
+            amountPaise: allocation.amountPaise,
+            receiptStatus: receipt.status,
+          });
+        }
+      }
+      payments.sort((a, b) => a.receivedOn.localeCompare(b.receivedOn) || a.receiptCode.localeCompare(b.receiptCode));
+
+      const subtotalPaise = invoice.items.reduce((sum, item) => sum + item.lineSubtotalPaise, 0);
+      const taxPaise = invoice.items.reduce((sum, item) => sum + item.lineTaxPaise, 0);
+      const totalPaise = subtotalPaise + taxPaise;
+      const amountReceivedPaise = payments
+        .filter((payment) => payment.receiptStatus === 'received')
+        .reduce((sum, payment) => sum + payment.amountPaise, 0);
+      const carriesBalance = invoice.status === 'issued' || invoice.status === 'part_paid' || invoice.status === 'paid';
+      const isOpen = invoice.status === 'issued' || invoice.status === 'part_paid';
+
+      return {
+        id: invoice.id,
+        code: invoice.code,
+        clientId: invoice.clientId,
+        clientCode: client?.code ?? '',
+        clientName: client?.displayName ?? '',
+        assignmentId: invoice.assignmentId,
+        assignmentCode: assignment?.code ?? null,
+        issueDate: invoice.issueDate,
+        dueDate: invoice.dueDate,
+        currency: 'INR',
+        subtotalPaise,
+        taxPaise,
+        totalPaise,
+        amountReceivedPaise,
+        balancePaise: carriesBalance ? totalPaise - amountReceivedPaise : 0,
+        daysOverdue: isOpen && invoice.dueDate < today ? wholeDaysBetween(invoice.dueDate, today) : 0,
+        status: invoice.status,
+        notes: invoice.notes,
+        issuedAt: invoice.issuedAt,
+        voidReason: invoice.voidReason,
+        voidedAt: invoice.voidedAt,
+        items: invoice.items,
+        payments,
+        createdAt: invoice.createdAt,
+        updatedAt: invoice.updatedAt,
+      };
+    });
+    dtos.sort((a, b) => b.issueDate.localeCompare(a.issueDate) || b.code.localeCompare(a.code));
+    return copy(dtos);
+  }
+
+  async listPaymentReceipts(_ctx: RepositoryContext): Promise<PaymentReceiptDto[]> {
+    const invoiceCodes = new Map(this.invoiceSeeds.map((invoice) => [invoice.id, invoice.code]));
+    const dtos = this.paymentReceipts.map((receipt): PaymentReceiptDto => {
+      const client = this.clients.get(receipt.clientId);
+      const allocations: PaymentAllocationDto[] = receipt.allocations
+        .map((allocation) => ({
+          invoiceId: allocation.invoiceId,
+          invoiceCode: invoiceCodes.get(allocation.invoiceId) ?? '',
+          amountPaise: allocation.amountPaise,
+        }))
+        .sort((a, b) => a.invoiceCode.localeCompare(b.invoiceCode));
+      const allocatedPaise = allocations.reduce((sum, allocation) => sum + allocation.amountPaise, 0);
+      return {
+        id: receipt.id,
+        code: receipt.code,
+        clientId: receipt.clientId,
+        clientCode: client?.code ?? '',
+        clientName: client?.displayName ?? '',
+        receivedOn: receipt.receivedOn,
+        amountPaise: receipt.amountPaise,
+        method: receipt.method,
+        reference: receipt.reference,
+        notes: receipt.notes,
+        status: receipt.status,
+        voidReason: receipt.voidReason,
+        voidedAt: receipt.voidedAt,
+        allocatedPaise,
+        unallocatedPaise: receipt.amountPaise - allocatedPaise,
+        allocations,
+        createdAt: receipt.createdAt,
+      };
+    });
+    dtos.sort((a, b) => b.receivedOn.localeCompare(a.receivedOn) || b.code.localeCompare(a.code));
+    return copy(dtos);
   }
 
   // --- Engagements (ENG-01) ---

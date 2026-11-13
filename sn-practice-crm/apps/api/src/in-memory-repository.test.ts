@@ -1100,3 +1100,58 @@ describe('Client visibility and read operations (CL-02A parity)', () => {
     });
   });
 });
+
+describe('InMemoryCrmRepository billing reads (BIL-01a)', () => {
+  const ctx: RepositoryContext = { actorId: DEMO_ACTOR_IDS.founder };
+  const now = new Date('2026-11-13T12:00:00.000Z');
+  const build = () => new InMemoryCrmRepository(createDemoSeed(now), { now: () => now });
+
+  it('lists invoices newest issue date first with client, assignment and line detail', async () => {
+    const invoices = await build().listInvoices(ctx);
+    expect(invoices.map((invoice) => invoice.code)).toEqual(['INV-0001004', 'INV-0001002', 'INV-0001003', 'INV-0001001']);
+    const draft = invoices[0]!;
+    expect(draft).toMatchObject({
+      status: 'draft',
+      clientCode: 'CL-001002',
+      clientName: 'BluePeak Tech',
+      assignmentCode: 'AS-001002',
+      totalPaise: 4720000,
+      balancePaise: 0,
+      daysOverdue: 0,
+    });
+    expect(draft.items).toHaveLength(1);
+  });
+
+  it('computes balance and days overdue by status in Asia/Kolkata time', async () => {
+    const invoices = await build().listInvoices(ctx);
+    const byCode = Object.fromEntries(invoices.map((invoice) => [invoice.code, invoice]));
+    expect(byCode['INV-0001003']).toMatchObject({ status: 'issued', totalPaise: 1770000, amountReceivedPaise: 0, balancePaise: 1770000, daysOverdue: 18 });
+    expect(byCode['INV-0001002']).toMatchObject({ status: 'part_paid', amountReceivedPaise: 1650000, daysOverdue: 0 });
+    expect(byCode['INV-0001002']!.balancePaise).toBe(byCode['INV-0001002']!.totalPaise - 1650000);
+    expect(byCode['INV-0001001']).toMatchObject({ status: 'paid', balancePaise: 0, daysOverdue: 0 });
+  });
+
+  it('uses the Kolkata calendar day, not the UTC day, for overdue maths', async () => {
+    // 19:00 UTC on 13 Nov is already 14 Nov 00:30 in Kolkata, so the invoice is one day more overdue.
+    const lateUtc = new Date('2026-11-13T19:00:00.000Z');
+    const repository = new InMemoryCrmRepository(createDemoSeed(now), { now: () => lateUtc });
+    const overdue = (await repository.listInvoices(ctx)).find((invoice) => invoice.code === 'INV-0001003');
+    expect(overdue?.daysOverdue).toBe(19);
+  });
+
+  it('orders payments by received date and links them to receipts', async () => {
+    const invoices = await build().listInvoices(ctx);
+    const partPaid = invoices.find((invoice) => invoice.code === 'INV-0001002')!;
+    expect(partPaid.payments.map((payment) => payment.receiptCode)).toEqual(['RCT-0001001', 'RCT-0001002']);
+    expect(partPaid.payments.map((payment) => payment.amountPaise)).toEqual([1050000, 600000]);
+    expect(partPaid.payments.every((payment) => payment.receiptStatus === 'received')).toBe(true);
+  });
+
+  it('lists receipts newest first with allocations and unallocated amounts', async () => {
+    const receipts = await build().listPaymentReceipts(ctx);
+    expect(receipts.map((receipt) => receipt.code)).toEqual(['RCT-0001002', 'RCT-0001001']);
+    expect(receipts[0]).toMatchObject({ amountPaise: 1000000, allocatedPaise: 600000, unallocatedPaise: 400000, method: 'upi' });
+    expect(receipts[1]!.allocations.map((allocation) => allocation.invoiceCode)).toEqual(['INV-0001001', 'INV-0001002']);
+    expect(receipts[1]).toMatchObject({ allocatedPaise: 4000000, unallocatedPaise: 0, clientCode: 'CL-001001' });
+  });
+});

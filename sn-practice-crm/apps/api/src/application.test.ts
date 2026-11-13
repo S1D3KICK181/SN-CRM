@@ -950,6 +950,12 @@ describe("CrmApplication authority and workflow rules", () => {
         async getEngagement(ctx: RepositoryContext, id: string) {
           throw new Error(`Unexpected engagement repository call: getEngagement(${ctx.actorId}, ${id})`);
         },
+        async listInvoices(ctx: RepositoryContext) {
+          throw new Error(`Unexpected billing repository call: listInvoices(${ctx.actorId})`);
+        },
+        async listPaymentReceipts(ctx: RepositoryContext) {
+          throw new Error(`Unexpected billing repository call: listPaymentReceipts(${ctx.actorId})`);
+        },
         async listEngagements(ctx: RepositoryContext) {
           throw new Error(`Unexpected engagement repository call: listEngagements(${ctx.actorId})`);
         },
@@ -1694,6 +1700,32 @@ describe("CrmApplication authority and workflow rules", () => {
       await expect(application.createEngagementDraft(actor, draftInput(DEMO_ACTOR_IDS.founder, DEMO_ACTOR_IDS.manager), "forbidden")).rejects.toMatchObject({ status: 403 });
       expect(listSpy).not.toHaveBeenCalled();
       expect(mutateSpy).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("BIL-01a billing read authority", () => {
+    it.each([
+      ["founder", DEMO_ACTOR_IDS.founder], ["manager", DEMO_ACTOR_IDS.manager],
+    ] as const)("lets %s list invoices and payment receipts", async (_role, actorId) => {
+      const { application } = createFixture();
+      const actor = await application.requireActor(actorId);
+      const invoices = await application.listInvoices(actor);
+      const receipts = await application.listPaymentReceipts(actor);
+      expect(invoices).toHaveLength(4);
+      expect(receipts).toHaveLength(2);
+    });
+
+    it.each([
+      ["senior_staff", DEMO_ACTOR_IDS.senior], ["staff", DEMO_ACTOR_IDS.staff], ["trainee", DEMO_ACTOR_IDS.trainee],
+    ] as const)("denies %s with 403 before any billing repository access", async (_role, actorId) => {
+      const { application, repository } = createFixture();
+      const actor = await application.requireActor(actorId);
+      const invoicesSpy = vi.spyOn(repository, "listInvoices");
+      const receiptsSpy = vi.spyOn(repository, "listPaymentReceipts");
+      await expect(application.listInvoices(actor)).rejects.toMatchObject({ status: 403, code: "role_not_permitted" });
+      await expect(application.listPaymentReceipts(actor)).rejects.toMatchObject({ status: 403, code: "role_not_permitted" });
+      expect(invoicesSpy).not.toHaveBeenCalled();
+      expect(receiptsSpy).not.toHaveBeenCalled();
     });
   });
 

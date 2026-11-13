@@ -30,7 +30,7 @@ import { CadenceTracker } from './cadence-tracker';
 import { isValidUuid } from '../../api/metadata-safety';
 import { AssignmentOperationError } from '../../api/types';
 
-type DialogMode = 'assignment' | 'personal' | 'delegated' | 'client' | 'schedule' | 'invoice' | 'receipt' | null;
+type DialogMode = 'assignment' | 'personal' | 'delegated' | 'client' | 'schedule' | null;
 
 export function AssignmentsWorkspace({
   role,

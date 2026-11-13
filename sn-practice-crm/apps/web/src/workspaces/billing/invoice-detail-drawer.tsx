@@ -1,21 +1,19 @@
 import { ReceiptIndianRupee, X } from 'lucide-react';
-import { formatINR, type InvoiceRecord, type ReceiptRecord } from '../../data';
+import { formatINR, type InvoiceRecord } from '../../data';
 
 interface InvoiceDetailDrawerProps {
   invoice: InvoiceRecord;
-  receipts: ReceiptRecord[];
+  /** Id of the page note that explains why recording a payment is disabled. */
+  readOnlyNoteId: string;
   onClose: () => void;
-  onRecordPayment: () => void;
-  onToast: (msg: string) => void;
 }
 
-export function InvoiceDetailDrawer({
-  invoice,
-  receipts,
-  onClose,
-  onRecordPayment,
-  onToast,
-}: InvoiceDetailDrawerProps) {
+const LABEL_STYLE = { fontSize: 11, fontWeight: 700, color: 'var(--ink-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' } as const;
+
+export function InvoiceDetailDrawer({ invoice, readOnlyNoteId, onClose }: InvoiceDetailDrawerProps) {
+  const items = invoice.items ?? [];
+  const payments = invoice.payments ?? [];
+
   return (
     <>
       <div className="drawer-backdrop" onClick={onClose} />
@@ -25,7 +23,10 @@ export function InvoiceDetailDrawer({
             <span className="drawer-monogram">IN</span>
             <div>
               <h2>{invoice.invoiceNumber}</h2>
-              <p>{invoice.clientName} · {invoice.invoiceDate}</p>
+              <p>
+                {invoice.clientCode ? `${invoice.clientCode} · ` : ''}
+                {invoice.clientName}
+              </p>
             </div>
           </div>
           <button className="drawer-close-btn" type="button" onClick={onClose} aria-label="Close drawer">
@@ -37,72 +38,127 @@ export function InvoiceDetailDrawer({
           <div className="drawer-grid" style={{ marginBottom: 16 }}>
             <div className="drawer-item">
               <span className="drawer-label">Invoice Status</span>
-              <span className={`invoice-chip ${invoice.status === 'Paid' ? 'is-paid' : invoice.status === 'Overdue' ? 'is-overdue' : 'is-unpaid'}`}>
+              <span
+                className={`invoice-chip ${
+                  invoice.status === 'Paid'
+                    ? 'is-paid'
+                    : invoice.status === 'Partially Paid'
+                    ? 'is-partial'
+                    : invoice.status === 'Overdue'
+                    ? 'is-overdue'
+                    : invoice.status === 'Draft' || invoice.status === 'Cancelled'
+                    ? 'is-draft'
+                    : 'is-unpaid'
+                }`}
+              >
                 {invoice.status}
               </span>
             </div>
             <div className="drawer-item">
+              <span className="drawer-label">Linked Assignment</span>
+              <span className="drawer-val">{invoice.assignmentCode ?? 'Not linked'}</span>
+            </div>
+            <div className="drawer-item">
+              <span className="drawer-label">Issue Date</span>
+              <span className="drawer-val">{invoice.invoiceDate}</span>
+            </div>
+            <div className="drawer-item">
               <span className="drawer-label">Due Date</span>
-              <span className="drawer-val">{invoice.dueDate}</span>
+              <span className="drawer-val">
+                {invoice.dueDate}
+                {invoice.daysOverdue > 0 ? ` (${invoice.daysOverdue}d late)` : ''}
+              </span>
             </div>
-            <div className="drawer-item full-width">
-              <span className="drawer-label">Service Description</span>
-              <span className="drawer-val">{invoice.description}</span>
-            </div>
+            {invoice.notes ? (
+              <div className="drawer-item full-width">
+                <span className="drawer-label">Notes</span>
+                <span className="drawer-val">{invoice.notes}</span>
+              </div>
+            ) : null}
+            {invoice.status === 'Cancelled' && invoice.voidReason ? (
+              <div className="drawer-item full-width">
+                <span className="drawer-label">Void Reason</span>
+                <span className="drawer-val">{invoice.voidReason}</span>
+              </div>
+            ) : null}
           </div>
 
-          {/* Line Item & Tax Calculation Breakdown */}
-          <div className="drawer-card" style={{ padding: 14 }}>
+          {/* Line items */}
+          <div className="drawer-card" style={{ padding: 14, marginBottom: 16 }}>
             <h4 style={{ margin: '0 0 10px', fontSize: 12, textTransform: 'uppercase', color: 'var(--ink-muted)' }}>
-              Tax Invoice Breakdown (GST 18%)
+              Line items
             </h4>
+            {items.length === 0 ? (
+              <p style={{ fontSize: 12, color: 'var(--ink-muted)', margin: 0 }}>No line items</p>
+            ) : (
+              <div className="table-scroll">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Description</th>
+                      <th>Qty</th>
+                      <th>Rate</th>
+                      <th>GST %</th>
+                      <th>Amount</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {items.map((item) => (
+                      <tr key={item.id}>
+                        <td style={{ fontSize: 12 }}>{item.description}</td>
+                        <td style={{ fontSize: 12 }}>{item.quantity}</td>
+                        <td style={{ fontSize: 12 }}>{formatINR(item.rate)}</td>
+                        <td style={{ fontSize: 12 }}>{item.gstPercent}%</td>
+                        <td style={{ fontSize: 12 }}>{formatINR(item.amount)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+
+          {/* Totals */}
+          <div className="drawer-card" style={{ padding: 14 }}>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 12 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span>Professional Accounting Charges:</span>
+                <span>Subtotal:</span>
                 <strong>{formatINR(invoice.subtotal)}</strong>
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--ink-muted)' }}>
-                <span>CGST (9%):</span>
-                <span>{formatINR(Math.round(invoice.gstAmount / 2))}</span>
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--ink-muted)' }}>
-                <span>SGST (9%):</span>
-                <span>{formatINR(Math.round(invoice.gstAmount / 2))}</span>
+                <span>GST:</span>
+                <span>{formatINR(invoice.gstAmount)}</span>
               </div>
               <div style={{ height: 1, background: 'var(--border)', margin: '4px 0' }} />
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 14 }}>
-                <strong>Total Invoice Amount:</strong>
+                <strong>Total:</strong>
                 <strong style={{ color: 'var(--brand)' }}>{formatINR(invoice.total)}</strong>
               </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', color: '#01b574' }}>
-                <span>Amount Received:</span>
-                <strong>− {formatINR(invoice.amountReceived)}</strong>
+              <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--success)' }}>
+                <span>Received:</span>
+                <strong>{formatINR(invoice.amountReceived)}</strong>
               </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 14, color: invoice.balance > 0 ? '#ee5d50' : '#01b574' }}>
-                <strong>Net Balance Payable:</strong>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 14, color: invoice.balance > 0 ? 'var(--danger)' : 'var(--success)' }}>
+                <strong>Balance:</strong>
                 <strong>{formatINR(invoice.balance)}</strong>
               </div>
             </div>
           </div>
 
-          {/* Payment Allocations */}
+          {/* Payments */}
           <div style={{ marginTop: 16 }}>
-            <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--ink-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-              Allocated Payment Receipts ({receipts.length})
-            </span>
-            {receipts.length === 0 ? (
-              <p style={{ fontSize: 12, color: 'var(--ink-muted)', marginTop: 6 }}>
-                No payment receipts have been allocated to this invoice yet.
-              </p>
+            <span style={LABEL_STYLE}>Payments ({payments.length})</span>
+            {payments.length === 0 ? (
+              <p style={{ fontSize: 12, color: 'var(--ink-muted)', marginTop: 6 }}>No payments recorded</p>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 8 }}>
-                {receipts.map((r) => (
-                  <div key={r.id} className="history-card-row">
+                {payments.map((payment, index) => (
+                  <div key={`${payment.receiptNumber}-${index}`} className="history-card-row">
                     <div>
-                      <strong>{r.receiptNumber} · {formatINR(r.amount)}</strong>
-                      <small>{r.receiptDate} · Mode: {r.paymentMode} (Ref: {r.referenceNumber})</small>
+                      <strong>{payment.receiptNumber} · {formatINR(payment.amount)}</strong>
+                      <small>{payment.date}</small>
                     </div>
-                    <span className="invoice-chip is-paid">Settled</span>
+                    {payment.voided ? <span className="invoice-chip is-overdue">Voided</span> : null}
                   </div>
                 ))}
               </div>
@@ -115,18 +171,13 @@ export function InvoiceDetailDrawer({
             <button
               className="primary-button"
               type="button"
-              onClick={onRecordPayment}
+              disabled
+              aria-describedby={readOnlyNoteId}
+              style={{ cursor: 'not-allowed', opacity: 0.6 }}
             >
-              <ReceiptIndianRupee size={14} /> Record Payment
+              <ReceiptIndianRupee size={14} /> Record payment
             </button>
           ) : null}
-          <button
-            className="soft-button"
-            type="button"
-            onClick={() => onToast(`Tax invoice PDF exported for ${invoice.invoiceNumber}`)}
-          >
-            Export PDF
-          </button>
           <button className="soft-button" type="button" onClick={onClose}>
             Close
           </button>

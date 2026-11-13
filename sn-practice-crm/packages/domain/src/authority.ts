@@ -38,7 +38,7 @@ export type AuthorityRequest =
     }
   | { action: 'task.create_internal'; actor: Actor; target: EmployeeRef }
   | { action: 'task.create_personal'; actor: Actor; ownerId: string }
-  | { action: 'client.read' | 'client.create'; actor: Actor }
+  | { action: 'client.read' | 'client.create' | 'billing.read'; actor: Actor }
   | { action: 'finance.manage' | 'reports.view_practice' | 'team.manage_access'; actor: Actor }
   | { action: 'team.manage_reporting'; actor: Actor; subject: EmployeeRef; proposedManager: EmployeeRef | null }
   | {
@@ -171,6 +171,11 @@ export function authorize(request: AuthorityRequest): AuthorityDecision {
       return isLeadership(actor.role)
         ? ALLOWED
         : deny('role_not_permitted', 'Only Founder and Manager may create new clients.');
+
+    case 'billing.read':
+      return isLeadership(actor.role)
+        ? ALLOWED
+        : deny('role_not_permitted', 'Billing records are reserved for the Founder or Manager.');
 
     case 'team.manage_access':
       return actor.role === 'founder'

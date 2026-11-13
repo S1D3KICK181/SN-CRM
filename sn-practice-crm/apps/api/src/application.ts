@@ -18,8 +18,10 @@ import type {
   EngagementVersionDto,
   GenerateDueAssignmentsInput,
   GenerateDueAssignmentsResult,
+  InvoiceDto,
   LedgerEntryDto,
   OfficeAccountsSummaryDto,
+  PaymentReceiptDto,
   RecurringScheduleDto,
   ReportingLineDto,
   ServiceCatalogItemDto,
@@ -104,6 +106,16 @@ export class CrmApplication {
       .filter((employee) => employee.active)
       .map(asSession)
       .sort((left, right) => left.name.localeCompare(right.name));
+  }
+
+  async listInvoices(actor: SessionActor): Promise<InvoiceDto[]> {
+    requireAuthority({ action: 'billing.read', actor: asActor(actor) });
+    return this.repository.listInvoices({ actorId: actor.id });
+  }
+
+  async listPaymentReceipts(actor: SessionActor): Promise<PaymentReceiptDto[]> {
+    requireAuthority({ action: 'billing.read', actor: asActor(actor) });
+    return this.repository.listPaymentReceipts({ actorId: actor.id });
   }
 
   async listEngagements(actor: SessionActor): Promise<EngagementDto[]> {

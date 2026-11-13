@@ -800,7 +800,9 @@ export function formatINR(amount: number): string {
   return new Intl.NumberFormat('en-IN', {
     style: 'currency',
     currency: 'INR',
-    maximumFractionDigits: 0,
+    // Whole rupees stay compact; live billing amounts that carry paise are never rounded away.
+    minimumFractionDigits: Number.isInteger(amount) ? 0 : 2,
+    maximumFractionDigits: 2,
   }).format(amount);
 }
 
@@ -821,9 +823,33 @@ export interface InvoiceRecord {
   balance: number;
   status: InvoiceStatus;
   daysOverdue: number;
+  clientCode?: string;
+  assignmentCode?: string;
+  notes?: string;
+  voidReason?: string;
+  items?: InvoiceLineRecord[];
+  payments?: InvoicePaymentRecord[];
 }
 
-export type PaymentMode = 'NEFT' | 'RTGS' | 'UPI' | 'Cheque' | 'Cash';
+/** One invoice line; amounts in rupees. */
+export interface InvoiceLineRecord {
+  id: string;
+  description: string;
+  quantity: number;
+  rate: number;
+  gstPercent: number;
+  amount: number;
+}
+
+/** One receipt allocated onto an invoice; amount in rupees, date DD/MM/YYYY. */
+export interface InvoicePaymentRecord {
+  receiptNumber: string;
+  date: string;
+  amount: number;
+  voided: boolean;
+}
+
+export type PaymentMode = 'Cash' | 'Bank transfer' | 'Cheque' | 'UPI' | 'Card' | 'Other';
 
 export interface ReceiptRecord {
   id: string;
@@ -837,6 +863,9 @@ export interface ReceiptRecord {
   paymentMode: PaymentMode;
   referenceNumber: string;
   notes: string;
+  status?: 'Received' | 'Voided';
+  allocations?: { invoiceId: string; invoiceNumber: string; amount: number }[];
+  unallocated?: number;
 }
 
 export const INVOICES: InvoiceRecord[] = [
@@ -996,7 +1025,7 @@ export const RECEIPTS: ReceiptRecord[] = [
     invoiceNumber: 'SN/2026-27/0062',
     receiptDate: '29/10/2026',
     amount: 14500,
-    paymentMode: 'NEFT',
+    paymentMode: 'Bank transfer',
     referenceNumber: 'HDFCN263028190',
     notes: 'Direct credit in practice current account.',
   },
@@ -1022,7 +1051,7 @@ export const RECEIPTS: ReceiptRecord[] = [
     invoiceNumber: 'SN/2026-27/0079',
     receiptDate: '20/10/2026',
     amount: 23000,
-    paymentMode: 'RTGS',
+    paymentMode: 'Bank transfer',
     referenceNumber: 'ICICR52026102000',
     notes: 'Part-settlement for export refund assignment.',
   },
@@ -1048,7 +1077,7 @@ export const RECEIPTS: ReceiptRecord[] = [
     invoiceNumber: 'SN/2026-27/0050',
     receiptDate: '05/10/2026',
     amount: 75000,
-    paymentMode: 'NEFT',
+    paymentMode: 'Bank transfer',
     referenceNumber: 'AXISN262788910',
     notes: 'Settled by corporate accounts via NEFT.',
   },

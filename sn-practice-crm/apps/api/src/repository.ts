@@ -11,8 +11,10 @@ import type {
   EngagementDto,
   EngagementVersionDto,
   GenerateDueAssignmentsResult,
+  InvoiceDto,
   LedgerEntryDto,
   OfficeAccountsSummaryDto,
+  PaymentReceiptDto,
   RecurringScheduleDto,
   ReportingLineDto,
   ReviseEngagementDraftInput,
@@ -240,6 +242,10 @@ export interface CrmRepository {
   listEngagements(ctx: RepositoryContext): Promise<EngagementDto[]>;
   listEngagementVersions(ctx: RepositoryContext, engagementId: string): Promise<EngagementVersionDto[]>;
   mutateEngagement(ctx: RepositoryContext, command: MutateEngagementCommand): Promise<EngagementDto>;
+
+  // Billing (BIL-01a, read-only)
+  listInvoices(ctx: RepositoryContext): Promise<InvoiceDto[]>;
+  listPaymentReceipts(ctx: RepositoryContext): Promise<PaymentReceiptDto[]>;
 
   // Office Accounts & Ledger
   getOfficeAccountsSummary(ctx: RepositoryContext): Promise<OfficeAccountsSummaryDto>;

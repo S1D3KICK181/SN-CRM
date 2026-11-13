@@ -23,3 +23,7 @@ export * from './engagements-types';
 export * from './http-engagements-adapter';
 export * from './engagements-coordinator';
 export * from './use-engagements';
+export * from './billing-types';
+export * from './billing-mapper';
+export * from './http-billing-adapter';
+export * from './use-billing';

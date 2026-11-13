@@ -1,50 +1,23 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { render, screen, fireEvent, cleanup } from '@testing-library/react';
+import { render, screen, fireEvent, cleanup, within } from '@testing-library/react';
 import { BillingWorkspace } from './billing-workspace';
-import type { ClientRecord, InvoiceRecord, ReceiptRecord } from '../../data';
+import type { InvoiceRecord, ReceiptRecord } from '../../data';
 
 afterEach(() => {
   cleanup();
 });
 
-function createClient(overrides: Partial<ClientRecord> = {}): ClientRecord {
-  return {
-    id: 'cli-001',
-    name: 'Aster Foods Private Limited',
-    tradeName: 'Aster Foods',
-    type: 'Private Limited',
-    industry: 'Food Processing',
-    pan: 'AABCA1234F',
-    gstin: '27AABCA1234F1Z5',
-    gstScheme: 'Regular',
-    city: 'Mumbai',
-    state: 'Maharashtra',
-    contactName: 'Rajesh Kumar',
-    contactDesignation: 'Director',
-    phone: '+91 98200 12345',
-    email: 'rajesh@asterfoods.in',
-    primaryOwner: 'S. Narayanan',
-    status: 'Active',
-    billingFrequency: 'Monthly',
-    recurringFee: '₹25,000',
-    outstanding: '₹0',
-    outstandingAge: 'Current',
-    outstandingTone: 'default',
-    activeAssignments: 1,
-    pendingDocs: 0,
-    onboardedDate: '01/04/2024',
-    notes: 'Primary contact available on weekdays.',
-    ...overrides,
-  };
-}
+const READ_ONLY_NOTE = 'Read-only for now: raising invoices and recording receipts are not available yet.';
+const UUID_PATTERN = /[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/i;
 
 function createInvoice(overrides: Partial<InvoiceRecord> = {}): InvoiceRecord {
   return {
-    id: 'inv-001',
-    invoiceNumber: 'SN/2026-27/0001',
-    clientId: 'cli-001',
-    clientName: 'Aster Foods Private Limited',
+    id: '70000000-0000-4000-a000-000000000001',
+    invoiceNumber: 'INV-0001001',
+    clientId: '10000000-0000-4000-a000-000000000001',
+    clientCode: 'CL-001001',
+    clientName: 'Aster Foods',
     description: 'Statutory Audit Fee',
     invoiceDate: '15/10/2026',
     dueDate: '31/10/2026',
@@ -55,291 +28,263 @@ function createInvoice(overrides: Partial<InvoiceRecord> = {}): InvoiceRecord {
     balance: 59000,
     status: 'Unpaid',
     daysOverdue: 0,
+    items: [],
+    payments: [],
     ...overrides,
   };
 }
 
 function createReceipt(overrides: Partial<ReceiptRecord> = {}): ReceiptRecord {
   return {
-    id: 'rec-001',
-    receiptNumber: 'REC-2026-0001',
-    clientId: 'cli-001',
-    clientName: 'Aster Foods Private Limited',
-    invoiceId: 'inv-001',
-    invoiceNumber: 'SN/2026-27/0001',
+    id: '71000000-0000-4000-a000-000000000001',
+    receiptNumber: 'RCT-0001001',
+    clientId: '10000000-0000-4000-a000-000000000001',
+    clientName: 'Aster Foods',
+    invoiceId: '70000000-0000-4000-a000-000000000001',
+    invoiceNumber: 'INV-0001001',
     receiptDate: '20/10/2026',
     amount: 59000,
-    paymentMode: 'NEFT',
-    referenceNumber: 'AXISN12345678',
-    notes: 'Payment received via NEFT',
+    paymentMode: 'Bank transfer',
+    referenceNumber: 'NEFT-AST-01001',
+    notes: 'Payment received',
+    status: 'Received',
+    allocations: [
+      { invoiceId: '70000000-0000-4000-a000-000000000001', invoiceNumber: 'INV-0001001', amount: 59000 },
+    ],
+    unallocated: 0,
     ...overrides,
   };
 }
 
+function renderWorkspace(
+  role: Parameters<typeof BillingWorkspace>[0]['role'],
+  overrides: Partial<Parameters<typeof BillingWorkspace>[0]> = {},
+) {
+  const props = {
+    role,
+    model: { invoices: [], receipts: [] },
+    loading: false,
+    error: null,
+    onRetry: vi.fn(),
+    ...overrides,
+  };
+  return { ...render(<BillingWorkspace {...props} />), onRetry: props.onRetry };
+}
+
 describe('BillingWorkspace', () => {
-  it('enforces trainee restriction notice while rendering full operational workspace for founder', () => {
-    const actions = {
-      compose: vi.fn(),
-      notify: vi.fn(),
-      recordPaymentForInvoice: vi.fn(),
-    };
+  it.each(['senior_staff', 'staff', 'trainee'] as const)(
+    'shows the restricted card for %s and none of the billing data',
+    (role) => {
+      renderWorkspace(role, {
+        model: { invoices: [createInvoice()], receipts: [createReceipt()] },
+      });
 
-    const { unmount } = render(
-      <BillingWorkspace
-        role="trainee"
-        model={{ invoices: [], receipts: [], clients: [] }}
-        actions={actions}
-      />
-    );
+      expect(screen.getByText('Billing is restricted')).toBeTruthy();
+      expect(screen.getByText('Founder and Manager only')).toBeTruthy();
+      expect(screen.getByText('Invoices, receipts and collections are visible to the Founder and Manager.')).toBeTruthy();
+      expect(screen.queryByText('INV-0001001')).toBeNull();
+      expect(screen.queryByText('Fee Invoices & Practice Receivables')).toBeNull();
+      expect(screen.queryByText(/Priya Desai|Rohan Mehta/)).toBeNull();
+      expect(screen.queryByRole('button', { name: /Raise Invoice/i })).toBeNull();
+    },
+  );
 
-    expect(screen.getByText('Restricted Practice Area')).toBeTruthy();
-    expect(screen.getByText('Article Assistant Access Restricted')).toBeTruthy();
-    expect(screen.queryByText('Fee Invoices & Practice Receivables')).toBeNull();
-    expect(screen.queryByText('Billed this FY (2026–27)')).toBeNull();
+  it.each(['founder', 'manager'] as const)('renders the live invoice rows for %s', (role) => {
+    renderWorkspace(role, {
+      model: {
+        invoices: [
+          createInvoice(),
+          createInvoice({
+            id: '70000000-0000-4000-a000-000000000002',
+            invoiceNumber: 'INV-0001002',
+            clientName: 'Sharma Retail',
+            clientCode: 'CL-001003',
+            status: 'Overdue',
+            daysOverdue: 18,
+            description: 'TDS return + 1 more',
+          }),
+        ],
+        receipts: [],
+      },
+    });
 
-    unmount();
-
-    render(
-      <BillingWorkspace
-        role="founder"
-        model={{ invoices: [], receipts: [], clients: [] }}
-        actions={actions}
-      />
-    );
-
-    expect(screen.queryByText('Article Assistant Access Restricted')).toBeNull();
+    expect(screen.queryByText('Billing is restricted')).toBeNull();
     expect(screen.getByText('Fee Invoices & Practice Receivables')).toBeTruthy();
-    expect(screen.getByText('Billed this FY (2026–27)')).toBeTruthy();
-  }, 15000);
+    expect(screen.getByText('INV-0001001')).toBeTruthy();
+    expect(screen.getByText('INV-0001002')).toBeTruthy();
+    expect(screen.getByText('Sharma Retail')).toBeTruthy();
+    expect(screen.getByText('Overdue')).toBeTruthy();
+    expect(screen.getByText(/\(18d late\)/)).toBeTruthy();
+    expect(screen.getByText('Billed to date')).toBeTruthy();
+  });
 
-  it('allows founder to invoke both invoice and receipt compose intents, while staff cannot raise invoice but can record receipt', () => {
-    const founderActions = {
-      compose: vi.fn(),
-      notify: vi.fn(),
-      recordPaymentForInvoice: vi.fn(),
-    };
+  it('shows a loading state while the first load is in flight', () => {
+    renderWorkspace('founder', { loading: true });
 
-    const { rerender } = render(
-      <BillingWorkspace
-        role="founder"
-        model={{ invoices: [], receipts: [], clients: [] }}
-        actions={founderActions}
-      />
-    );
+    expect(screen.getByLabelText('Loading billing records')).toBeTruthy();
+    expect(screen.queryByText('Billed to date')).toBeNull();
+  });
 
-    const raiseInvoiceBtn = screen.getByRole('button', { name: /Raise Invoice/i });
-    fireEvent.click(raiseInvoiceBtn);
-    expect(founderActions.compose).toHaveBeenCalledTimes(1);
-    expect(founderActions.compose).toHaveBeenCalledWith('invoice');
+  it('shows the error with a Retry button when the first load fails', () => {
+    const { onRetry } = renderWorkspace('founder', {
+      error: 'An unexpected error occurred while loading billing records. Please try again.',
+    });
 
-    const recordReceiptBtn = screen.getByRole('button', { name: 'Record Receipt' });
-    fireEvent.click(recordReceiptBtn);
-    expect(founderActions.compose).toHaveBeenCalledTimes(2);
-    expect(founderActions.compose).toHaveBeenCalledWith('receipt');
+    const alert = screen.getByRole('alert');
+    expect(within(alert).getByText('Unable to load billing records')).toBeTruthy();
+    expect(within(alert).getByText(/unexpected error occurred while loading billing records/i)).toBeTruthy();
 
-    const staffActions = {
-      compose: vi.fn(),
-      notify: vi.fn(),
-      recordPaymentForInvoice: vi.fn(),
-    };
+    fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }));
+    expect(onRetry).toHaveBeenCalledTimes(1);
+  });
 
-    rerender(
-      <BillingWorkspace
-        role="staff"
-        model={{ invoices: [], receipts: [], clients: [] }}
-        actions={staffActions}
-      />
-    );
+  it('keeps showing loaded rows with a retry banner when a refresh fails', () => {
+    const { onRetry } = renderWorkspace('manager', {
+      model: { invoices: [createInvoice()], receipts: [] },
+      error: 'Unable to reach the server. Please check your network connection and try again.',
+    });
 
-    expect(screen.queryByRole('button', { name: /Raise Invoice/i })).toBeNull();
+    expect(screen.getByText('INV-0001001')).toBeTruthy();
+    expect(screen.getByText(/Showing last loaded data/i)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(onRetry).toHaveBeenCalledTimes(1);
+  });
 
-    const staffReceiptBtn = screen.getByRole('button', { name: 'Record Receipt' });
-    fireEvent.click(staffReceiptBtn);
-    expect(staffActions.compose).toHaveBeenCalledTimes(1);
-    expect(staffActions.compose).toHaveBeenCalledWith('receipt');
+  it('keeps Raise Invoice, Record Receipt and Record payment visible but disabled, all pointing at one note', () => {
+    renderWorkspace('founder', {
+      model: { invoices: [createInvoice()], receipts: [] },
+    });
+
+    const note = screen.getByText(READ_ONLY_NOTE);
+    expect(note.id).toBeTruthy();
+
+    const raise = screen.getByRole('button', { name: /Raise Invoice/i }) as HTMLButtonElement;
+    const record = screen.getByRole('button', { name: 'Record Receipt' }) as HTMLButtonElement;
+    const rowPayment = screen.getByRole('button', { name: /Record payment for INV-0001001/i }) as HTMLButtonElement;
+
+    for (const button of [raise, record, rowPayment]) {
+      expect(button.disabled).toBe(true);
+      expect(button.getAttribute('aria-describedby')).toBe(note.id);
+    }
+    expect(screen.getAllByText(READ_ONLY_NOTE)).toHaveLength(1);
   });
 
   it('filters invoices by search query and status, and transitions across sub-tabs', () => {
     const invoices: InvoiceRecord[] = [
-      createInvoice({
-        id: 'inv-1',
-        invoiceNumber: 'SN/2026-27/0001',
-        clientName: 'Alpha Tech',
-        description: 'Statutory Audit Retainer',
-        status: 'Unpaid',
-        balance: 25000,
-      }),
-      createInvoice({
-        id: 'inv-2',
-        invoiceNumber: 'SN/2026-27/0002',
-        clientName: 'Beta Logistics',
-        description: 'GST Monthly Filing',
-        status: 'Paid',
-        balance: 0,
-        amountReceived: 15000,
-      }),
-      createInvoice({
-        id: 'inv-3',
-        invoiceNumber: 'SN/2026-27/0003',
-        clientName: 'Gamma Retail',
-        description: 'TDS Reconciliation',
-        status: 'Draft',
-        balance: 5000,
-      }),
+      createInvoice({ id: 'a1', invoiceNumber: 'INV-0000001', clientName: 'Alpha Tech', description: 'Statutory Audit Retainer', status: 'Unpaid', balance: 25000 }),
+      createInvoice({ id: 'a2', invoiceNumber: 'INV-0000002', clientName: 'Beta Logistics', description: 'GST Monthly Filing', status: 'Paid', balance: 0, amountReceived: 15000 }),
+      createInvoice({ id: 'a3', invoiceNumber: 'INV-0000003', clientName: 'Gamma Retail', description: 'TDS Reconciliation', status: 'Draft', balance: 0 }),
     ];
 
-    const actions = {
-      compose: vi.fn(),
-      notify: vi.fn(),
-      recordPaymentForInvoice: vi.fn(),
-    };
+    renderWorkspace('founder', { model: { invoices, receipts: [] } });
 
-    render(
-      <BillingWorkspace
-        role="founder"
-        model={{ invoices, receipts: [], clients: [] }}
-        actions={actions}
-      />
-    );
+    expect(screen.getByText('INV-0000001')).toBeTruthy();
+    expect(screen.getByText('INV-0000002')).toBeTruthy();
+    expect(screen.getByText('INV-0000003')).toBeTruthy();
 
-    // Initial state: all invoices visible in invoices table
-    expect(screen.getByText('SN/2026-27/0001')).toBeTruthy();
-    expect(screen.getByText('SN/2026-27/0002')).toBeTruthy();
-    expect(screen.getByText('SN/2026-27/0003')).toBeTruthy();
-
-    // Filter by search query
     const searchInput = screen.getByPlaceholderText(/Search invoice or client/i);
     fireEvent.change(searchInput, { target: { value: 'Beta' } });
+    expect(screen.queryByText('INV-0000001')).toBeNull();
+    expect(screen.getByText('INV-0000002')).toBeTruthy();
+    expect(screen.queryByText('INV-0000003')).toBeNull();
 
-    expect(screen.queryByText('SN/2026-27/0001')).toBeNull();
-    expect(screen.getByText('SN/2026-27/0002')).toBeTruthy();
-    expect(screen.queryByText('SN/2026-27/0003')).toBeNull();
-
-    // Clear search
     fireEvent.change(searchInput, { target: { value: '' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Paid' }));
+    expect(screen.queryByText('INV-0000001')).toBeNull();
+    expect(screen.getByText('INV-0000002')).toBeTruthy();
 
-    // Filter by status: Paid
-    const paidFilterBtn = screen.getByRole('button', { name: 'Paid' });
-    fireEvent.click(paidFilterBtn);
-
-    expect(screen.queryByText('SN/2026-27/0001')).toBeNull();
-    expect(screen.getByText('SN/2026-27/0002')).toBeTruthy();
-    expect(screen.queryByText('SN/2026-27/0003')).toBeNull();
-
-    // Tab transition: Ageing & Receivables
-    const ageingTabBtn = screen.getByRole('button', { name: /Ageing & Receivables/i });
-    fireEvent.click(ageingTabBtn);
+    fireEvent.click(screen.getByRole('button', { name: /Ageing & Receivables/i }));
     expect(screen.getByText(/0–30 Days \(Current\)/i)).toBeTruthy();
+    // Receivables by client come from the open invoices, not from sample client data.
+    expect(screen.getByText('Alpha Tech')).toBeTruthy();
 
-    // Tab transition: Receipts Register
-    const receiptsTabBtn = screen.getByRole('button', { name: /Receipts Register/i });
-    fireEvent.click(receiptsTabBtn);
+    fireEvent.click(screen.getByRole('button', { name: /Receipts Register/i }));
     expect(screen.getByText(/No payment receipts recorded for this portfolio yet\./i)).toBeTruthy();
 
-    // Tab transition back to Invoices
-    const invoicesTabBtn = screen.getByRole('button', { name: /^Invoices/i });
-    fireEvent.click(invoicesTabBtn);
+    fireEvent.click(screen.getByRole('button', { name: /^Invoices/i }));
     expect(screen.getByRole('columnheader', { name: 'Invoice #' })).toBeTruthy();
   });
 
-  it('opens invoice detail drawer with identity details and closes it via close button', () => {
+  it('lists receipts with method, voided status, every allocated invoice code and unallocated amount', () => {
+    const receipts: ReceiptRecord[] = [
+      createReceipt({
+        id: '71000000-0000-4000-a000-000000000002',
+        receiptNumber: 'RCT-0001002',
+        amount: 100000,
+        paymentMode: 'UPI',
+        referenceNumber: '',
+        notes: '',
+        allocations: [
+          { invoiceId: '70000000-0000-4000-a000-000000000001', invoiceNumber: 'INV-0001001', amount: 29500 },
+          { invoiceId: '70000000-0000-4000-a000-000000000002', invoiceNumber: 'INV-0001002', amount: 50000 },
+        ],
+        invoiceNumber: 'INV-0001001',
+        unallocated: 20500,
+      }),
+      createReceipt({
+        id: '71000000-0000-4000-a000-000000000003',
+        receiptNumber: 'RCT-0001003',
+        amount: 750,
+        paymentMode: 'Cheque',
+        status: 'Voided',
+        allocations: [],
+        invoiceId: '',
+        invoiceNumber: '',
+        unallocated: 750,
+        notes: 'Cheque bounced',
+      }),
+    ];
+
+    renderWorkspace('manager', { model: { invoices: [], receipts } });
+    fireEvent.click(screen.getByRole('button', { name: /Receipts Register/i }));
+
+    const multi = screen.getByText('RCT-0001002').closest('tr')!;
+    expect(within(multi).getByText('INV-0001001')).toBeTruthy();
+    expect(within(multi).getByText('INV-0001002')).toBeTruthy();
+    expect(within(multi).getByText('UPI')).toBeTruthy();
+    expect(within(multi).getByText(/Unallocated/)).toBeTruthy();
+    expect(within(multi).getByText(/20,500/)).toBeTruthy();
+
+    const voided = screen.getByText('RCT-0001003').closest('tr')!;
+    expect(within(voided).getByText('Voided')).toBeTruthy();
+    expect(within(voided).getByText('Cheque')).toBeTruthy();
+    expect(within(voided).getByText('Not allocated')).toBeTruthy();
+    expect(within(voided).queryByText(/Unallocated/)).toBeNull();
+  });
+
+  it('opens the invoice drawer and closes it, without exposing any raw UUID on screen', () => {
     const invoice = createInvoice({
-      id: 'inv-1',
-      invoiceNumber: 'SN/2026-27/0045',
-      clientName: 'Aster Foods Private Limited',
-      invoiceDate: '15/10/2026',
+      invoiceNumber: 'INV-0001045',
+      assignmentCode: 'AS-001001',
+      payments: [{ receiptNumber: 'RCT-0001001', date: '20/10/2026', amount: 10000, voided: false }],
+    });
+    const { container } = renderWorkspace('founder', {
+      model: { invoices: [invoice], receipts: [createReceipt()] },
     });
 
-    const actions = {
-      compose: vi.fn(),
-      notify: vi.fn(),
-      recordPaymentForInvoice: vi.fn(),
-    };
-
-    render(
-      <BillingWorkspace
-        role="founder"
-        model={{ invoices: [invoice], receipts: [], clients: [] }}
-        actions={actions}
-      />
-    );
-
     expect(screen.queryByLabelText('Invoice details')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'View INV-0001045' }));
 
-    // Click "View" button in table row
-    const viewButton = screen.getByRole('button', { name: 'View' });
-    fireEvent.click(viewButton);
+    expect(screen.getByLabelText('Invoice details')).toBeTruthy();
+    expect(screen.getByRole('heading', { level: 2, name: 'INV-0001045' })).toBeTruthy();
+    expect(screen.getByText('AS-001001')).toBeTruthy();
+    expect(screen.getByText('RCT-0001001 · ₹10,000')).toBeTruthy();
 
-    // Drawer is open
-    const drawer = screen.getByLabelText('Invoice details');
-    expect(drawer).toBeTruthy();
-    expect(screen.getByRole('heading', { level: 2, name: 'SN/2026-27/0045' })).toBeTruthy();
-    expect(screen.getByText(/Aster Foods Private Limited · 15\/10\/2026/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /Receipts Register/i }));
+    expect(container.textContent ?? '').not.toMatch(UUID_PATTERN);
+    expect(document.body.innerHTML.replace(/id="[^"]*"/g, '')).not.toMatch(/aria-label="[^"]*[0-9a-f]{8}-[0-9a-f]{4}-/i);
 
-    // Close drawer via close button
-    const closeBtn = screen.getByLabelText('Close drawer');
-    fireEvent.click(closeBtn);
-
+    fireEvent.click(screen.getByLabelText('Close drawer'));
     expect(screen.queryByLabelText('Invoice details')).toBeNull();
   });
 
-  it('sends exact invoice on Record Payment and sends exact notify text on PDF export and collection follow-up', () => {
-    const invoice = createInvoice({
-      id: 'inv-001',
-      invoiceNumber: 'SN/2026-27/0001',
-      clientId: 'cli-001',
-      clientName: 'Aster Foods Private Limited',
-      balance: 59000,
-    });
-    const client = createClient({
-      id: 'cli-001',
-      name: 'Aster Foods Private Limited',
-      contactName: 'Rajesh Kumar',
-      outstanding: '₹59,000',
-      outstandingTone: 'danger',
-    });
+  it('points the drawer Record payment button at the same read-only note', () => {
+    renderWorkspace('founder', { model: { invoices: [createInvoice()], receipts: [] } });
+    fireEvent.click(screen.getByRole('button', { name: 'View INV-0001001' }));
 
-    const actions = {
-      compose: vi.fn(),
-      notify: vi.fn(),
-      recordPaymentForInvoice: vi.fn(),
-    };
-
-    render(
-      <BillingWorkspace
-        role="founder"
-        model={{ invoices: [invoice], receipts: [], clients: [client] }}
-        actions={actions}
-      />
-    );
-
-    // Open drawer
-    fireEvent.click(screen.getByRole('button', { name: 'View' }));
-    expect(screen.getByLabelText('Invoice details')).toBeTruthy();
-
-    // 1. Record Payment from drawer sends exact invoice and closes drawer
-    const recordPaymentBtn = screen.getByRole('button', { name: /Record Payment/i });
-    fireEvent.click(recordPaymentBtn);
-
-    expect(actions.recordPaymentForInvoice).toHaveBeenCalledTimes(1);
-    expect(actions.recordPaymentForInvoice).toHaveBeenCalledWith(invoice);
-    expect(screen.queryByLabelText('Invoice details')).toBeNull();
-
-    // 2. Export PDF from drawer sends exact notify text
-    fireEvent.click(screen.getByRole('button', { name: 'View' }));
-    const exportPdfBtn = screen.getByRole('button', { name: /Export PDF/i });
-    fireEvent.click(exportPdfBtn);
-
-    expect(actions.notify).toHaveBeenCalledWith('Tax invoice PDF exported for SN/2026-27/0001');
-
-    // Close drawer
-    fireEvent.click(screen.getByLabelText('Close drawer'));
-
-    // 3. Collection follow-up from Ageing tab sends exact notify text
-    fireEvent.click(screen.getByRole('button', { name: /Ageing & Receivables/i }));
-    const followUpBtn = screen.getByRole('button', { name: 'Follow-Up' });
-    fireEvent.click(followUpBtn);
-
-    expect(actions.notify).toHaveBeenCalledWith('Collection reminder sent to Rajesh Kumar (Aster Foods Private Limited)');
+    const drawer = screen.getByLabelText('Invoice details');
+    const button = within(drawer).getByRole('button', { name: /Record payment/i }) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    expect(button.getAttribute('aria-describedby')).toBe(screen.getByText(READ_ONLY_NOTE).id);
   });
 });

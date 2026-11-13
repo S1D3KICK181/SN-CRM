@@ -1,4 +1,6 @@
-import type { ClientSeedRecord, DemoSeed } from './in-memory-repository';
+import type { InvoiceItemDto } from '@sn/contracts';
+import { kolkataToday } from './in-memory-repository';
+import type { ClientSeedRecord, DemoSeed, InvoiceSeedRecord, PaymentReceiptSeedRecord } from './in-memory-repository';
 import type { ServiceReference } from './repository';
 
 export const DEMO_ACTOR_IDS = {
@@ -117,7 +119,149 @@ export const DEMO_SERVICES: readonly ServiceReference[] = [
   { id: '50000000-0000-4000-a000-000000000006', name: 'Direct Tax Advisory' },
 ];
 
-export function createDemoSeed(): DemoSeed {
+function addDays(base: string, days: number): string {
+  return new Date(Date.parse(`${base}T00:00:00.000Z`) + days * 86400000).toISOString().slice(0, 10);
+}
+
+function demoItem(
+  id: string,
+  description: string,
+  quantity: number,
+  unitPricePaise: number,
+  taxRatePercent: number,
+): InvoiceItemDto {
+  const lineSubtotalPaise = Math.round(quantity * unitPricePaise);
+  const lineTaxPaise = Math.round((quantity * unitPricePaise * taxRatePercent) / 100);
+  return {
+    id,
+    description,
+    quantity,
+    unitPricePaise,
+    taxRatePercent,
+    lineSubtotalPaise,
+    lineTaxPaise,
+    lineTotalPaise: lineSubtotalPaise + lineTaxPaise,
+  };
+}
+
+function createDemoBilling(now: Date): { invoices: InvoiceSeedRecord[]; paymentReceipts: PaymentReceiptSeedRecord[] } {
+  const today = kolkataToday(now);
+  const stamp = (offsetDays: number) => `${addDays(today, offsetDays)}T04:30:00.000Z`;
+  const invoicePaid = '70000000-0000-4000-a000-000000000001';
+  const invoicePartPaid = '70000000-0000-4000-a000-000000000002';
+  const invoiceOverdue = '70000000-0000-4000-a000-000000000003';
+  const invoiceDraft = '70000000-0000-4000-a000-000000000004';
+
+  return {
+    invoices: [
+      {
+        id: invoicePaid,
+        code: 'INV-0001001',
+        clientId: '10000000-0000-4000-a000-000000000001',
+        assignmentId: null,
+        issueDate: addDays(today, -75),
+        dueDate: addDays(today, -62),
+        status: 'paid',
+        notes: null,
+        issuedAt: stamp(-75),
+        voidReason: null,
+        voidedAt: null,
+        items: [demoItem('72000000-0000-4000-a000-000000000001', 'Monthly bookkeeping and accounts', 1, 2500000, 18)],
+        createdAt: stamp(-75),
+        updatedAt: stamp(-60),
+      },
+      {
+        id: invoicePartPaid,
+        code: 'INV-0001002',
+        clientId: '10000000-0000-4000-a000-000000000001',
+        assignmentId: '30000000-0000-4000-a000-000000000001',
+        issueDate: addDays(today, -20),
+        dueDate: addDays(today, 10),
+        status: 'part_paid',
+        notes: 'Quarterly GST compliance, billed in two parts.',
+        issuedAt: stamp(-20),
+        voidReason: null,
+        voidedAt: null,
+        items: [
+          demoItem('72000000-0000-4000-a000-000000000002', 'GST return filing', 3, 800000, 18),
+          demoItem('72000000-0000-4000-a000-000000000003', 'GST reconciliation review', 1.5, 1200000, 18),
+        ],
+        createdAt: stamp(-20),
+        updatedAt: stamp(-5),
+      },
+      {
+        id: invoiceOverdue,
+        code: 'INV-0001003',
+        clientId: '10000000-0000-4000-a000-000000000003',
+        assignmentId: null,
+        issueDate: addDays(today, -45),
+        dueDate: addDays(today, -18),
+        status: 'issued',
+        notes: null,
+        issuedAt: stamp(-45),
+        voidReason: null,
+        voidedAt: null,
+        items: [demoItem('72000000-0000-4000-a000-000000000004', 'TDS return preparation', 1, 1500000, 18)],
+        createdAt: stamp(-45),
+        updatedAt: stamp(-45),
+      },
+      {
+        id: invoiceDraft,
+        code: 'INV-0001004',
+        clientId: '10000000-0000-4000-a000-000000000002',
+        assignmentId: '30000000-0000-4000-a000-000000000002',
+        issueDate: addDays(today, -2),
+        dueDate: addDays(today, 13),
+        status: 'draft',
+        notes: null,
+        issuedAt: null,
+        voidReason: null,
+        voidedAt: null,
+        items: [demoItem('72000000-0000-4000-a000-000000000005', 'Internal audit fieldwork', 1, 4000000, 18)],
+        createdAt: stamp(-2),
+        updatedAt: stamp(-2),
+      },
+    ],
+    paymentReceipts: [
+      {
+        id: '71000000-0000-4000-a000-000000000001',
+        code: 'RCT-0001001',
+        clientId: '10000000-0000-4000-a000-000000000001',
+        receivedOn: addDays(today, -15),
+        amountPaise: 4000000,
+        method: 'bank_transfer',
+        reference: 'NEFT-AST-01001',
+        notes: 'Settles INV-0001001 and part of INV-0001002.',
+        status: 'received',
+        voidReason: null,
+        voidedAt: null,
+        allocations: [
+          { invoiceId: invoicePaid, amountPaise: 2950000 },
+          { invoiceId: invoicePartPaid, amountPaise: 1050000 },
+        ],
+        createdAt: stamp(-15),
+      },
+      {
+        id: '71000000-0000-4000-a000-000000000002',
+        code: 'RCT-0001002',
+        clientId: '10000000-0000-4000-a000-000000000001',
+        receivedOn: addDays(today, -5),
+        amountPaise: 1000000,
+        method: 'upi',
+        reference: null,
+        notes: null,
+        status: 'received',
+        voidReason: null,
+        voidedAt: null,
+        allocations: [{ invoiceId: invoicePartPaid, amountPaise: 600000 }],
+        createdAt: stamp(-5),
+      },
+    ],
+  };
+}
+
+export function createDemoSeed(now: Date = new Date()): DemoSeed {
+  const billing = createDemoBilling(now);
   return {
     employees: [
       { id: DEMO_ACTOR_IDS.founder, name: 'S. Narayanan', role: 'founder', reportsToId: null, active: true, email: 'demo.founder@sn-demo.local' },
@@ -451,5 +595,7 @@ export function createDemoSeed(): DemoSeed {
         createdAt: '2026-10-28T10:00:00.000Z',
       },
     ],
+    invoices: billing.invoices,
+    paymentReceipts: billing.paymentReceipts,
   };
 }
