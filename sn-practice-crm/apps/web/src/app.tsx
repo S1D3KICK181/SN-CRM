@@ -234,6 +234,8 @@ function AuthenticatedApp({
     recordPayment,
     voidBill,
     voidPayment,
+    applyCredit,
+    removeCredit,
   } = useBilling(role);
   const [clients, setClients] = useState<ClientRecord[]>(CLIENTS);
 
@@ -617,7 +619,7 @@ function AuthenticatedApp({
           billingLoading={billingLoading}
           billingError={billingError ? billingError.message : null}
           onRetryBilling={retryBilling}
-          billingActions={{ recordBill, recordPayment, voidBill, voidPayment }}
+          billingActions={{ recordBill, recordPayment, voidBill, voidPayment, applyCredit, removeCredit }}
           assignmentsLoading={assignmentsLoading}
           assignmentsError={assignmentsError ? assignmentsError.message : null}
           onRetryAssignments={refreshAssignments}
@@ -1313,6 +1315,8 @@ const NO_BILLING_ACTIONS: BillingActions = {
   recordPayment: billingUnavailable,
   voidBill: billingUnavailable,
   voidPayment: billingUnavailable,
+  applyCredit: billingUnavailable,
+  removeCredit: billingUnavailable,
 };
 
 export function ModuleWorkspace({

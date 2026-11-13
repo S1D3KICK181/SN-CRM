@@ -1,6 +1,6 @@
 import type { PaymentMethod, RecordPaymentInput, RecordVyaparBillInput } from '@sn/contracts';
 import { sanitizeBillingError } from '../../api/billing-types';
-import { formatINR, type InvoiceRecord } from '../../data';
+import { formatINR, type InvoiceRecord, type ReceiptRecord } from '../../data';
 import { parseRupeeToPaise } from '../engagements/engagement-draft-form-model';
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -102,11 +102,14 @@ export function validateBillForm(values: BillFormValues, today: string): BillFor
   return errors;
 }
 
-/** Call only after validateBillForm returned no errors. */
-export function toRecordBillInput(values: BillFormValues): RecordVyaparBillInput {
+/**
+ * Call only after validateBillForm returned no errors. Pass `applyCredit` only when the
+ * credit checkbox was shown; it is left out of the payload otherwise.
+ */
+export function toRecordBillInput(values: BillFormValues, applyCredit?: boolean): RecordVyaparBillInput {
   const amountPaise = parseRupeeToPaise(values.amount);
   if (amountPaise === null || amountPaise <= 0) throw new Error('invalid bill amount');
-  return {
+  const input: RecordVyaparBillInput = {
     clientId: values.clientId,
     vyaparBillNumber: values.vyaparBillNumber.trim(),
     billDate: values.billDate,
@@ -114,6 +117,57 @@ export function toRecordBillInput(values: BillFormValues): RecordVyaparBillInput
     amountPaise,
     description: values.description.trim(),
   };
+  return applyCredit === undefined ? input : { ...input, applyCredit };
+}
+
+// ---------------------------------------------------------------------------
+// Client credit
+// ---------------------------------------------------------------------------
+
+/**
+ * Credit each client holds, in paise: the sum of `unallocatedPaise` over their Received
+ * receipts. Clients with no credit are left out.
+ */
+export function creditByClient(receipts: readonly ReceiptRecord[]): Map<string, number> {
+  const credit = new Map<string, number>();
+  for (const receipt of receipts) {
+    if (receipt.status !== 'Received') continue;
+    const kept = receipt.unallocatedPaise ?? 0;
+    if (kept <= 0) continue;
+    credit.set(receipt.clientId, (credit.get(receipt.clientId) ?? 0) + kept);
+  }
+  return credit;
+}
+
+/** Text under the payment amount when it is more than the bill needs; null otherwise. */
+export function paymentCreditPreview(amountText: string, pendingPaise: number, clientName: string): string | null {
+  const paise = parseRupeeToPaise(amountText);
+  if (paise === null || paise <= pendingPaise) return null;
+  return `${formatINR(pendingPaise / 100)} pays this bill in full. The extra ${formatINR(
+    (paise - pendingPaise) / 100,
+  )} is kept as credit for ${clientName}.`;
+}
+
+/**
+ * Warning shown when cancelling a payment whose credit is used on bills; null when none is.
+ * Bills are named by their Vyapar number where the bill is known.
+ */
+export function creditUsedWarning(
+  receipt: Pick<ReceiptRecord, 'allocations'> | undefined,
+  invoices: readonly Pick<InvoiceRecord, 'id' | 'vyaparBillNumber' | 'invoiceNumber'>[],
+): string | null {
+  const used = (receipt?.allocations ?? []).filter((allocation) => allocation.source === 'credit');
+  if (used.length === 0) return null;
+  const totalPaise = used.reduce((sum, allocation) => sum + Math.round(allocation.amount * 100), 0);
+  const bills: string[] = [];
+  for (const allocation of used) {
+    const invoice = invoices.find((candidate) => candidate.id === allocation.invoiceId);
+    const label = invoice ? billLabel(invoice) : allocation.invoiceNumber;
+    if (!bills.includes(label)) bills.push(label);
+  }
+  return `${formatINR(totalPaise / 100)} of this payment is used as credit on ${bills.join(
+    ', ',
+  )}. Those bills will show it as pending again.`;
 }
 
 // ---------------------------------------------------------------------------
@@ -141,16 +195,13 @@ export function initialPaymentValues(today: string, pendingPaise: number): Payme
 
 export function validatePaymentForm(
   values: PaymentFormValues,
-  options: { today: string; pendingPaise: number },
+  options: { today: string },
 ): PaymentFormErrors {
   const errors: PaymentFormErrors = {};
   if (!isRealIsoDate(values.receivedOn)) errors.receivedOn = 'Enter the date received.';
   else if (values.receivedOn > options.today) errors.receivedOn = 'The payment date cannot be in the future.';
   const paise = parseRupeeToPaise(values.amount);
   if (paise === null || paise <= 0) errors.amount = AMOUNT_ERROR;
-  else if (paise > options.pendingPaise) {
-    errors.amount = `The amount is more than the ${formatINR(options.pendingPaise / 100)} still pending.`;
-  }
   if (!values.method) errors.method = 'Choose how it was paid.';
   if (values.reference.trim().length > 100) errors.reference = 'Use at most 100 characters.';
   if (values.notes.trim().length > 500) errors.notes = 'Use at most 500 characters.';
@@ -207,9 +258,10 @@ export function nextSaveAttempt(
 
 const SERVER_CODE_MESSAGES: Readonly<Record<string, string>> = {
   duplicate_vyapar_bill: 'This Vyapar bill number is already recorded for this financial year.',
-  payment_exceeds_balance: 'The payment is more than what is still pending on this bill.',
   bill_not_open: 'This bill is already paid or cancelled.',
-  bill_has_payments: 'Cancel the payments on this bill first.',
+  bill_has_payments: 'Cancel the payments and remove any credit on this bill first.',
+  no_credit_available: 'This client has no credit to use.',
+  not_credit_allocation: 'This is a direct payment. Cancel the payment instead.',
   already_voided: 'This record is already cancelled.',
 };
 

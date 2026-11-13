@@ -656,6 +656,7 @@ export type InvoiceStatus = (typeof INVOICE_STATUSES)[number];
 export const PAYMENT_METHODS = ['cash', 'bank_transfer', 'cheque', 'upi', 'card', 'other'] as const;
 export type PaymentMethod = (typeof PAYMENT_METHODS)[number];
 export type PaymentReceiptStatus = 'received' | 'voided';
+export type PaymentAllocationSource = 'payment' | 'credit';
 
 export interface InvoiceItemDto {
   readonly id: string;
@@ -670,6 +671,8 @@ export interface InvoiceItemDto {
 
 /** One allocation onto an invoice. */
 export interface InvoicePaymentDto {
+  readonly allocationId: string;
+  readonly source: PaymentAllocationSource;
   readonly receiptId: string;
   readonly receiptCode: string;
   readonly receivedOn: string; // YYYY-MM-DD
@@ -707,6 +710,8 @@ export interface InvoiceDto {
 }
 
 export interface PaymentAllocationDto {
+  readonly allocationId: string;
+  readonly source: PaymentAllocationSource;
   readonly invoiceId: string;
   readonly invoiceCode: string;
   readonly amountPaise: number;
@@ -741,6 +746,7 @@ export interface RecordVyaparBillInput {
   readonly dueDate: string; // YYYY-MM-DD
   readonly amountPaise: number; // positive safe integer
   readonly description: string;
+  readonly applyCredit?: boolean; // use the client's credit on the new bill (default false)
 }
 
 export interface RecordPaymentInput {
@@ -755,3 +761,7 @@ export interface RecordPaymentInput {
 export interface VoidFeeRecordInput {
   readonly reason: string;
 }
+
+// --- Client credit (FEE-02a) ---
+
+export type ApplyCreditInput = Record<string, never>;

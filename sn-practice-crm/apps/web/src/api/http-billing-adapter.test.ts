@@ -42,6 +42,8 @@ const invoice: InvoiceDto = {
   ],
   payments: [
     {
+      allocationId: '73000000-0000-4000-a000-000000000001',
+      source: 'payment',
       receiptId: '71000000-0000-4000-a000-000000000001',
       receiptCode: 'RCT-0001001',
       receivedOn: '2026-10-29',
@@ -70,7 +72,13 @@ const receipt: PaymentReceiptDto = {
   allocatedPaise: 3000000,
   unallocatedPaise: 1000000,
   allocations: [
-    { invoiceId: '70000000-0000-4000-a000-000000000002', invoiceCode: 'INV-0001002', amountPaise: 3000000 },
+    {
+      allocationId: '73000000-0000-4000-a000-000000000001',
+      source: 'payment',
+      invoiceId: '70000000-0000-4000-a000-000000000002',
+      invoiceCode: 'INV-0001002',
+      amountPaise: 3000000,
+    },
   ],
   createdAt: '2026-10-29T04:30:00.000Z',
 };
@@ -351,7 +359,7 @@ describe('HttpBillingAdapter mutations', () => {
     expect(fetchFn).not.toHaveBeenCalled();
   });
 
-  it.each(['duplicate_vyapar_bill', 'payment_exceeds_balance', 'bill_not_open', 'bill_has_payments', 'already_voided'])(
+  it.each(['duplicate_vyapar_bill', 'bill_not_open', 'bill_has_payments', 'already_voided'])(
     'keeps the %s server code on a 409 and hides the server text',
     async (code) => {
       const fetchFn = vi.fn().mockResolvedValue(
@@ -378,5 +386,80 @@ describe('HttpBillingAdapter mutations', () => {
         .catch((err: unknown) => err);
       expect((caught as BillingOperationError).code).toBe(code);
     }
+  });
+
+  it('POSTs apply-credit and the credit removal with an empty body, the key header and the actor', async () => {
+    const withCredit = {
+      ...invoice,
+      payments: [
+        ...invoice.payments,
+        { ...invoice.payments[0]!, allocationId: '73000000-0000-4000-a000-0000000000c1', source: 'credit' as const },
+      ],
+    };
+    const fetchApply = vi.fn().mockResolvedValue(created(withCredit, 200));
+    const applied = await new HttpBillingAdapter({ fetchFn: fetchApply }).applyCredit('staff', invoice.id, 'key-credit-1');
+    const [applyUrl, applyInit] = fetchApply.mock.calls[0] as [string, RequestInit];
+    expect(applyUrl).toBe(`/api/v1/invoices/${invoice.id}/apply-credit`);
+    expect(applyInit.method).toBe('POST');
+    const applyHeaders = new Headers(applyInit.headers);
+    expect(applyHeaders.get('idempotency-key')).toBe('key-credit-1');
+    expect(applyHeaders.get('content-type')).toBe('application/json');
+    expect(applyHeaders.get('x-demo-user-id')).toBe(ROLE_TO_DEMO_ACTOR_ID.staff);
+    expect(JSON.parse(String(applyInit.body))).toEqual({});
+    expect(applied.payments.map((payment) => payment.source)).toEqual(['payment', 'credit']);
+
+    const allocationId = '73000000-0000-4000-a000-0000000000c1';
+    const fetchRemove = vi.fn().mockResolvedValue(created(invoice, 200));
+    await new HttpBillingAdapter({ fetchFn: fetchRemove }).removeCreditAllocation('manager', allocationId, 'key-credit-2');
+    const [removeUrl, removeInit] = fetchRemove.mock.calls[0] as [string, RequestInit];
+    expect(removeUrl).toBe(`/api/v1/payment-allocations/${allocationId}/remove`);
+    expect(removeInit.method).toBe('POST');
+    const removeHeaders = new Headers(removeInit.headers);
+    expect(removeHeaders.get('idempotency-key')).toBe('key-credit-2');
+    expect(removeHeaders.get('x-demo-user-id')).toBe(ROLE_TO_DEMO_ACTOR_ID.manager);
+    expect(JSON.parse(String(removeInit.body))).toEqual({});
+  });
+
+  it('refuses a blank key on the credit calls without calling fetch', async () => {
+    const fetchFn = vi.fn();
+    const adapter = new HttpBillingAdapter({ fetchFn });
+    await expect(adapter.applyCredit('staff', invoice.id, ' ')).rejects.toBeInstanceOf(Error);
+    await expect(adapter.removeCreditAllocation('manager', invoice.id, '')).rejects.toBeInstanceOf(Error);
+    expect(fetchFn).not.toHaveBeenCalled();
+  });
+
+  it('sends applyCredit with the bill when it is set', async () => {
+    const fetchFn = vi.fn().mockResolvedValue(created(invoice));
+    await new HttpBillingAdapter({ fetchFn }).recordVyaparBill('founder', { ...billInput, applyCredit: true }, 'key-bill-2');
+    expect(JSON.parse(String((fetchFn.mock.calls[0] as [string, RequestInit])[1].body))).toEqual({
+      ...billInput,
+      applyCredit: true,
+    });
+  });
+
+  it.each(['no_credit_available', 'not_credit_allocation', 'bill_not_open'])(
+    'keeps the %s server code on a 422 from the credit calls',
+    async (code) => {
+      const fetchFn = vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ error: { code, message: 'internal detail' } }), {
+          status: 422,
+          headers: { 'content-type': 'application/json' },
+        }),
+      );
+      const caught = await new HttpBillingAdapter({ fetchFn })
+        .applyCredit('staff', invoice.id, 'key-1')
+        .catch((err: unknown) => err);
+      expect((caught as BillingOperationError).serverCode).toBe(code);
+      expect((caught as BillingOperationError).status).toBe(422);
+      expect((caught as BillingOperationError).message).not.toContain('internal detail');
+    },
+  );
+
+  it('rejects a payment entry with an unknown source', async () => {
+    const bad = { ...invoice, payments: [{ ...invoice.payments[0]!, source: 'gift' }] };
+    const fetchFn = vi.fn().mockResolvedValue(created(bad, 200));
+    await expect(new HttpBillingAdapter({ fetchFn }).applyCredit('staff', invoice.id, 'key-1')).rejects.toBeInstanceOf(
+      BillingOperationError,
+    );
   });
 });

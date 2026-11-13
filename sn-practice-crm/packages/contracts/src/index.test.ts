@@ -36,6 +36,8 @@ import {
   type InvoiceDto,
   type InvoiceStatus,
   type PaymentMethod,
+  type PaymentAllocationSource,
+  type ApplyCreditInput,
   type PaymentReceiptDto,
   type PaymentReceiptStatus,
   type RecordVyaparBillInput,
@@ -489,5 +491,17 @@ describe('Vyapar bill and payment contracts (FEE-01a)', () => {
     expectTypeOf<RecordPaymentInput['reference']>().toEqualTypeOf<string | null | undefined>();
     expectTypeOf<RecordPaymentInput['notes']>().toEqualTypeOf<string | null | undefined>();
     expectTypeOf<VoidFeeRecordInput['reason']>().toEqualTypeOf<string>();
+  });
+});
+
+describe('Client credit contracts (FEE-02a)', () => {
+  it('keeps the allocation source and credit input shapes aligned with the brief', () => {
+    expectTypeOf<PaymentAllocationSource>().toEqualTypeOf<'payment' | 'credit'>();
+    expectTypeOf<InvoiceDto['payments'][number]['allocationId']>().toEqualTypeOf<string>();
+    expectTypeOf<InvoiceDto['payments'][number]['source']>().toEqualTypeOf<PaymentAllocationSource>();
+    expectTypeOf<PaymentReceiptDto['allocations'][number]['allocationId']>().toEqualTypeOf<string>();
+    expectTypeOf<PaymentReceiptDto['allocations'][number]['source']>().toEqualTypeOf<PaymentAllocationSource>();
+    expectTypeOf<RecordVyaparBillInput['applyCredit']>().toEqualTypeOf<boolean | undefined>();
+    expectTypeOf<ApplyCreditInput>().toEqualTypeOf<Record<string, never>>();
   });
 });

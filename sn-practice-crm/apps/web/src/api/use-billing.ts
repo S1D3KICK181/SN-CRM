@@ -41,6 +41,8 @@ export interface UseBillingResult {
     input: VoidFeeRecordInput,
     idempotencyKey: string,
   ) => Promise<PaymentReceiptDto>;
+  readonly applyCredit: (invoiceId: string, idempotencyKey: string) => Promise<InvoiceDto>;
+  readonly removeCredit: (allocationId: string, idempotencyKey: string) => Promise<InvoiceDto>;
 }
 
 interface BillingSnapshot {
@@ -190,7 +192,15 @@ export function useBilling(role: CompanyRole, options: UseBillingOptions = {}): 
       mutate(() => port.voidPaymentReceipt(role, receiptId, input, key)),
     [mutate, port, role],
   );
-  const actions = { retry, recordBill, recordPayment, voidBill, voidPayment };
+  const applyCredit = useCallback(
+    (invoiceId: string, key: string) => mutate(() => port.applyCredit(role, invoiceId, key)),
+    [mutate, port, role],
+  );
+  const removeCredit = useCallback(
+    (allocationId: string, key: string) => mutate(() => port.removeCreditAllocation(role, allocationId, key)),
+    [mutate, port, role],
+  );
+  const actions = { retry, recordBill, recordPayment, voidBill, voidPayment, applyCredit, removeCredit };
 
   if (!allowed) {
     return {

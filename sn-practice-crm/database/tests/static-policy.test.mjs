@@ -810,3 +810,26 @@ test('migration 0009 tracks Vyapar bills with a per-financial-year unique number
   );
   assert.doesNotMatch(sql0009, /create policy [a-z_]+ on public\.operation_receipts\s+for (update|delete)/i, 'still no update or delete policy');
 });
+
+test('migration 0010 adds an immutable allocation source for client credit without new policies', () => {
+  const migration0010Path = new URL('../../supabase/migrations/20261113140000_fee02_client_credit.sql', import.meta.url);
+  const sql0010 = readMigration(migration0010Path, 'Migration 0010');
+
+  // 1. Source column: not null, defaults to a direct payment, limited to payment or credit
+  expectSql(sql0010, /alter table public\.payment_allocations\s+add column source text not null default 'payment';/i, 'source column defaults to payment');
+  expectSql(sql0010, /check \(source in \('payment', 'credit'\)\)/i, 'source check constraint');
+
+  // 2. Allocation guard keeps its FEE-01a rules and makes source immutable
+  const guard = functionBlock(sql0010, 'guard_payment_allocation_write');
+  assert.match(guard, /security definer/i);
+  assert.match(guard, /set search_path = public, pg_temp/i);
+  assert.match(guard, /if tg_op <> 'INSERT' then\s+raise exception 'Only the Founder or Manager may allocate payments\.' using errcode = '42501';/i);
+  assert.match(guard, /public\.user_fee_visible\(v_actor, pr\.client_id\)/i);
+  assert.match(guard, /Payment allocations exceed the Receipt amount\./i);
+  assert.match(guard, /Payment allocations exceed the Invoice balance\./i);
+  assert.match(guard, /new\.source is distinct from old\.source/i);
+  assert.match(guard, /Allocation source is immutable\./i);
+
+  // 3. No policy changes: staff insert and management-only delete stay as FEE-01a left them
+  assert.doesNotMatch(sql0010, /\b(create|drop|alter) policy\b/i, 'no policy changes');
+});

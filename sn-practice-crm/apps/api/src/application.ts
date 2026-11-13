@@ -11,6 +11,7 @@ import type {
   CreateWorkItemInput,
   ActivateEngagementInput,
   AmendActiveEngagementInput,
+  ApplyCreditInput,
   CreateEngagementDraftInput,
   EndEngagementInput,
   ReviseEngagementDraftInput,
@@ -148,6 +149,7 @@ export class CrmApplication {
         dueDate: input.dueDate,
         amountPaise: input.amountPaise,
         description: input.description.trim(),
+        applyCredit: input.applyCredit === true,
         idempotencyKey: normalizeIdempotencyKey(idempotencyKey),
       },
     );
@@ -199,6 +201,34 @@ export class CrmApplication {
     return this.repository.voidPaymentReceipt(
       { actorId: actor.id },
       { id: receiptId, reason: input.reason.trim(), idempotencyKey: normalizeIdempotencyKey(idempotencyKey) },
+    );
+  }
+
+  // --- Client credit (FEE-02a) ---
+
+  async applyCredit(
+    actor: SessionActor,
+    invoiceId: string,
+    _input: ApplyCreditInput,
+    idempotencyKey: string,
+  ): Promise<InvoiceDto> {
+    requireAuthority({ action: 'billing.record_payment', actor: asActor(actor) });
+    return this.repository.applyCredit(
+      { actorId: actor.id },
+      { invoiceId, idempotencyKey: normalizeIdempotencyKey(idempotencyKey) },
+    );
+  }
+
+  async removeCreditAllocation(
+    actor: SessionActor,
+    allocationId: string,
+    _input: ApplyCreditInput,
+    idempotencyKey: string,
+  ): Promise<InvoiceDto> {
+    requireAuthority({ action: 'billing.void', actor: asActor(actor) });
+    return this.repository.removeCreditAllocation(
+      { actorId: actor.id },
+      { allocationId, idempotencyKey: normalizeIdempotencyKey(idempotencyKey) },
     );
   }
 

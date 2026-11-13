@@ -369,7 +369,9 @@ describe('HTTP API', () => {
         allocatedPaise: 400000,
         unallocatedPaise: 0,
       });
-      expect(payment.body.data.allocations).toEqual([{ invoiceId: bill.id, invoiceCode: bill.code, amountPaise: 400000 }]);
+      expect(payment.body.data.allocations).toEqual([
+        { allocationId: expect.any(String), source: 'payment', invoiceId: bill.id, invoiceCode: bill.code, amountPaise: 400000 },
+      ]);
 
       const invoices = async () =>
         (await (await fetch(`${baseUrl}/api/v1/invoices`, { headers: { 'x-demo-user-id': DEMO_ACTOR_IDS.founder } })).json()).data as Array<{ id: string; status: string }>;
@@ -421,13 +423,10 @@ describe('HTTP API', () => {
       const unknown = await send(baseUrl, '/api/v1/payment-receipts', paymentBody('70000000-0000-4000-a000-0000000000ff'));
       expect(unknown.status).toBe(404);
       expect(unknown.body.error.message).toBe('Invoice was not found.');
+      // An overpayment is accepted: the receipt keeps the full amount and the extra stays as credit
       const over = await send(baseUrl, '/api/v1/payment-receipts', paymentBody(bill.id, { amountPaise: 1000001 }));
-      expect(over.status).toBe(422);
-      expect(over.body.error).toMatchObject({
-        code: 'payment_exceeds_balance',
-        message: 'The payment is more than the ₹10,000 still pending on this bill.',
-      });
-      await send(baseUrl, '/api/v1/payment-receipts', paymentBody(bill.id, { amountPaise: 1000000 }));
+      expect(over.status).toBe(201);
+      expect(over.body.data).toMatchObject({ amountPaise: 1000001, allocatedPaise: 1000000, unallocatedPaise: 1 });
       const closed = await send(baseUrl, '/api/v1/payment-receipts', paymentBody(bill.id, { amountPaise: 1 }));
       expect(closed.status).toBe(422);
       expect(closed.body.error).toMatchObject({ code: 'bill_not_open', message: 'This bill is already paid or cancelled.' });
@@ -439,7 +438,7 @@ describe('HTTP API', () => {
       const payment = (await send(baseUrl, '/api/v1/payment-receipts', paymentBody(bill.id))).body.data;
       const blocked = await send(baseUrl, `/api/v1/invoices/${bill.id}/void`, { reason: 'Entered twice' });
       expect(blocked.status).toBe(422);
-      expect(blocked.body.error).toMatchObject({ code: 'bill_has_payments', message: 'Cancel the payments on this bill first.' });
+      expect(blocked.body.error).toMatchObject({ code: 'bill_has_payments', message: 'Cancel the payments and remove any credit on this bill first.' });
       await send(baseUrl, `/api/v1/payment-receipts/${payment.id}/void`, { reason: 'Refunded' });
       const voided = await send(baseUrl, `/api/v1/invoices/${bill.id}/void`, { reason: 'Entered twice' }, { key: 'void-key' });
       expect(voided.status).toBe(200);
@@ -519,6 +518,134 @@ describe('HTTP API', () => {
         const response = await fetch(`${baseUrl}${path}`, { headers: { 'x-demo-user-id': DEMO_ACTOR_IDS.trainee } });
         expect(response.status).toBe(403);
       }
+    });
+
+    // Client 2 overpays a 10,000 bill with 15,000 (5,000 credit) and has a second open 8,000 bill
+    async function creditFixture(baseUrl: string) {
+      const first = (await send(baseUrl, '/api/v1/invoices', billBody())).body.data;
+      const receipt = (await send(baseUrl, '/api/v1/payment-receipts', paymentBody(first.id, { amountPaise: 1500000 }))).body.data;
+      const second = (await send(baseUrl, '/api/v1/invoices', billBody({ vyaparBillNumber: 'VYP-502', amountPaise: 800000 }))).body.data;
+      return { first, receipt, second };
+    }
+
+    it('applies client credit to a bill with 200, replays it, and then reports no credit', async () => {
+      const baseUrl = await startServer();
+      const { receipt, second } = await creditFixture(baseUrl);
+      expect(receipt).toMatchObject({ amountPaise: 1500000, allocatedPaise: 1000000, unallocatedPaise: 500000 });
+
+      const applied = await send(baseUrl, `/api/v1/invoices/${second.id}/apply-credit`, {}, { key: 'apply-key' });
+      expect(applied.status).toBe(200);
+      expect(applied.body.data).toMatchObject({ id: second.id, status: 'part_paid', amountReceivedPaise: 500000, balancePaise: 300000 });
+      expect(applied.body.data.payments).toEqual([
+        expect.objectContaining({ allocationId: expect.any(String), source: 'credit', receiptId: receipt.id, amountPaise: 500000 }),
+      ]);
+      const replay = await send(baseUrl, `/api/v1/invoices/${second.id}/apply-credit`, {}, { key: 'apply-key' });
+      expect(replay.status).toBe(200);
+      expect(replay.body.data).toEqual(applied.body.data);
+
+      const none = await send(baseUrl, `/api/v1/invoices/${second.id}/apply-credit`, {});
+      expect(none.status).toBe(422);
+      expect(none.body.error).toMatchObject({ code: 'no_credit_available', message: 'This client has no credit to use.' });
+    });
+
+    it('validates the credit routes: Idempotency-Key, empty body, identifiers, unknown and closed bills', async () => {
+      const baseUrl = await startServer();
+      const { first, second } = await creditFixture(baseUrl);
+      const noKey = await send(baseUrl, `/api/v1/invoices/${second.id}/apply-credit`, {}, { key: null });
+      expect(noKey.status).toBe(400);
+      expect(noKey.body.error.code).toBe('idempotency_key_required');
+      const noKeyRemove = await send(baseUrl, '/api/v1/payment-allocations/73000000-0000-4000-a000-000000000001/remove', {}, { key: null });
+      expect(noKeyRemove.status).toBe(400);
+      expect(noKeyRemove.body.error.code).toBe('idempotency_key_required');
+
+      for (const path of [`/api/v1/invoices/${second.id}/apply-credit`, '/api/v1/payment-allocations/73000000-0000-4000-a000-000000000001/remove']) {
+        const extra = await send(baseUrl, path, { reason: 'not accepted' });
+        expect(extra.status, path).toBe(422);
+        expect(extra.body.error.code).toBe('validation_failed');
+      }
+      const badId = await send(baseUrl, '/api/v1/invoices/not-a-uuid/apply-credit', {});
+      expect(badId.status).toBe(422);
+      expect(badId.body.error.code).toBe('invalid_identifier');
+      const badAllocation = await send(baseUrl, '/api/v1/payment-allocations/not-a-uuid/remove', {});
+      expect(badAllocation.status).toBe(422);
+      expect(badAllocation.body.error.code).toBe('invalid_identifier');
+
+      const missing = await send(baseUrl, '/api/v1/invoices/70000000-0000-4000-a000-0000000000ff/apply-credit', {});
+      expect(missing.status).toBe(404);
+      expect(missing.body.error.message).toBe('Invoice was not found.');
+      const closed = await send(baseUrl, `/api/v1/invoices/${first.id}/apply-credit`, {});
+      expect(closed.status).toBe(422);
+      expect(closed.body.error).toMatchObject({ code: 'bill_not_open', message: 'This bill is already paid or cancelled.' });
+      const missingAllocation = await send(baseUrl, '/api/v1/payment-allocations/73000000-0000-4000-a000-0000000000ff/remove', {});
+      expect(missingAllocation.status).toBe(404);
+      expect(missingAllocation.body.error.message).toBe('Payment allocation was not found.');
+    });
+
+    it('uses credit when recording a bill with applyCredit and validates the flag', async () => {
+      const baseUrl = await startServer();
+      await creditFixture(baseUrl);
+      const bad = await send(baseUrl, '/api/v1/invoices', billBody({ vyaparBillNumber: 'VYP-503', applyCredit: 'yes' }));
+      expect(bad.status).toBe(422);
+      const used = await send(baseUrl, '/api/v1/invoices', billBody({ vyaparBillNumber: 'VYP-504', amountPaise: 800000, applyCredit: true }));
+      expect(used.status).toBe(201);
+      expect(used.body.data).toMatchObject({ status: 'part_paid', amountReceivedPaise: 500000 });
+      expect(used.body.data.payments[0]).toMatchObject({ source: 'credit' });
+      const plain = await send(baseUrl, '/api/v1/invoices', billBody({ vyaparBillNumber: 'VYP-505', applyCredit: false }));
+      expect(plain.body.data).toMatchObject({ status: 'issued', payments: [] });
+    });
+
+    it('removes credit from a bill, refuses a direct payment, and then lets the bill be cancelled', async () => {
+      const baseUrl = await startServer();
+      const { receipt, second } = await creditFixture(baseUrl);
+      const direct = await send(baseUrl, `/api/v1/payment-allocations/${receipt.allocations[0].allocationId}/remove`, {});
+      expect(direct.status).toBe(422);
+      expect(direct.body.error).toMatchObject({
+        code: 'not_credit_allocation',
+        message: 'This is a direct payment. Cancel the payment instead.',
+      });
+
+      const applied = (await send(baseUrl, `/api/v1/invoices/${second.id}/apply-credit`, {})).body.data;
+      const blocked = await send(baseUrl, `/api/v1/invoices/${second.id}/void`, { reason: 'Entered twice' });
+      expect(blocked.status).toBe(422);
+      expect(blocked.body.error.code).toBe('bill_has_payments');
+
+      const removed = await send(baseUrl, `/api/v1/payment-allocations/${applied.payments[0].allocationId}/remove`, {}, { key: 'remove-key' });
+      expect(removed.status).toBe(200);
+      expect(removed.body.data).toMatchObject({ id: second.id, status: 'issued', amountReceivedPaise: 0, payments: [] });
+      const replay = await send(baseUrl, `/api/v1/payment-allocations/${applied.payments[0].allocationId}/remove`, {}, { key: 'remove-key' });
+      expect(replay.body.data).toEqual(removed.body.data);
+
+      const receipts = await (await fetch(`${baseUrl}/api/v1/payment-receipts`, { headers: { 'x-demo-user-id': DEMO_ACTOR_IDS.founder } })).json();
+      expect(receipts.data.find((candidate: { id: string }) => candidate.id === receipt.id).unallocatedPaise).toBe(500000);
+      const voided = await send(baseUrl, `/api/v1/invoices/${second.id}/void`, { reason: 'Entered twice' });
+      expect(voided.status).toBe(200);
+    });
+
+    it.each([
+      ['founder', DEMO_ACTOR_IDS.founder, 200],
+      ['manager', DEMO_ACTOR_IDS.manager, 200],
+      ['staff looking after the client', DEMO_ACTOR_IDS.staff, 200],
+      ['senior_staff not looking after the client', DEMO_ACTOR_IDS.senior, 404],
+      ['trainee', DEMO_ACTOR_IDS.trainee, 403],
+    ] as const)('applies credit for %s with status %i', async (_role, actor, expected) => {
+      const baseUrl = await startServer();
+      const { second } = await creditFixture(baseUrl);
+      const response = await send(baseUrl, `/api/v1/invoices/${second.id}/apply-credit`, {}, { actor });
+      expect(response.status).toBe(expected);
+      if (expected === 403) expect(response.body.error.code).toBe('role_not_permitted');
+    });
+
+    it.each([
+      ['senior_staff', DEMO_ACTOR_IDS.senior],
+      ['staff', DEMO_ACTOR_IDS.staff],
+      ['trainee', DEMO_ACTOR_IDS.trainee],
+    ] as const)('returns 403 for %s removing credit', async (_role, actor) => {
+      const baseUrl = await startServer();
+      const { second } = await creditFixture(baseUrl);
+      const applied = (await send(baseUrl, `/api/v1/invoices/${second.id}/apply-credit`, {})).body.data;
+      const response = await send(baseUrl, `/api/v1/payment-allocations/${applied.payments[0].allocationId}/remove`, {}, { actor });
+      expect(response.status).toBe(403);
+      expect(response.body.error.code).toBe('role_not_permitted');
     });
   });
 

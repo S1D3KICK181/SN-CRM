@@ -16,6 +16,8 @@ type Props = {
   label: string;
   /** Payment amount in paise; shown in the body for a payment. */
   amountPaise?: number;
+  /** Extra warning shown above the reason, such as credit from this payment used on other bills. */
+  warning?: string | null;
   opener?: HTMLElement | null;
   onClose: () => void;
   /** Resolves when cancelled; rejects with a BillingOperationError when not. */
@@ -24,7 +26,7 @@ type Props = {
 
 const focusable = 'button:not([disabled]), textarea:not([disabled])';
 
-export function CancelFeeRecordDialog({ open, kind, label, amountPaise, opener, onClose, onSubmit }: Props) {
+export function CancelFeeRecordDialog({ open, kind, label, amountPaise, warning, opener, onClose, onSubmit }: Props) {
   const [reason, setReason] = useState('');
   const [reasonError, setReasonError] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
@@ -160,6 +162,11 @@ export function CancelFeeRecordDialog({ open, kind, label, amountPaise, opener, 
             ) : reasonError ? (
               <p className="dialog-validation-summary" role="alert">
                 Please correct the highlighted fields.
+              </p>
+            ) : null}
+            {warning ? (
+              <p role="status" style={{ margin: 0, fontSize: 12, color: 'var(--warning)' }}>
+                {warning}
               </p>
             ) : null}
             <div className="field">

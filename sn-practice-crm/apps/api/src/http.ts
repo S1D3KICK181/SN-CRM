@@ -22,6 +22,8 @@ import {
   recordPaymentSchema,
   recordVyaparBillSchema,
   voidFeeRecordSchema,
+  applyCreditSchema,
+  removeCreditSchema,
   generateDueAssignmentsSchema,
   reportingLineSchema,
   updateAssignmentSchema,
@@ -394,6 +396,13 @@ export function createApiServer(application: CrmApplication, options: ApiServerO
         sendData(response, context, allowedOrigins, 200, await application.voidInvoice(actor, invoiceVoidId, body, key));
         return;
       }
+      const invoiceApplyCreditId = routeId(pathname, /^\/api\/v1\/invoices\/([^/]+)\/apply-credit$/);
+      if (request.method === 'POST' && invoiceApplyCreditId) {
+        const key = idempotencyKey(request);
+        const body = await readJson(request, applyCreditSchema);
+        sendData(response, context, allowedOrigins, 200, await application.applyCredit(actor, invoiceApplyCreditId, body, key));
+        return;
+      }
       if (request.method === 'POST' && pathname === '/api/v1/payment-receipts') {
         const key = idempotencyKey(request);
         const body = await readJson(request, recordPaymentSchema);
@@ -405,6 +414,14 @@ export function createApiServer(application: CrmApplication, options: ApiServerO
         const key = idempotencyKey(request);
         const body = await readJson(request, voidFeeRecordSchema);
         sendData(response, context, allowedOrigins, 200, await application.voidPaymentReceipt(actor, receiptVoidId, body, key));
+        return;
+      }
+
+      const allocationRemoveId = routeId(pathname, /^\/api\/v1\/payment-allocations\/([^/]+)\/remove$/);
+      if (request.method === 'POST' && allocationRemoveId) {
+        const key = idempotencyKey(request);
+        const body = await readJson(request, removeCreditSchema);
+        sendData(response, context, allowedOrigins, 200, await application.removeCreditAllocation(actor, allocationRemoveId, body, key));
         return;
       }
 

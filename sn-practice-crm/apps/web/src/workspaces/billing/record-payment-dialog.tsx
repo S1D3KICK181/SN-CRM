@@ -8,6 +8,7 @@ import {
   initialPaymentValues,
   nextSaveAttempt,
   PAYMENT_METHOD_OPTIONS,
+  paymentCreditPreview,
   todayInKolkata,
   toRecordPaymentInput,
   validatePaymentForm,
@@ -103,7 +104,7 @@ export function RecordPaymentDialog({ open, invoice, today: todayOverride, opene
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     if (lock.current) return;
-    const next = validatePaymentForm(values, { today, pendingPaise: invoice.balancePaise });
+    const next = validatePaymentForm(values, { today });
     setErrors(next);
     if (Object.keys(next).length > 0) {
       setFormError(null);
@@ -126,6 +127,7 @@ export function RecordPaymentDialog({ open, invoice, today: todayOverride, opene
     }
   };
 
+  const creditPreview = paymentCreditPreview(values.amount, invoice.balancePaise, invoice.clientName);
   const hasFieldErrors = Object.values(errors).some(Boolean);
   const describedBy = (key: keyof PaymentFormValues, hint: boolean) =>
     [hint ? `payment-${key}-hint` : null, errors[key] ? `payment-${key}-error` : null].filter(Boolean).join(' ') ||
@@ -194,7 +196,7 @@ export function RecordPaymentDialog({ open, invoice, today: todayOverride, opene
               {fieldError('receivedOn')}
             </div>
             <div className="field">
-              <label htmlFor="payment-amount">Amount received (₹)</label>
+              <label htmlFor="payment-amount">Cash received (₹)</label>
               <input
                 id="payment-amount"
                 type="text"
@@ -202,9 +204,14 @@ export function RecordPaymentDialog({ open, invoice, today: todayOverride, opene
                 value={values.amount}
                 disabled={pending}
                 aria-invalid={errors.amount ? true : undefined}
-                aria-describedby={describedBy('amount', false)}
+                aria-describedby={describedBy('amount', Boolean(creditPreview))}
                 onChange={(event) => update('amount', event.target.value)}
               />
+              {creditPreview ? (
+                <small id="payment-amount-hint" role="status">
+                  {creditPreview}
+                </small>
+              ) : null}
               {fieldError('amount')}
             </div>
             <div className="field">

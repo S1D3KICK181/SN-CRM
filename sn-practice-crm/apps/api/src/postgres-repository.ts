@@ -27,6 +27,7 @@ import { maskGstinForRoutineRead, maskPanForRoutineRead } from './client-privacy
 import { isProductionEnvironment } from './http';
 import { computeRequestHash } from './idempotency';
 import type {
+  ApplyCreditCommand,
   ClientReference,
   CreateAssignmentRecord,
   CreateClientRecord,
@@ -37,6 +38,7 @@ import type {
   MutateEngagementCommand,
   RecordPaymentCommand,
   RecordVyaparBillCommand,
+  RemoveCreditAllocationCommand,
   RepositoryContext,
   ServiceReference,
   UpdateAssignmentCommand,
@@ -51,7 +53,8 @@ import {
   billNotOpen,
   duplicateVyaparBill,
   financialYearStart,
-  paymentExceedsBalance,
+  noCreditAvailable,
+  notCreditAllocation,
 } from './repository';
 
 function sanitizeDatabaseError(error: unknown): never {
@@ -1546,6 +1549,8 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
         ), '[]'::json) AS items,
         COALESCE((
           SELECT json_agg(json_build_object(
+            'allocationId', pa.id,
+            'source', pa.source,
             'receiptId', pr.id,
             'receiptCode', pr.code,
             'receivedOn', pr.received_on::text,
@@ -1575,6 +1580,8 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
         lineTotalPaise: toSafePaise(item['lineTotalPaise'], 'lineTotalPaise'),
       }));
       const payments: InvoicePaymentDto[] = asRecordArray(row['payments']).map((payment) => ({
+        allocationId: String(payment['allocationId']),
+        source: payment['source'] as InvoicePaymentDto['source'],
         receiptId: String(payment['receiptId']),
         receiptCode: String(payment['receiptCode']),
         receivedOn: String(payment['receivedOn']),
@@ -1642,6 +1649,8 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
         ), 0) * 100)::bigint AS "allocatedPaise",
         COALESCE((
           SELECT json_agg(json_build_object(
+            'allocationId', pa.id,
+            'source', pa.source,
             'invoiceId', i.id,
             'invoiceCode', i.code,
             'amountPaise', round(pa.amount * 100)::bigint
@@ -1661,6 +1670,8 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
       const amountPaise = toSafePaise(row['amountPaise'], 'amountPaise');
       const allocatedPaise = toSafePaise(row['allocatedPaise'], 'allocatedPaise');
       const allocations: PaymentAllocationDto[] = asRecordArray(row['allocations']).map((allocation) => ({
+        allocationId: String(allocation['allocationId']),
+        source: allocation['source'] as PaymentAllocationDto['source'],
         invoiceId: String(allocation['invoiceId']),
         invoiceCode: String(allocation['invoiceCode']),
         amountPaise: toSafePaise(allocation['amountPaise'], 'amountPaise'),
@@ -1764,6 +1775,9 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
           // Records inherit is_demo from their client
           const isDemo = Boolean(clientRows[0]!['is_demo']);
 
+          // Two writes must never spend the same credit, so take the client's credit lock first
+          if (command.applyCredit === true) await this.lockClientCredit(tx, command.clientId);
+
           const duplicates = await tx`
             SELECT 1
             FROM public.invoices
@@ -1804,6 +1818,9 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
             UPDATE public.invoices SET status = 'issued'::public.invoice_status
             WHERE id = ${invoiceId}::uuid;
           `;
+          if (command.applyCredit === true) {
+            await this.spendClientCredit(tx, ctx, invoiceId, command.clientId, isDemo);
+          }
 
           const created = (await this.queryInvoiceDtos(tx, invoiceId))[0];
           if (!created) {
@@ -1840,7 +1857,8 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
           if (!invoice) throw notFound('Invoice');
           if (invoice['status'] !== 'issued' && invoice['status'] !== 'part_paid') throw billNotOpen();
           const balancePaise = toSafePaise(invoice['balance_paise'], 'balance_paise');
-          if (command.amountPaise > balancePaise) throw paymentExceedsBalance(balancePaise);
+          // An overpayment is kept: the receipt is for the full amount, the rest stays as client credit
+          const allocatedPaise = Math.min(command.amountPaise, balancePaise);
 
           const isDemo = Boolean(invoice['is_demo']);
           const receiptId = crypto.randomUUID();
@@ -1865,7 +1883,7 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
             ) VALUES (
               ${receiptId}::uuid,
               ${command.invoiceId}::uuid,
-              ${command.amountPaise}::bigint::numeric / 100,
+              ${allocatedPaise}::bigint::numeric / 100,
               ${ctx.actorId}::uuid,
               ${isDemo}
             );
@@ -1956,6 +1974,152 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
             throw new ApiError(500, 'internal_error', 'Cancelled payment could not be retrieved.');
           }
           return { result: voided, isDemo: Boolean(receipt['is_demo']) };
+        }),
+      );
+    } catch (error) {
+      sanitizeDatabaseError(error);
+    }
+  }
+
+  // --- Client credit (FEE-02a) ---
+
+  private async lockClientCredit(tx: postgres.TransactionSql, clientId: string): Promise<void> {
+    await tx`SELECT pg_advisory_xact_lock(hashtext(${`client-credit:${clientId}`}))`;
+  }
+
+  // Spends the client's credit on one open bill, oldest receipt first. The caller holds the client
+  // credit lock. Returns how many paise were applied.
+  private async spendClientCredit(
+    tx: postgres.TransactionSql,
+    ctx: RepositoryContext,
+    invoiceId: string,
+    clientId: string,
+    isDemo: boolean,
+  ): Promise<number> {
+    const invoiceRows = await tx`
+      SELECT round((i.total_amount - i.amount_received) * 100)::bigint AS pending_paise
+      FROM public.invoices i
+      WHERE i.id = ${invoiceId}::uuid;
+    `;
+    let pendingPaise = toSafePaise(invoiceRows[0]?.['pending_paise'] ?? 0, 'pending_paise');
+    if (pendingPaise <= 0) return 0;
+
+    const receipts = await tx`
+      SELECT
+        pr.id,
+        round((pr.amount - COALESCE(alloc.total, 0)) * 100)::bigint AS unallocated_paise
+      FROM public.payment_receipts pr
+      LEFT JOIN LATERAL (
+        SELECT sum(pa.amount) AS total FROM public.payment_allocations pa WHERE pa.receipt_id = pr.id
+      ) alloc ON true
+      WHERE pr.client_id = ${clientId}::uuid
+        AND pr.status = 'received'
+        AND pr.amount > COALESCE(alloc.total, 0)
+        AND NOT EXISTS (
+          SELECT 1 FROM public.payment_allocations pa
+          WHERE pa.receipt_id = pr.id AND pa.invoice_id = ${invoiceId}::uuid
+        )
+      ORDER BY pr.received_on, pr.code;
+    `;
+
+    let appliedPaise = 0;
+    for (const receipt of receipts) {
+      if (pendingPaise <= 0) break;
+      const takePaise = Math.min(pendingPaise, toSafePaise(receipt['unallocated_paise'], 'unallocated_paise'));
+      await tx`
+        INSERT INTO public.payment_allocations (
+          receipt_id, invoice_id, amount, source, created_by, is_demo
+        ) VALUES (
+          ${String(receipt['id'])}::uuid,
+          ${invoiceId}::uuid,
+          ${takePaise}::bigint::numeric / 100,
+          'credit',
+          ${ctx.actorId}::uuid,
+          ${isDemo}
+        );
+      `;
+      pendingPaise -= takePaise;
+      appliedPaise += takePaise;
+    }
+    return appliedPaise;
+  }
+
+  async applyCredit(ctx: RepositoryContext, command: ApplyCreditCommand): Promise<InvoiceDto> {
+    const { idempotencyKey, ...payload } = command;
+    try {
+      return await this.runner.withUserContext(ctx, (tx) =>
+        this.runIdempotent<InvoiceDto>(tx, ctx, idempotencyKey, 'applyCredit', payload, async () => {
+          const found = await tx`
+            SELECT client_id, is_demo FROM public.invoices WHERE id = ${command.invoiceId}::uuid;
+          `;
+          const invoice = found[0];
+          if (!invoice) throw notFound('Invoice');
+          const clientId = String(invoice['client_id']);
+
+          // Client credit lock first, then the bill lock; recordPayment and the void paths only take bill locks
+          await this.lockClientCredit(tx, clientId);
+          await tx`SELECT pg_advisory_xact_lock(hashtext(${`invoice:${command.invoiceId}`}))`;
+          const current = await tx`
+            SELECT status FROM public.invoices WHERE id = ${command.invoiceId}::uuid;
+          `;
+          const status = current[0]?.['status'];
+          if (status !== 'issued' && status !== 'part_paid') throw billNotOpen();
+
+          const isDemo = Boolean(invoice['is_demo']);
+          const appliedPaise = await this.spendClientCredit(tx, ctx, command.invoiceId, clientId, isDemo);
+          if (appliedPaise <= 0) throw noCreditAvailable();
+
+          const updated = (await this.queryInvoiceDtos(tx, command.invoiceId))[0];
+          if (!updated) {
+            throw new ApiError(500, 'internal_error', 'Bill could not be retrieved after using credit.');
+          }
+          return { result: updated, isDemo };
+        }),
+      );
+    } catch (error) {
+      sanitizeDatabaseError(error);
+    }
+  }
+
+  async removeCreditAllocation(ctx: RepositoryContext, command: RemoveCreditAllocationCommand): Promise<InvoiceDto> {
+    const { idempotencyKey, ...payload } = command;
+    try {
+      return await this.runner.withUserContext(ctx, (tx) =>
+        this.runIdempotent<InvoiceDto>(tx, ctx, idempotencyKey, 'removeCreditAllocation', payload, async () => {
+          const found = await tx`
+            SELECT pa.source, pa.invoice_id, pa.is_demo, pr.client_id
+            FROM public.payment_allocations pa
+            JOIN public.payment_receipts pr ON pr.id = pa.receipt_id
+            WHERE pa.id = ${command.allocationId}::uuid;
+          `;
+          const allocation = found[0];
+          if (!allocation) throw notFound('Payment allocation');
+          if (allocation['source'] !== 'credit') throw notCreditAllocation();
+          const invoiceId = String(allocation['invoice_id']);
+
+          await this.lockClientCredit(tx, String(allocation['client_id']));
+          await tx`SELECT pg_advisory_xact_lock(hashtext(${`invoice:${invoiceId}`}))`;
+          const removed = await tx`
+            DELETE FROM public.payment_allocations
+            WHERE id = ${command.allocationId}::uuid AND source = 'credit'
+            RETURNING id;
+          `;
+          if (removed.length === 0) {
+            // Row-level security silently skips a delete the actor may not make; otherwise it was already removed
+            const stillThere = await tx`
+              SELECT 1 FROM public.payment_allocations WHERE id = ${command.allocationId}::uuid;
+            `;
+            if (stillThere.length > 0) {
+              throw new ApiError(403, 'forbidden', 'You do not have permission to perform this operation.');
+            }
+            throw notFound('Payment allocation');
+          }
+
+          const updated = (await this.queryInvoiceDtos(tx, invoiceId))[0];
+          if (!updated) {
+            throw new ApiError(500, 'internal_error', 'Bill could not be retrieved after removing credit.');
+          }
+          return { result: updated, isDemo: Boolean(allocation['is_demo']) };
         }),
       );
     } catch (error) {

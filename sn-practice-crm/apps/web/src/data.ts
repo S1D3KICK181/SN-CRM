@@ -847,6 +847,9 @@ export interface InvoiceLineRecord {
 
 /** One receipt allocated onto an invoice; amount in rupees, date DD/MM/YYYY. */
 export interface InvoicePaymentRecord {
+  allocationId: string;
+  /** `payment` is cash paid on this bill; `credit` is client credit from an earlier receipt. */
+  source: 'payment' | 'credit';
   receiptId: string;
   receiptNumber: string;
   date: string;
@@ -871,8 +874,16 @@ export interface ReceiptRecord {
   referenceNumber: string;
   notes: string;
   status?: 'Received' | 'Voided';
-  allocations?: { invoiceId: string; invoiceNumber: string; amount: number }[];
+  allocations?: {
+    allocationId: string;
+    source: 'payment' | 'credit';
+    invoiceId: string;
+    invoiceNumber: string;
+    amount: number;
+  }[];
   unallocated?: number;
+  /** Exact amount kept as client credit, in paise. */
+  unallocatedPaise?: number;
 }
 
 export const INVOICES: InvoiceRecord[] = [

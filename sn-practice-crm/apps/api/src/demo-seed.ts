@@ -240,8 +240,8 @@ function createDemoBilling(now: Date): { invoices: InvoiceSeedRecord[]; paymentR
         voidReason: null,
         voidedAt: null,
         allocations: [
-          { invoiceId: invoicePaid, amountPaise: 2950000 },
-          { invoiceId: invoicePartPaid, amountPaise: 1050000 },
+          { id: '73000000-0000-4000-a000-000000000001', invoiceId: invoicePaid, amountPaise: 2950000, source: 'payment' },
+          { id: '73000000-0000-4000-a000-000000000002', invoiceId: invoicePartPaid, amountPaise: 1050000, source: 'payment' },
         ],
         createdAt: stamp(-15),
       },
@@ -257,7 +257,10 @@ function createDemoBilling(now: Date): { invoices: InvoiceSeedRecord[]; paymentR
         status: 'received',
         voidReason: null,
         voidedAt: null,
-        allocations: [{ invoiceId: invoicePartPaid, amountPaise: 600000 }],
+        // 4,00,000 of this receipt is unallocated, which is the client's credit
+        allocations: [
+          { id: '73000000-0000-4000-a000-000000000003', invoiceId: invoicePartPaid, amountPaise: 600000, source: 'payment' },
+        ],
         createdAt: stamp(-5),
       },
     ],

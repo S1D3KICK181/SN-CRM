@@ -1922,6 +1922,8 @@ describe('PostgresCrmRepository Integration Suite', () => {
         });
         expect(invoice.payments).toEqual([
           {
+            allocationId: expect.any(String),
+            source: 'payment',
             receiptId: fixtures.receiptId,
             receiptCode: fixtures.receiptCode,
             receivedOn: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/),
@@ -1954,7 +1956,7 @@ describe('PostgresCrmRepository Integration Suite', () => {
           unallocatedPaise: 200015,
         });
         expect(received.allocations).toEqual([
-          { invoiceId: fixtures.invoiceId, invoiceCode: fixtures.invoiceCode, amountPaise: 300010 },
+          { allocationId: expect.any(String), source: 'payment', invoiceId: fixtures.invoiceId, invoiceCode: fixtures.invoiceCode, amountPaise: 300010 },
         ]);
 
         const voided = receipts.find((item) => item.code === fixtures.voidedCode)!;
@@ -2253,19 +2255,11 @@ describe('PostgresCrmRepository Integration Suite', () => {
       });
     });
 
-    it('IT-41: overpayment is refused and cancelling payments and bills follows the rules', async () => {
+    it('IT-41: cancelling payments and bills follows the rules', async () => {
       await runIsolatedTest(async (repo, tx) => {
         const client = await newClient(repo, STAFF_ID);
         const bill = await repo.recordVyaparBill(founderCtx, billCommand(client.id) as Parameters<typeof repo.recordVyaparBill>[1]);
         const statusOf = async () => (await repo.listInvoices(founderCtx)).find((invoice) => invoice.id === bill.id)!;
-
-        await expect(
-          repo.recordPayment(founderCtx, paymentCommand(bill.id, 1000001) as Parameters<typeof repo.recordPayment>[1]),
-        ).rejects.toMatchObject({
-          status: 422,
-          code: 'payment_exceeds_balance',
-          message: 'The payment is more than the ₹10,000 still pending on this bill.',
-        });
 
         const one = await repo.recordPayment(founderCtx, paymentCommand(bill.id, 400000) as Parameters<typeof repo.recordPayment>[1]);
         const two = await repo.recordPayment(founderCtx, paymentCommand(bill.id, 600000) as Parameters<typeof repo.recordPayment>[1]);
@@ -2276,7 +2270,7 @@ describe('PostgresCrmRepository Integration Suite', () => {
 
         await expect(
           repo.voidInvoice(founderCtx, { id: bill.id, reason: 'Entered twice', idempotencyKey: `it-void-${crypto.randomUUID()}` }),
-        ).rejects.toMatchObject({ status: 422, code: 'bill_has_payments', message: 'Cancel the payments on this bill first.' });
+        ).rejects.toMatchObject({ status: 422, code: 'bill_has_payments', message: 'Cancel the payments and remove any credit on this bill first.' });
 
         const voidedTwo = await repo.voidPaymentReceipt(founderCtx, { id: two.id, reason: 'Cheque bounced', idempotencyKey: `it-void-${crypto.randomUUID()}` });
         expect(voidedTwo).toMatchObject({ status: 'voided', voidReason: 'Cheque bounced' });
@@ -2367,6 +2361,288 @@ describe('PostgresCrmRepository Integration Suite', () => {
         expect(await repo.listInvoices({ actorId: TRAINEE_ID })).toEqual([]);
         expect(await repo.listPaymentReceipts({ actorId: TRAINEE_ID })).toEqual([]);
       });
+    });
+
+    // --- FEE-02a client credit ---
+
+    type BillCommand = Parameters<PostgresCrmRepository['recordVyaparBill']>[1];
+    type PaymentCommand = Parameters<PostgresCrmRepository['recordPayment']>[1];
+    const asBill = (command: ReturnType<typeof billCommand>) => command as BillCommand;
+    const asPayment = (command: ReturnType<typeof paymentCommand>) => command as PaymentCommand;
+    const creditKey = () => `it-credit-${crypto.randomUUID()}`;
+
+    it('IT-44: an overpayment keeps the extra as client credit and the allocation source cannot change', async () => {
+      await runIsolatedTest(async (repo, tx) => {
+        const client = await newClient(repo, STAFF_ID);
+        const bill = await repo.recordVyaparBill(founderCtx, asBill(billCommand(client.id, { amountPaise: 500000 })));
+        const receipt = await repo.recordPayment(founderCtx, asPayment(paymentCommand(bill.id, 800000)));
+
+        expect(receipt).toMatchObject({ amountPaise: 800000, allocatedPaise: 500000, unallocatedPaise: 300000, status: 'received' });
+        expect(receipt.allocations).toEqual([
+          expect.objectContaining({ allocationId: expect.any(String), source: 'payment', invoiceId: bill.id, amountPaise: 500000 }),
+        ]);
+        const listed = (await repo.listInvoices(founderCtx)).find((invoice) => invoice.id === bill.id)!;
+        expect(listed).toMatchObject({ status: 'paid', amountReceivedPaise: 500000, balancePaise: 0 });
+        expect(listed.payments[0]).toMatchObject({ allocationId: receipt.allocations[0]!.allocationId, source: 'payment', amountPaise: 500000 });
+
+        // The bill is now paid, so a payment is still refused as before
+        await expect(repo.recordPayment(founderCtx, asPayment(paymentCommand(bill.id, 100)))).rejects.toMatchObject({
+          status: 422,
+          code: 'bill_not_open',
+        });
+
+        await asServerRole(tx);
+        const allocationId = receipt.allocations[0]!.allocationId;
+        await expect(
+          tx.savepoint(async (sp) => {
+            await sp`UPDATE public.payment_allocations SET source = 'credit' WHERE id = ${allocationId}::uuid`;
+          }),
+        ).rejects.toMatchObject({ code: '23514', message: 'Allocation source is immutable.' });
+        await expect(
+          tx.savepoint(async (sp) => {
+            await sp`
+              INSERT INTO public.payment_allocations (receipt_id, invoice_id, amount, source, created_by)
+              VALUES (${receipt.id}::uuid, ${bill.id}::uuid, 1.00, 'gift', ${FOUNDER_ID}::uuid)`;
+          }),
+        ).rejects.toMatchObject({ code: '23514' });
+      });
+    });
+
+    it('IT-45: credit is applied oldest receipt first, partially when it runs short, and then reports none', async () => {
+      await runIsolatedTest(async (repo) => {
+        const client = await newClient(repo, STAFF_ID);
+        const a = await repo.recordVyaparBill(founderCtx, asBill(billCommand(client.id)));
+        const newer = await repo.recordPayment(founderCtx, asPayment(paymentCommand(a.id, 1300000, { receivedOn: '2026-11-05' })));
+        const b = await repo.recordVyaparBill(founderCtx, asBill(billCommand(client.id, { amountPaise: 500000 })));
+        const older = await repo.recordPayment(founderCtx, asPayment(paymentCommand(b.id, 700000, { receivedOn: '2026-11-02' })));
+        const c = await repo.recordVyaparBill(founderCtx, asBill(billCommand(client.id, { amountPaise: 400000 })));
+
+        const applied = await repo.applyCredit(founderCtx, { invoiceId: c.id, idempotencyKey: creditKey() });
+        expect(applied).toMatchObject({ status: 'paid', amountReceivedPaise: 400000, balancePaise: 0 });
+        expect(applied.payments.map((entry) => [entry.receiptCode, entry.amountPaise, entry.source])).toEqual([
+          [older.code, 200000, 'credit'],
+          [newer.code, 200000, 'credit'],
+        ]);
+        const receipts = await repo.listPaymentReceipts(founderCtx);
+        expect(receipts.find((receipt) => receipt.id === older.id)!.unallocatedPaise).toBe(0);
+        expect(receipts.find((receipt) => receipt.id === newer.id)!.unallocatedPaise).toBe(100000);
+
+        // 1,000 of credit remains; a bigger bill uses it all and stays part paid
+        const big = await repo.recordVyaparBill(founderCtx, asBill(billCommand(client.id, { amountPaise: 900000 })));
+        const partial = await repo.applyCredit(founderCtx, { invoiceId: big.id, idempotencyKey: creditKey() });
+        expect(partial).toMatchObject({ status: 'part_paid', amountReceivedPaise: 100000, balancePaise: 800000 });
+        await expect(repo.applyCredit(founderCtx, { invoiceId: big.id, idempotencyKey: creditKey() })).rejects.toMatchObject({
+          status: 422,
+          code: 'no_credit_available',
+          message: 'This client has no credit to use.',
+        });
+      });
+    });
+
+    it('IT-46: a receipt that already allocates to the bill is skipped, and cancelled receipts give no credit', async () => {
+      await runIsolatedTest(async (repo, tx) => {
+        const client = await newClient(repo, STAFF_ID);
+        const bill = await repo.recordVyaparBill(founderCtx, asBill(billCommand(client.id)));
+        // A receipt of 10,000 with 6,000 allocated to the open bill leaves 4,000 of credit on it
+        await asServerRole(tx);
+        const receiptId = crypto.randomUUID();
+        await tx`
+          INSERT INTO public.payment_receipts (id, client_id, received_on, amount, method, created_by)
+          VALUES (${receiptId}::uuid, ${client.id}::uuid, '2026-11-02', 10000.00, 'cash', ${FOUNDER_ID}::uuid)`;
+        await tx`
+          INSERT INTO public.payment_allocations (receipt_id, invoice_id, amount, created_by)
+          VALUES (${receiptId}::uuid, ${bill.id}::uuid, 6000.00, ${FOUNDER_ID}::uuid)`;
+        const before = (await repo.listInvoices(founderCtx)).find((invoice) => invoice.id === bill.id)!;
+        expect(before).toMatchObject({ status: 'part_paid', amountReceivedPaise: 600000 });
+
+        await expect(repo.applyCredit(founderCtx, { invoiceId: bill.id, idempotencyKey: creditKey() })).rejects.toMatchObject({
+          code: 'no_credit_available',
+        });
+        // Another bill of the same client can use it
+        const other = await repo.recordVyaparBill(founderCtx, asBill(billCommand(client.id, { amountPaise: 300000 })));
+        const used = await repo.applyCredit(founderCtx, { invoiceId: other.id, idempotencyKey: creditKey() });
+        expect(used.payments).toEqual([expect.objectContaining({ receiptId, source: 'credit', amountPaise: 300000 })]);
+
+        // Cancelling the receipt removes its credit and puts both bills back to pending
+        await repo.voidPaymentReceipt(founderCtx, { id: receiptId, reason: 'Bounced', idempotencyKey: creditKey() });
+        const bills = await repo.listInvoices(founderCtx);
+        expect(bills.find((invoice) => invoice.id === bill.id)).toMatchObject({ status: 'issued', amountReceivedPaise: 0 });
+        expect(bills.find((invoice) => invoice.id === other.id)).toMatchObject({ status: 'issued', amountReceivedPaise: 0 });
+        const third = await repo.recordVyaparBill(founderCtx, asBill(billCommand(client.id, { amountPaise: 100000 })));
+        await expect(repo.applyCredit(founderCtx, { invoiceId: third.id, idempotencyKey: creditKey() })).rejects.toMatchObject({
+          code: 'no_credit_available',
+        });
+      });
+    });
+
+    it('IT-47: recording a bill can use credit, credit can be removed, and a bill with credit cannot be cancelled', async () => {
+      await runIsolatedTest(async (repo) => {
+        const client = await newClient(repo, STAFF_ID);
+        const a = await repo.recordVyaparBill(founderCtx, asBill(billCommand(client.id, { amountPaise: 500000 })));
+        const receipt = await repo.recordPayment(founderCtx, asPayment(paymentCommand(a.id, 800000)));
+
+        const plain = await repo.recordVyaparBill(founderCtx, asBill(billCommand(client.id, { amountPaise: 200000 })));
+        expect(plain).toMatchObject({ status: 'issued', payments: [] });
+        const used = await repo.recordVyaparBill(founderCtx, asBill(billCommand(client.id, { amountPaise: 200000, applyCredit: true })));
+        expect(used).toMatchObject({ status: 'paid', amountReceivedPaise: 200000 });
+        expect(used.payments[0]).toMatchObject({ source: 'credit', receiptId: receipt.id });
+
+        await expect(
+          repo.voidInvoice(founderCtx, { id: used.id, reason: 'Entered twice', idempotencyKey: creditKey() }),
+        ).rejects.toMatchObject({
+          status: 422,
+          code: 'bill_has_payments',
+          message: 'Cancel the payments and remove any credit on this bill first.',
+        });
+
+        // A direct payment allocation is not credit
+        await expect(
+          repo.removeCreditAllocation(founderCtx, { allocationId: receipt.allocations[0]!.allocationId, idempotencyKey: creditKey() }),
+        ).rejects.toMatchObject({
+          status: 422,
+          code: 'not_credit_allocation',
+          message: 'This is a direct payment. Cancel the payment instead.',
+        });
+        await expect(
+          repo.removeCreditAllocation(founderCtx, { allocationId: crypto.randomUUID(), idempotencyKey: creditKey() }),
+        ).rejects.toMatchObject({ status: 404, message: 'Payment allocation was not found.' });
+
+        const removeKey = creditKey();
+        const removed = await repo.removeCreditAllocation(founderCtx, { allocationId: used.payments[0]!.allocationId, idempotencyKey: removeKey });
+        expect(removed).toMatchObject({ id: used.id, status: 'issued', amountReceivedPaise: 0, payments: [] });
+        expect(await repo.removeCreditAllocation(founderCtx, { allocationId: used.payments[0]!.allocationId, idempotencyKey: removeKey })).toEqual(removed);
+        const restored = (await repo.listPaymentReceipts(founderCtx)).find((item) => item.id === receipt.id)!;
+        expect(restored.unallocatedPaise).toBe(300000);
+        await expect(
+          repo.voidInvoice(founderCtx, { id: used.id, reason: 'Entered twice', idempotencyKey: creditKey() }),
+        ).resolves.toMatchObject({ status: 'voided' });
+
+        // The same key cannot be reused for a different operation
+        await expect(
+          repo.applyCredit(founderCtx, { invoiceId: plain.id, idempotencyKey: removeKey }),
+        ).rejects.toMatchObject({ status: 409, code: 'conflict' });
+      });
+    });
+
+    it('IT-48: Staff who look after the client can apply credit but cannot remove it; other Staff cannot apply it', async () => {
+      await runIsolatedTest(async (repo, tx) => {
+        const mine = await newClient(repo, STAFF_ID);
+        const a = await repo.recordVyaparBill(founderCtx, asBill(billCommand(mine.id, { amountPaise: 500000 })));
+        await repo.recordPayment(founderCtx, asPayment(paymentCommand(a.id, 800000)));
+        const b = await repo.recordVyaparBill(founderCtx, asBill(billCommand(mine.id, { amountPaise: 300000 })));
+
+        const applied = await repo.applyCredit(staffCtx, { invoiceId: b.id, idempotencyKey: creditKey() });
+        expect(applied).toMatchObject({ status: 'paid', amountReceivedPaise: 300000 });
+        const allocationId = applied.payments[0]!.allocationId;
+
+        await expect(
+          repo.removeCreditAllocation(staffCtx, { allocationId, idempotencyKey: creditKey() }),
+        ).rejects.toMatchObject({ status: 403, code: 'forbidden' });
+        await asUser(tx, STAFF_ID);
+        const direct = await tx`DELETE FROM public.payment_allocations WHERE id = ${allocationId}::uuid RETURNING id`;
+        expect(direct).toHaveLength(0);
+        await asServerRole(tx);
+        const stillThere = await tx`SELECT source, created_by FROM public.payment_allocations WHERE id = ${allocationId}::uuid`;
+        expect(stillThere[0]).toMatchObject({ source: 'credit', created_by: STAFF_ID });
+
+        // Staff who do not look after the client see neither its bills nor its credit
+        const theirs = await newClient(repo, MANAGER_ID);
+        const c = await repo.recordVyaparBill(founderCtx, asBill(billCommand(theirs.id, { amountPaise: 500000 })));
+        await repo.recordPayment(founderCtx, asPayment(paymentCommand(c.id, 800000)));
+        const d = await repo.recordVyaparBill(founderCtx, asBill(billCommand(theirs.id, { amountPaise: 300000 })));
+        await expect(repo.applyCredit(staffCtx, { invoiceId: d.id, idempotencyKey: creditKey() })).rejects.toMatchObject({
+          status: 404,
+          message: 'Invoice was not found.',
+        });
+        // and the database refuses the same allocation written directly
+        const receiptRows = await tx`SELECT id FROM public.payment_receipts WHERE client_id = ${theirs.id}::uuid`;
+        await asUser(tx, STAFF_ID);
+        await expect(
+          tx.savepoint(async (sp) => {
+            await sp`
+              INSERT INTO public.payment_allocations (receipt_id, invoice_id, amount, source, created_by)
+              VALUES (${String(receiptRows[0]!['id'])}::uuid, ${d.id}::uuid, 100.00, 'credit', ${STAFF_ID}::uuid)`;
+          }),
+        ).rejects.toMatchObject({ code: '42501' });
+      });
+    });
+
+    it('IT-49: two applications of one client credit to different bills in parallel never spend more than the credit', async () => {
+      // Needs two real connections, so the fixture is committed on a throwaway demo client and then removed
+      const runKey = crypto.randomUUID();
+      const startedAt = (await rootClient`SELECT clock_timestamp() AS now`)[0]!['now'] as Date;
+      const clientRows = await rootClient`
+        INSERT INTO public.clients (display_name, relationship_owner_id, created_by, is_demo)
+        VALUES ('FEE-02 Concurrency Client', ${STAFF_ID}::uuid, ${FOUNDER_ID}::uuid, true)
+        RETURNING id`;
+      const clientId = String(clientRows[0]!['id']);
+      const repo = new PostgresCrmRepository(pool);
+      try {
+        const base = await repo.recordVyaparBill(founderCtx, asBill(billCommand(clientId, { amountPaise: 500000, idempotencyKey: `${runKey}-base` })));
+        const receipt = await repo.recordPayment(founderCtx, asPayment(paymentCommand(base.id, 1000000, { idempotencyKey: `${runKey}-pay` })));
+        expect(receipt.unallocatedPaise).toBe(500000);
+        const first = await repo.recordVyaparBill(founderCtx, asBill(billCommand(clientId, { amountPaise: 400000, idempotencyKey: `${runKey}-b1` })));
+        const second = await repo.recordVyaparBill(founderCtx, asBill(billCommand(clientId, { amountPaise: 400000, idempotencyKey: `${runKey}-b2` })));
+
+        const results = await Promise.allSettled([
+          new PostgresCrmRepository(pool).applyCredit(founderCtx, { invoiceId: first.id, idempotencyKey: `${runKey}-a1` }),
+          new PostgresCrmRepository(pool).applyCredit(founderCtx, { invoiceId: second.id, idempotencyKey: `${runKey}-a2` }),
+        ]);
+        expect(results.map((result) => result.status)).toEqual(['fulfilled', 'fulfilled']);
+
+        const rows = await rootClient`
+          SELECT coalesce(sum(round(amount * 100)), 0)::bigint AS credit_paise, count(*)::int AS allocations
+          FROM public.payment_allocations
+          WHERE receipt_id = ${receipt.id}::uuid AND source = 'credit'`;
+        expect(Number(rows[0]!['credit_paise'])).toBe(500000);
+        const total = await rootClient`
+          SELECT coalesce(sum(round(amount * 100)), 0)::bigint AS all_paise
+          FROM public.payment_allocations WHERE receipt_id = ${receipt.id}::uuid`;
+        expect(Number(total[0]!['all_paise'])).toBe(1000000);
+        const received = (await repo.listInvoices(founderCtx))
+          .filter((invoice) => invoice.id === first.id || invoice.id === second.id)
+          .map((invoice) => invoice.amountReceivedPaise)
+          .sort((x, y) => x - y);
+        expect(received).toEqual([100000, 400000]);
+      } finally {
+        await rootClient.begin(async (tx) => {
+          await tx`SELECT set_config('request.jwt.claim.sub', ${FOUNDER_ID}, true)`;
+          await tx`SELECT set_config('app.demo_cleanup', 'on', true)`;
+          await tx`SELECT set_config('app.demo_cleanup_actor', ${FOUNDER_ID}, true)`;
+          // Collect this test's own fixture ids first, so the audit cleanup below touches nothing else.
+          const fixtureInvoiceIds = (
+            await tx`SELECT id::text AS id FROM public.invoices WHERE client_id = ${clientId}::uuid`
+          ).map((row) => String(row['id']));
+          const fixtureReceiptIds = (
+            await tx`SELECT id::text AS id FROM public.payment_receipts WHERE client_id = ${clientId}::uuid`
+          ).map((row) => String(row['id']));
+          await tx`
+            DELETE FROM public.payment_allocations
+            WHERE receipt_id IN (SELECT id FROM public.payment_receipts WHERE client_id = ${clientId}::uuid)`;
+          await tx`DELETE FROM public.payment_receipts WHERE client_id = ${clientId}::uuid`;
+          await tx`DELETE FROM public.invoice_items WHERE invoice_id IN (SELECT id FROM public.invoices WHERE client_id = ${clientId}::uuid)`;
+          await tx`DELETE FROM public.invoices WHERE client_id = ${clientId}::uuid`;
+          await tx`DELETE FROM public.operation_receipts WHERE actor_id = ${FOUNDER_ID}::uuid AND idempotency_key LIKE ${`${runKey}-%`}`;
+          await tx`DELETE FROM public.clients WHERE id = ${clientId}::uuid`;
+          await tx`
+            DELETE FROM public.audit_log a
+            WHERE a.is_demo = true
+              AND a.occurred_at >= ${startedAt}
+              AND (
+                (a.table_name = 'clients' AND a.record_pk = ${clientId})
+                OR (a.table_name IN ('invoices', 'payment_receipts')
+                    AND coalesce(a.new_row, a.old_row)->>'client_id' = ${clientId})
+                OR (a.table_name = 'invoice_items'
+                    AND coalesce(a.new_row, a.old_row)->>'invoice_id' = ANY(${fixtureInvoiceIds}::text[]))
+                OR (a.table_name = 'payment_allocations'
+                    AND coalesce(a.new_row, a.old_row)->>'receipt_id' = ANY(${fixtureReceiptIds}::text[]))
+                OR (a.table_name = 'operation_receipts'
+                    AND coalesce(a.new_row, a.old_row)->>'idempotency_key' LIKE ${`${runKey}-%`})
+              )`;
+          await tx`SELECT set_config('app.demo_cleanup', 'off', true)`;
+          await tx`SELECT set_config('app.demo_cleanup_actor', '', true)`;
+        });
+      }
     });
   });
 });

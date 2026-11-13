@@ -54,9 +54,10 @@ function createReceipt(overrides: Partial<ReceiptRecord> = {}): ReceiptRecord {
     notes: 'Payment received',
     status: 'Received',
     allocations: [
-      { invoiceId: '70000000-0000-4000-a000-000000000001', invoiceNumber: 'INV-0001001', amount: 59000 },
+      { allocationId: '74000000-0000-4000-a000-000000000001', source: 'payment', invoiceId: '70000000-0000-4000-a000-000000000001', invoiceNumber: 'INV-0001001', amount: 59000 },
     ],
     unallocated: 0,
+    unallocatedPaise: 0,
     ...overrides,
   };
 }
@@ -86,6 +87,8 @@ function createActions(): { [K in keyof BillingActions]: ReturnType<typeof vi.fn
     recordPayment: vi.fn().mockResolvedValue({}),
     voidBill: vi.fn().mockResolvedValue({}),
     voidPayment: vi.fn().mockResolvedValue({}),
+    applyCredit: vi.fn().mockResolvedValue({}),
+    removeCredit: vi.fn().mockResolvedValue({}),
   };
 }
 
@@ -287,7 +290,7 @@ describe('BillingWorkspace', () => {
     expect(screen.getByRole('columnheader', { name: 'Vyapar bill' })).toBeTruthy();
   });
 
-  it('lists receipts with method, voided status, every allocated invoice code and unallocated amount', () => {
+  it('lists receipts with method, voided status, every allocated invoice code (credit marked) and the amount kept as credit', () => {
     const receipts: ReceiptRecord[] = [
       createReceipt({
         id: '71000000-0000-4000-a000-000000000002',
@@ -298,11 +301,12 @@ describe('BillingWorkspace', () => {
         referenceNumber: '',
         notes: '',
         allocations: [
-          { invoiceId: '70000000-0000-4000-a000-000000000001', invoiceNumber: 'INV-0001001', amount: 29500 },
-          { invoiceId: '70000000-0000-4000-a000-000000000002', invoiceNumber: 'INV-0001002', amount: 50000 },
+          { allocationId: '74000000-0000-4000-a000-000000000002', source: 'payment', invoiceId: '70000000-0000-4000-a000-000000000001', invoiceNumber: 'INV-0001001', amount: 29500 },
+          { allocationId: '74000000-0000-4000-a000-000000000003', source: 'credit', invoiceId: '70000000-0000-4000-a000-000000000002', invoiceNumber: 'INV-0001002', amount: 50000 },
         ],
         invoiceNumber: 'INV-0001001',
         unallocated: 20500,
+        unallocatedPaise: 2050000,
       }),
       createReceipt({
         id: '71000000-0000-4000-a000-000000000003',
@@ -315,6 +319,7 @@ describe('BillingWorkspace', () => {
         invoiceId: '',
         invoiceNumber: '',
         unallocated: 750,
+        unallocatedPaise: 75000,
         notes: 'Cheque bounced',
       }),
     ];
@@ -324,16 +329,17 @@ describe('BillingWorkspace', () => {
 
     const multi = screen.getByText('RCT-0001002').closest('tr')!;
     expect(within(multi).getByText('INV-0001001')).toBeTruthy();
-    expect(within(multi).getByText('INV-0001002')).toBeTruthy();
     expect(within(multi).getByText('UPI')).toBeTruthy();
-    expect(within(multi).getByText(/Unallocated/)).toBeTruthy();
+    expect(within(multi).getByText(/kept as credit/)).toBeTruthy();
+    expect(within(multi).getByText('INV-0001002 (credit)')).toBeTruthy();
+    expect(within(multi).queryByText('INV-0001001 (credit)')).toBeNull();
     expect(within(multi).getByText(/20,500/)).toBeTruthy();
 
     const voided = screen.getByText('RCT-0001003').closest('tr')!;
     expect(within(voided).getByText('Cancelled')).toBeTruthy();
     expect(within(voided).getByText('Cheque')).toBeTruthy();
     expect(within(voided).getByText('Not allocated')).toBeTruthy();
-    expect(within(voided).queryByText(/Unallocated/)).toBeNull();
+    expect(within(voided).queryByText(/kept as credit/)).toBeNull();
   });
 
   it('opens the drawer and closes it, without exposing any raw UUID on screen', () => {
@@ -341,7 +347,7 @@ describe('BillingWorkspace', () => {
       invoiceNumber: 'INV-0001045',
       assignmentCode: 'AS-001001',
       payments: [
-        { receiptId: '73000000-0000-4000-a000-000000000001', receiptNumber: 'RCT-0001001', date: '20/10/2026', amount: 10000, amountPaise: 1000000, voided: false },
+        { allocationId: '74000000-0000-4000-a000-000000000001', source: 'payment', receiptId: '73000000-0000-4000-a000-000000000001', receiptNumber: 'RCT-0001001', date: '20/10/2026', amount: 10000, amountPaise: 1000000, voided: false },
       ],
     });
     const { container } = renderWorkspace('founder', {
@@ -368,7 +374,7 @@ describe('BillingWorkspace', () => {
     const invoice = createInvoice({
       status: 'Partly Paid',
       payments: [
-        { receiptId: '73000000-0000-4000-a000-000000000001', receiptNumber: 'RCT-0001001', date: '20/10/2026', amount: 10000, amountPaise: 1000000, voided: false },
+        { allocationId: '74000000-0000-4000-a000-000000000001', source: 'payment', receiptId: '73000000-0000-4000-a000-000000000001', receiptNumber: 'RCT-0001001', date: '20/10/2026', amount: 10000, amountPaise: 1000000, voided: false },
       ],
     });
     renderWorkspace('founder', { model: { invoices: [invoice], receipts: [] } });
@@ -378,7 +384,7 @@ describe('BillingWorkspace', () => {
     const drawer = screen.getByLabelText('Invoice details');
     const cancelBill = within(drawer).getByRole('button', { name: 'Cancel bill' }) as HTMLButtonElement;
     expect(cancelBill.disabled).toBe(true);
-    expect(within(drawer).getByText('Cancel the payments on this bill first.').id).toBe(
+    expect(within(drawer).getByText('Cancel the payments and remove any credit on this bill first.').id).toBe(
       cancelBill.getAttribute('aria-describedby'),
     );
     expect(within(drawer).getByRole('button', { name: 'Cancel payment RCT-0001001' })).toBeTruthy();
@@ -405,7 +411,7 @@ describe('BillingWorkspace', () => {
     const invoice = createInvoice({
       status: 'Partly Paid',
       payments: [
-        { receiptId: '73000000-0000-4000-a000-000000000001', receiptNumber: 'RCT-0001001', date: '20/10/2026', amount: 10000, amountPaise: 1000000, voided: false },
+        { allocationId: '74000000-0000-4000-a000-000000000001', source: 'payment', receiptId: '73000000-0000-4000-a000-000000000001', receiptNumber: 'RCT-0001001', date: '20/10/2026', amount: 10000, amountPaise: 1000000, voided: false },
       ],
     });
     const { actions, onToast } = renderWorkspace('manager', { model: { invoices: [invoice], receipts: [] } });
@@ -470,5 +476,195 @@ describe('BillingWorkspace', () => {
 
     await waitFor(() => expect(onToast).toHaveBeenCalledWith('Vyapar bill VYP-141 recorded for Aster Foods.'));
     expect(actions.recordBill.mock.calls[0]?.[0]).toMatchObject({ clientId: CLIENT_ID, amountPaise: 250000 });
+  });
+
+  describe('client credit', () => {
+    const creditReceipt = (overrides: Partial<ReceiptRecord> = {}) =>
+      createReceipt({
+        id: '71000000-0000-4000-a000-000000000009',
+        receiptNumber: 'RCT-0001009',
+        amount: 5000,
+        amountPaise: 500000,
+        allocations: [],
+        unallocated: 5000,
+        unallocatedPaise: 500000,
+        ...overrides,
+      });
+    const creditEntry = {
+      allocationId: '74000000-0000-4000-a000-0000000000c1',
+      source: 'credit' as const,
+      receiptId: '71000000-0000-4000-a000-000000000009',
+      receiptNumber: 'RCT-0001009',
+      date: '20/10/2026',
+      amount: 3000,
+      amountPaise: 300000,
+      voided: false,
+    };
+
+    it('previews the credit and toasts it when a payment is more than the bill needs', async () => {
+      const { actions, onToast } = renderWorkspace('staff', {
+        model: { invoices: [createInvoice({ vyaparBillNumber: 'VYP-140', balance: 1500, balancePaise: 150000 })], receipts: [] },
+      });
+      actions.recordPayment.mockResolvedValue({ unallocatedPaise: 50000 });
+
+      fireEvent.click(screen.getByRole('button', { name: 'Record payment for VYP-140' }));
+      const dialog = screen.getByRole('dialog', { name: 'Record payment' });
+      fireEvent.change(within(dialog).getByLabelText('Cash received (₹)'), { target: { value: '2000' } });
+      expect(within(dialog).getByRole('status').textContent).toBe(
+        '₹1,500 pays this bill in full. The extra ₹500 is kept as credit for Aster Foods.',
+      );
+      fireEvent.change(within(dialog).getByLabelText('Paid by'), { target: { value: 'upi' } });
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Record payment' }));
+
+      await waitFor(() =>
+        expect(onToast).toHaveBeenCalledWith(
+          'Payment of ₹2,000 recorded on VYP-140. ₹500 kept as credit for Aster Foods.',
+        ),
+      );
+      expect(actions.recordPayment.mock.calls[0]?.[0]).toMatchObject({ amountPaise: 200000 });
+    });
+
+    it('shows the use-credit checkbox only for a client with credit, ticked, and sends the choice both ways', async () => {
+      const created = {
+        vyaparBillNumber: 'VYP-141',
+        code: 'INV-0001009',
+        clientName: 'Aster Foods',
+        amountReceivedPaise: 250000,
+      } as unknown as InvoiceDto;
+      const { actions, onToast } = renderWorkspace('manager', { model: { invoices: [], receipts: [creditReceipt()] } });
+      actions.recordBill.mockResolvedValue(created);
+
+      fireEvent.click(screen.getByRole('button', { name: /Record Vyapar bill/ }));
+      const dialog = screen.getByRole('dialog', { name: 'Record Vyapar bill' });
+      expect(within(dialog).queryByRole('checkbox')).toBeNull();
+      fireEvent.change(within(dialog).getByLabelText('Client'), { target: { value: CLIENT_ID } });
+      const box = within(dialog).getByLabelText('Use ₹5,000 credit against this bill') as HTMLInputElement;
+      expect(box.checked).toBe(true);
+      fireEvent.change(within(dialog).getByLabelText('Vyapar bill number'), { target: { value: 'VYP-141' } });
+      fireEvent.change(within(dialog).getByLabelText('Fee amount (₹)'), { target: { value: '2500' } });
+      fireEvent.change(within(dialog).getByLabelText('What was billed'), { target: { value: 'Returns for October' } });
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Record bill' }));
+
+      await waitFor(() =>
+        expect(onToast).toHaveBeenCalledWith('Vyapar bill VYP-141 recorded for Aster Foods. ₹2,500 of credit used.'),
+      );
+      expect(actions.recordBill.mock.calls[0]?.[0]).toMatchObject({ applyCredit: true });
+      await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+
+      actions.recordBill.mockResolvedValue({ ...created, vyaparBillNumber: 'VYP-142', amountReceivedPaise: 0 });
+      fireEvent.click(screen.getByRole('button', { name: /Record Vyapar bill/ }));
+      const second = screen.getByRole('dialog', { name: 'Record Vyapar bill' });
+      fireEvent.change(within(second).getByLabelText('Client'), { target: { value: CLIENT_ID } });
+      fireEvent.click(within(second).getByLabelText('Use ₹5,000 credit against this bill'));
+      fireEvent.change(within(second).getByLabelText('Vyapar bill number'), { target: { value: 'VYP-142' } });
+      fireEvent.change(within(second).getByLabelText('Fee amount (₹)'), { target: { value: '2500' } });
+      fireEvent.change(within(second).getByLabelText('What was billed'), { target: { value: 'Returns for November' } });
+      fireEvent.click(within(second).getByRole('button', { name: 'Record bill' }));
+
+      await waitFor(() => expect(onToast).toHaveBeenCalledWith('Vyapar bill VYP-142 recorded for Aster Foods.'));
+      expect(actions.recordBill.mock.calls[1]?.[0]).toMatchObject({ applyCredit: false });
+    });
+
+    it('uses credit from the drawer of an open bill and toasts the amount used', async () => {
+      const invoice = createInvoice({ vyaparBillNumber: 'VYP-140' });
+      const { actions, onToast } = renderWorkspace('staff', { model: { invoices: [invoice], receipts: [creditReceipt()] } });
+      actions.applyCredit.mockResolvedValue({ amountReceivedPaise: 300000 });
+
+      fireEvent.click(screen.getByRole('button', { name: 'View VYP-140' }));
+      const drawer = screen.getByLabelText('Invoice details');
+      expect(within(drawer).getByText('Aster Foods has ₹5,000 credit.')).toBeTruthy();
+      fireEvent.click(within(drawer).getByRole('button', { name: 'Use credit' }));
+
+      await waitFor(() => expect(onToast).toHaveBeenCalledWith('₹3,000 of credit used on VYP-140.'));
+      expect(actions.applyCredit.mock.calls[0]?.[0]).toBe(invoice.id);
+      expect(typeof actions.applyCredit.mock.calls[0]?.[1]).toBe('string');
+    });
+
+    it('hides Use credit when the client has no credit or the bill is closed', () => {
+      const first = renderWorkspace('staff', {
+        model: { invoices: [createInvoice({ vyaparBillNumber: 'VYP-140' })], receipts: [] },
+      });
+      fireEvent.click(screen.getByRole('button', { name: 'View VYP-140' }));
+      expect(screen.queryByRole('button', { name: 'Use credit' })).toBeNull();
+      first.unmount();
+
+      renderWorkspace('staff', {
+        model: {
+          invoices: [createInvoice({ vyaparBillNumber: 'VYP-140', status: 'Paid', balance: 0, balancePaise: 0 })],
+          receipts: [creditReceipt()],
+        },
+      });
+      fireEvent.click(screen.getByRole('button', { name: 'View VYP-140' }));
+      expect(screen.queryByRole('button', { name: 'Use credit' })).toBeNull();
+    });
+
+    it('lets the Founder and Manager remove a credit entry with no confirmation, and not staff', async () => {
+      const invoice = createInvoice({ vyaparBillNumber: 'VYP-140', status: 'Partly Paid', payments: [creditEntry] });
+      const manager = renderWorkspace('manager', { model: { invoices: [invoice], receipts: [] } });
+
+      fireEvent.click(screen.getByRole('button', { name: 'View VYP-140' }));
+      const drawer = screen.getByLabelText('Invoice details');
+      expect(within(drawer).getByText('Credit from RCT-0001009 · ₹3,000')).toBeTruthy();
+      expect(within(drawer).queryByRole('button', { name: /Cancel payment/ })).toBeNull();
+      fireEvent.click(within(drawer).getByRole('button', { name: 'Remove credit from RCT-0001009' }));
+
+      await waitFor(() => expect(manager.onToast).toHaveBeenCalledWith('Credit removed from VYP-140.'));
+      expect(screen.queryByRole('dialog')).toBeNull();
+      expect(manager.actions.removeCredit.mock.calls[0]?.[0]).toBe('74000000-0000-4000-a000-0000000000c1');
+      manager.unmount();
+
+      renderWorkspace('staff', { model: { invoices: [invoice], receipts: [] } });
+      fireEvent.click(screen.getByRole('button', { name: 'View VYP-140' }));
+      expect(screen.getByText('Credit from RCT-0001009 · ₹3,000')).toBeTruthy();
+      expect(screen.queryByRole('button', { name: /Remove credit/ })).toBeNull();
+    });
+
+    it('warns when cancelling a payment whose credit is used on other bills', () => {
+      const bill = createInvoice({
+        vyaparBillNumber: 'VYP-140',
+        status: 'Partly Paid',
+        payments: [
+          { ...creditEntry, source: 'payment', receiptNumber: 'RCT-0001001', receiptId: '71000000-0000-4000-a000-000000000001' },
+        ],
+      });
+      const other = createInvoice({
+        id: '70000000-0000-4000-a000-000000000002',
+        invoiceNumber: 'INV-0001002',
+        vyaparBillNumber: 'VYP-141',
+      });
+      const receipt = createReceipt({
+        allocations: [
+          { allocationId: '74000000-0000-4000-a000-0000000000c2', source: 'payment', invoiceId: bill.id, invoiceNumber: 'INV-0001001', amount: 2000 },
+          { allocationId: '74000000-0000-4000-a000-0000000000c3', source: 'credit', invoiceId: other.id, invoiceNumber: 'INV-0001002', amount: 3000 },
+        ],
+      });
+      renderWorkspace('founder', { model: { invoices: [bill, other], receipts: [receipt] } });
+
+      fireEvent.click(screen.getByRole('button', { name: 'View VYP-140' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel payment RCT-0001001' }));
+      const dialog = screen.getByRole('dialog', { name: 'Cancel payment RCT-0001001' });
+      expect(within(dialog).getByRole('status').textContent).toBe(
+        '₹3,000 of this payment is used as credit on VYP-141. Those bills will show it as pending again.',
+      );
+    });
+
+    it('shows credit by client on the Pending by client tab, including a client with nothing pending', () => {
+      const other = '10000000-0000-4000-a000-000000000002';
+      const receipts = [
+        creditReceipt(),
+        creditReceipt({ id: '71000000-0000-4000-a000-00000000000a', receiptNumber: 'RCT-0001010', unallocatedPaise: 120000, unallocated: 1200 }),
+        creditReceipt({ id: '71000000-0000-4000-a000-00000000000b', receiptNumber: 'RCT-0001011', clientId: other, clientName: 'Bharat Traders', unallocatedPaise: 70000, unallocated: 700 }),
+        creditReceipt({ id: '71000000-0000-4000-a000-00000000000c', receiptNumber: 'RCT-0001012', status: 'Voided', unallocatedPaise: 900000, unallocated: 9000 }),
+      ];
+      const { container } = renderWorkspace('founder', { model: { invoices: [createInvoice()], receipts } });
+      fireEvent.click(screen.getByRole('button', { name: /Pending by client/i }));
+
+      expect(screen.getByRole('columnheader', { name: 'Credit' })).toBeTruthy();
+      const aster = screen.getByText('Aster Foods').closest('tr')!;
+      expect(within(aster).getByText('₹6,200')).toBeTruthy();
+      const bharat = screen.getByText('Bharat Traders').closest('tr')!;
+      expect(within(bharat).getByText('₹700')).toBeTruthy();
+      expect(container.textContent ?? '').not.toMatch(UUID_PATTERN);
+    });
   });
 });

@@ -106,6 +106,7 @@ export const recordVyaparBillSchema = z
     dueDate: localDate,
     amountPaise: feeAmountPaise,
     description: z.string().trim().min(2).max(300),
+    applyCredit: z.boolean().optional(),
   })
   .strict()
   .refine((value) => value.dueDate >= value.billDate, {
@@ -127,6 +128,11 @@ export const recordPaymentSchema = z
 export const voidFeeRecordSchema = z
   .object({ reason: z.string().trim().min(3).max(500) })
   .strict();
+
+// --- Client credit (FEE-02a) ---
+
+export const applyCreditSchema = z.object({}).strict();
+export const removeCreditSchema = z.object({}).strict();
 
 const PAN_REGEX = /^[A-Z]{5}[0-9]{4}[A-Z]$/;
 const GSTIN_REGEX = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/;

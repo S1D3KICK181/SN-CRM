@@ -300,4 +300,51 @@ describe('useBilling mutations', () => {
     expect((caught as BillingOperationError).code).toBe('forbidden');
     expect(port.mutations).toHaveLength(0);
   });
+
+  it('using credit and removing it each send the key and reload both lists', async () => {
+    const { port, result } = await setup('manager');
+    const allocationId = '73000000-0000-4000-a000-0000000000c1';
+    const runs: Array<[string, string, () => Promise<unknown>]> = [
+      ['apply-credit', invoice.id, () => result.current.applyCredit(invoice.id, 'k-apply')],
+      ['remove-credit', allocationId, () => result.current.removeCredit(allocationId, 'k-remove')],
+    ];
+    for (const [kind, targetId, run] of runs) {
+      const before = port.calls.length;
+      await act(async () => {
+        await run();
+      });
+      expect(port.mutations.at(-1)).toMatchObject({ kind, role: 'manager', targetId, input: {} });
+      expect(port.calls.slice(before).map((call) => call.kind).sort()).toEqual(['invoices', 'receipts']);
+    }
+    expect(port.mutations.map((mutation) => mutation.idempotencyKey)).toEqual(['k-apply', 'k-remove']);
+  });
+
+  it('a failed credit change throws a sanitized error and does not reload', async () => {
+    const { port, result } = await setup();
+    port.setMutationError(
+      new BillingOperationError({ code: 'unexpected', message: 'raw stack', status: 422, serverCode: 'no_credit_available' }),
+    );
+    const before = port.calls.length;
+    let caught: unknown;
+    await act(async () => {
+      caught = await result.current.applyCredit(invoice.id, 'key-1').catch((err: unknown) => err);
+    });
+    expect((caught as BillingOperationError).serverCode).toBe('no_credit_available');
+    expect((caught as BillingOperationError).message).not.toContain('raw stack');
+    expect(port.calls.length).toBe(before);
+  });
+
+  it('refuses the credit actions for the trainee without touching the port', async () => {
+    const port = new DeterministicTestBillingAdapter();
+    const { result } = renderHook(() => useBilling('trainee', { port }));
+    let applied: unknown;
+    let removed: unknown;
+    await act(async () => {
+      applied = await result.current.applyCredit(invoice.id, 'key-1').catch((err: unknown) => err);
+      removed = await result.current.removeCredit(invoice.id, 'key-2').catch((err: unknown) => err);
+    });
+    expect((applied as BillingOperationError).code).toBe('forbidden');
+    expect((removed as BillingOperationError).code).toBe('forbidden');
+    expect(port.mutations).toHaveLength(0);
+  });
 });

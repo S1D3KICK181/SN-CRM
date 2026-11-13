@@ -1,9 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { BillingOperationError } from '../../api/billing-types';
+import type { ReceiptRecord } from '../../data';
 import {
   addDaysToIsoDate,
   billingSaveErrorMessage,
   billLabel,
+  creditByClient,
+  creditUsedWarning,
+  paymentCreditPreview,
   canRecordPayment,
   initialBillValues,
   initialPaymentValues,
@@ -123,7 +127,7 @@ describe('record payment form', () => {
   });
 
   it('builds the payload, trimming optional text to null when empty', () => {
-    const options = { today: TODAY, pendingPaise: 150000 };
+    const options = { today: TODAY };
     expect(validatePaymentForm(validPayment, options)).toEqual({});
     expect(toRecordPaymentInput('inv-id', validPayment)).toEqual({
       invoiceId: 'inv-id',
@@ -136,16 +140,14 @@ describe('record payment form', () => {
   });
 
   it('returns each validation message', () => {
-    const options = { today: TODAY, pendingPaise: 150000 };
+    const options = { today: TODAY };
     expect(validatePaymentForm({ ...validPayment, receivedOn: '2026-11-14' }, options).receivedOn).toBe(
       'The payment date cannot be in the future.',
     );
     expect(validatePaymentForm({ ...validPayment, amount: '' }, options).amount).toBe(
       'Enter an amount above ₹0 with up to 2 decimals.',
     );
-    expect(validatePaymentForm({ ...validPayment, amount: '1500.01' }, options).amount).toBe(
-      'The amount is more than the ₹1,500 still pending.',
-    );
+    expect(validatePaymentForm({ ...validPayment, amount: '99999.99' }, options).amount).toBeUndefined();
     expect(validatePaymentForm({ ...validPayment, method: '' }, options).method).toBe('Choose how it was paid.');
     expect(validatePaymentForm({ ...validPayment, reference: 'r'.repeat(101) }, options).reference).toBe(
       'Use at most 100 characters.',
@@ -185,9 +187,10 @@ describe('save error copy', () => {
 
   it.each([
     ['duplicate_vyapar_bill', 'This Vyapar bill number is already recorded for this financial year.'],
-    ['payment_exceeds_balance', 'The payment is more than what is still pending on this bill.'],
+    ['no_credit_available', 'This client has no credit to use.'],
+    ['not_credit_allocation', 'This is a direct payment. Cancel the payment instead.'],
     ['bill_not_open', 'This bill is already paid or cancelled.'],
-    ['bill_has_payments', 'Cancel the payments on this bill first.'],
+    ['bill_has_payments', 'Cancel the payments and remove any credit on this bill first.'],
     ['already_voided', 'This record is already cancelled.'],
   ])('maps %s', (serverCode, message) => {
     expect(billingSaveErrorMessage(err(serverCode, 'unexpected', 409))).toBe(message);
@@ -198,5 +201,73 @@ describe('save error copy', () => {
     expect(billingSaveErrorMessage(err('something_else'))).not.toContain('raw');
     expect(billingSaveErrorMessage(err('constructor'))).not.toContain('function');
     expect(billingSaveErrorMessage(new Error('boom'))).not.toContain('boom');
+  });
+});
+
+describe('client credit helpers', () => {
+  const receipt = (overrides: Partial<ReceiptRecord>): ReceiptRecord => ({
+    id: 'r1',
+    receiptNumber: 'RCT-1',
+    clientId: 'c1',
+    clientName: 'Aster Foods',
+    invoiceId: '',
+    invoiceNumber: '',
+    receiptDate: '01/11/2026',
+    amount: 0,
+    amountPaise: 0,
+    paymentMode: 'UPI',
+    referenceNumber: '',
+    notes: '',
+    status: 'Received',
+    ...overrides,
+  });
+
+  it('adds up the credit kept on Received receipts for each client', () => {
+    const credit = creditByClient([
+      receipt({ id: 'a', unallocatedPaise: 50000 }),
+      receipt({ id: 'b', unallocatedPaise: 25050 }),
+      receipt({ id: 'c', clientId: 'c2', unallocatedPaise: 10000 }),
+      receipt({ id: 'd', unallocatedPaise: 999900, status: 'Voided' }),
+      receipt({ id: 'e', unallocatedPaise: 0 }),
+      receipt({ id: 'f' }),
+    ]);
+    expect(credit.get('c1')).toBe(75050);
+    expect(credit.get('c2')).toBe(10000);
+    expect(credit.size).toBe(2);
+    expect(creditByClient([]).size).toBe(0);
+  });
+
+  it('previews the credit only when the cash is more than the pending amount', () => {
+    expect(paymentCreditPreview('2000', 150000, 'Aster Foods')).toBe(
+      '₹1,500 pays this bill in full. The extra ₹500 is kept as credit for Aster Foods.',
+    );
+    expect(paymentCreditPreview('1500', 150000, 'Aster Foods')).toBeNull();
+    expect(paymentCreditPreview('100', 150000, 'Aster Foods')).toBeNull();
+    expect(paymentCreditPreview('abc', 150000, 'Aster Foods')).toBeNull();
+  });
+
+  it('warns only about credit allocations and names bills by their Vyapar number', () => {
+    const invoices = [
+      { id: 'i1', vyaparBillNumber: 'VYP-141', invoiceNumber: 'INV-2' },
+      { id: 'i2', invoiceNumber: 'INV-3' },
+    ];
+    const used = receipt({
+      allocations: [
+        { allocationId: 'x1', source: 'payment', invoiceId: 'i0', invoiceNumber: 'INV-1', amount: 2000 },
+        { allocationId: 'x2', source: 'credit', invoiceId: 'i1', invoiceNumber: 'INV-2', amount: 1000.5 },
+        { allocationId: 'x3', source: 'credit', invoiceId: 'i2', invoiceNumber: 'INV-3', amount: 500 },
+      ],
+    });
+    expect(creditUsedWarning(used, invoices)).toBe(
+      '₹1,500.50 of this payment is used as credit on VYP-141, INV-3. Those bills will show it as pending again.',
+    );
+    expect(creditUsedWarning(receipt({ allocations: used.allocations?.slice(0, 1) }), invoices)).toBeNull();
+    expect(creditUsedWarning(undefined, invoices)).toBeNull();
+  });
+
+  it('adds applyCredit to the bill payload only when it is given', () => {
+    expect(toRecordBillInput(validBill)).not.toHaveProperty('applyCredit');
+    expect(toRecordBillInput(validBill, true).applyCredit).toBe(true);
+    expect(toRecordBillInput(validBill, false).applyCredit).toBe(false);
   });
 });

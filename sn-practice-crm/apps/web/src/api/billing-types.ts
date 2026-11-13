@@ -118,6 +118,20 @@ export interface BillingPort {
     idempotencyKey: string,
     options?: PortExecutionOptions,
   ): Promise<PaymentReceiptDto>;
+  /** Uses the client's credit on one open bill. */
+  applyCredit(
+    role: CompanyRole,
+    invoiceId: string,
+    idempotencyKey: string,
+    options?: PortExecutionOptions,
+  ): Promise<InvoiceDto>;
+  /** Removes one credit allocation from a bill; the credit goes back to the client. */
+  removeCreditAllocation(
+    role: CompanyRole,
+    allocationId: string,
+    idempotencyKey: string,
+    options?: PortExecutionOptions,
+  ): Promise<InvoiceDto>;
 }
 
 export interface BillingState {

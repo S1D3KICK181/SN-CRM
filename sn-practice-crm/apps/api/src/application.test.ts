@@ -970,6 +970,12 @@ describe("CrmApplication authority and workflow rules", () => {
         async voidPaymentReceipt(ctx: RepositoryContext) {
           throw new Error(`Unexpected billing repository call: voidPaymentReceipt(${ctx.actorId})`);
         },
+        async applyCredit(ctx: RepositoryContext) {
+          throw new Error(`Unexpected billing repository call: applyCredit(${ctx.actorId})`);
+        },
+        async removeCreditAllocation(ctx: RepositoryContext) {
+          throw new Error(`Unexpected billing repository call: removeCreditAllocation(${ctx.actorId})`);
+        },
         async listEngagements(ctx: RepositoryContext) {
           throw new Error(`Unexpected engagement repository call: listEngagements(${ctx.actorId})`);
         },
@@ -1879,7 +1885,9 @@ describe("CrmApplication authority and workflow rules", () => {
         allocatedPaise: 400000,
         unallocatedPaise: 0,
       });
-      expect(part.allocations).toEqual([{ invoiceId: mine.id, invoiceCode: mine.code, amountPaise: 400000 }]);
+      expect(part.allocations).toEqual([
+        { allocationId: expect.any(String), source: "payment", invoiceId: mine.id, invoiceCode: mine.code, amountPaise: 400000 },
+      ]);
       let bill = (await application.listInvoices(staff)).find((invoice) => invoice.id === mine.id)!;
       expect(bill).toMatchObject({ status: "part_paid", amountReceivedPaise: 400000, balancePaise: 600000 });
 
@@ -1889,17 +1897,13 @@ describe("CrmApplication authority and workflow rules", () => {
       expect(bill.payments).toHaveLength(2);
     });
 
-    it("refuses a payment on a paid, cancelled or draft bill and one above the balance", async () => {
+    it("refuses a payment on a paid, cancelled or draft bill and keeps an overpayment as credit", async () => {
       const { application } = createFixture();
       const founder = await actorFor(application, DEMO_ACTOR_IDS.founder);
       const bill = await application.recordVyaparBill(founder, billInput({ amountPaise: 1250050 }), key());
-      await expect(application.recordPayment(founder, paymentInput(bill.id, { amountPaise: 1250051 }), key()))
-        .rejects.toMatchObject({
-          status: 422,
-          code: "payment_exceeds_balance",
-          message: "The payment is more than the ₹12,500.50 still pending on this bill.",
-        });
-      await application.recordPayment(founder, paymentInput(bill.id, { amountPaise: 1250050 }), key());
+      const over = await application.recordPayment(founder, paymentInput(bill.id, { amountPaise: 1250051 }), key());
+      expect(over).toMatchObject({ amountPaise: 1250051, allocatedPaise: 1250050, unallocatedPaise: 1 });
+      expect(over.allocations).toHaveLength(1);
       await expect(application.recordPayment(founder, paymentInput(bill.id, { amountPaise: 1 }), key()))
         .rejects.toMatchObject({ status: 422, code: "bill_not_open", message: "This bill is already paid or cancelled." });
 
@@ -1967,7 +1971,7 @@ describe("CrmApplication authority and workflow rules", () => {
       const bill = await application.recordVyaparBill(founder, billInput(), key());
       const payment = await application.recordPayment(founder, paymentInput(bill.id), key());
       await expect(application.voidInvoice(founder, bill.id, { reason: "Entered twice" }, key()))
-        .rejects.toMatchObject({ status: 422, code: "bill_has_payments", message: "Cancel the payments on this bill first." });
+        .rejects.toMatchObject({ status: 422, code: "bill_has_payments", message: "Cancel the payments and remove any credit on this bill first." });
       await application.voidPaymentReceipt(founder, payment.id, { reason: "Refunded" }, key());
       const voided = await application.voidInvoice(founder, bill.id, { reason: "Entered twice" }, key());
       expect(voided).toMatchObject({ status: "voided", voidReason: "Entered twice", balancePaise: 0 });
@@ -2010,6 +2014,155 @@ describe("CrmApplication authority and workflow rules", () => {
       const invoices = await application.listInvoices(senior);
       // Senior Staff reviews the assignments of clients 1 and 3 and owns neither client 2 nor its assignment
       expect(invoices.map((invoice) => invoice.code).sort()).toEqual(["INV-0001001", "INV-0001002", "INV-0001003"]);
+    });
+  });
+
+  describe("FEE-02a client credit", () => {
+    const CLIENT_1 = "10000000-0000-4000-a000-000000000001"; // has demo credit; Senior Staff reviews it, Staff does not
+    const CLIENT_2 = "10000000-0000-4000-a000-000000000002"; // looked after by Staff
+    const billInput = (overrides: Partial<RecordVyaparBillInput> = {}): RecordVyaparBillInput => ({
+      clientId: CLIENT_2,
+      vyaparBillNumber: "VYP-401",
+      billDate: "2026-10-01",
+      dueDate: "2026-10-31",
+      amountPaise: 1000000,
+      description: "Monthly accounting fee",
+      ...overrides,
+    });
+    const paymentInput = (invoiceId: string, overrides: Partial<RecordPaymentInput> = {}): RecordPaymentInput => ({
+      invoiceId,
+      receivedOn: "2026-10-20",
+      amountPaise: 400000,
+      method: "bank_transfer",
+      ...overrides,
+    });
+    let keyCounter = 0;
+    const key = () => `credit-key-${++keyCounter}`;
+
+    // Client 2 overpays a bill of 10,000 with 15,000, leaving 5,000 credit, and has a second open bill
+    async function withCredit() {
+      const fixture = createFixture();
+      const founder = await fixture.application.requireActor(DEMO_ACTOR_IDS.founder);
+      const first = await fixture.application.recordVyaparBill(founder, billInput(), key());
+      const receipt = await fixture.application.recordPayment(founder, paymentInput(first.id, { amountPaise: 1500000 }), key());
+      const second = await fixture.application.recordVyaparBill(founder, billInput({ vyaparBillNumber: "VYP-402", amountPaise: 800000 }), key());
+      return { ...fixture, founder, first, receipt, second };
+    }
+
+    it("keeps an overpayment as credit that Staff can apply to another bill of a client they look after", async () => {
+      const { application, receipt, second } = await withCredit();
+      const staff = await application.requireActor(DEMO_ACTOR_IDS.staff);
+      expect(receipt).toMatchObject({ amountPaise: 1500000, allocatedPaise: 1000000, unallocatedPaise: 500000 });
+
+      const updated = await application.applyCredit(staff, second.id, {}, key());
+      expect(updated).toMatchObject({ status: "part_paid", amountReceivedPaise: 500000, balancePaise: 300000 });
+      expect(updated.payments).toEqual([
+        expect.objectContaining({ receiptId: receipt.id, receiptCode: receipt.code, source: "credit", amountPaise: 500000 }),
+      ]);
+      expect((await application.listPaymentReceipts(staff)).find((candidate) => candidate.id === receipt.id)).toMatchObject({
+        unallocatedPaise: 0,
+      });
+    });
+
+    it("refuses with no_credit_available once the credit is used, and replays the first result", async () => {
+      const { application, founder, second } = await withCredit();
+      const applyKey = key();
+      const first = await application.applyCredit(founder, second.id, {}, applyKey);
+      await expect(application.applyCredit(founder, second.id, {}, key()))
+        .rejects.toMatchObject({ status: 422, code: "no_credit_available", message: "This client has no credit to use." });
+      expect(await application.applyCredit(founder, second.id, {}, applyKey)).toEqual(first);
+    });
+
+    it("refuses credit on a bill that is paid, cancelled or not visible, and on a missing bill", async () => {
+      const { application, founder, first, second } = await withCredit();
+      const staff = await application.requireActor(DEMO_ACTOR_IDS.staff);
+      await expect(application.applyCredit(founder, first.id, {}, key()))
+        .rejects.toMatchObject({ status: 422, code: "bill_not_open", message: "This bill is already paid or cancelled." });
+      await application.voidInvoice(founder, second.id, { reason: "Entered twice" }, key());
+      await expect(application.applyCredit(founder, second.id, {}, key())).rejects.toMatchObject({ status: 422, code: "bill_not_open" });
+      const others = await application.recordVyaparBill(founder, billInput({ clientId: CLIENT_1, vyaparBillNumber: "VYP-403" }), key());
+      await expect(application.applyCredit(staff, others.id, {}, key()))
+        .rejects.toMatchObject({ status: 404, message: "Invoice was not found." });
+      await expect(application.applyCredit(founder, "70000000-0000-4000-a000-0000000000ff", {}, key()))
+        .rejects.toMatchObject({ status: 404, message: "Invoice was not found." });
+    });
+
+    it("lets Senior Staff apply the credit of a client they review, but never a Trainee", async () => {
+      const { application, founder } = await withCredit();
+      const senior = await application.requireActor(DEMO_ACTOR_IDS.senior);
+      const trainee = await application.requireActor(DEMO_ACTOR_IDS.trainee);
+      const bill = await application.recordVyaparBill(founder, billInput({ clientId: CLIENT_1, vyaparBillNumber: "VYP-404", amountPaise: 300000 }), key());
+      await expect(application.applyCredit(trainee, bill.id, {}, key()))
+        .rejects.toMatchObject({ status: 403, code: "role_not_permitted" });
+      // The demo receipt RCT-0001002 holds 4,00,000 of unallocated credit for client 1
+      const updated = await application.applyCredit(senior, bill.id, {}, key());
+      expect(updated).toMatchObject({ status: "paid", balancePaise: 0 });
+      expect(updated.payments[0]).toMatchObject({ receiptCode: "RCT-0001002", source: "credit", amountPaise: 300000 });
+    });
+
+    it("applies the client's credit when recording a bill with applyCredit, and not otherwise", async () => {
+      const { application, founder } = await withCredit();
+      const plain = await application.recordVyaparBill(founder, billInput({ vyaparBillNumber: "VYP-405" }), key());
+      expect(plain).toMatchObject({ status: "issued", payments: [] });
+      const used = await application.recordVyaparBill(founder, billInput({ vyaparBillNumber: "VYP-406", applyCredit: true }), key());
+      expect(used).toMatchObject({ status: "part_paid", amountReceivedPaise: 500000 });
+      const none = await application.recordVyaparBill(founder, billInput({ vyaparBillNumber: "VYP-407", applyCredit: true }), key());
+      expect(none).toMatchObject({ status: "issued", payments: [] });
+    });
+
+    it("removes credit from a bill for the Founder or Manager, returning it to the client", async () => {
+      const { application, founder, second } = await withCredit();
+      const manager = await application.requireActor(DEMO_ACTOR_IDS.manager);
+      const used = await application.applyCredit(founder, second.id, {}, key());
+      const allocationId = used.payments[0]!.allocationId;
+      const removed = await application.removeCreditAllocation(manager, allocationId, {}, key());
+      expect(removed).toMatchObject({ status: "issued", amountReceivedPaise: 0, payments: [] });
+      await expect(application.removeCreditAllocation(manager, allocationId, {}, key()))
+        .rejects.toMatchObject({ status: 404, message: "Payment allocation was not found." });
+      await expect(application.applyCredit(founder, second.id, {}, key())).resolves.toMatchObject({ amountReceivedPaise: 500000 });
+    });
+
+    it("refuses to remove a direct payment allocation", async () => {
+      const { application, founder, receipt } = await withCredit();
+      await expect(application.removeCreditAllocation(founder, receipt.allocations[0]!.allocationId, {}, key()))
+        .rejects.toMatchObject({ status: 422, code: "not_credit_allocation", message: "This is a direct payment. Cancel the payment instead." });
+    });
+
+    it.each([
+      ["senior_staff", DEMO_ACTOR_IDS.senior], ["staff", DEMO_ACTOR_IDS.staff], ["trainee", DEMO_ACTOR_IDS.trainee],
+    ] as const)("denies %s removing credit with 403 before any repository write", async (_role, actorId) => {
+      const { application, repository } = await withCredit();
+      const actor = await application.requireActor(actorId);
+      const spy = vi.spyOn(repository, "removeCreditAllocation");
+      await expect(application.removeCreditAllocation(actor, "73000000-0000-4000-a000-000000000001", {}, key()))
+        .rejects.toMatchObject({ status: 403, code: "role_not_permitted" });
+      expect(spy).not.toHaveBeenCalled();
+    });
+
+    it("requires a valid Idempotency-Key for the credit writes", async () => {
+      const { application, founder, second } = await withCredit();
+      await expect(application.applyCredit(founder, second.id, {}, " ")).rejects.toMatchObject({ status: 422 });
+      await expect(application.removeCreditAllocation(founder, "73000000-0000-4000-a000-000000000001", {}, "")).rejects.toMatchObject({ status: 422 });
+    });
+
+    it("puts a bill back to pending when the receipt that gave the credit is cancelled", async () => {
+      const { application, founder, receipt, second } = await withCredit();
+      await application.applyCredit(founder, second.id, {}, key());
+      await application.voidPaymentReceipt(founder, receipt.id, { reason: "Cheque bounced" }, key());
+      const bill = (await application.listInvoices(founder)).find((invoice) => invoice.id === second.id)!;
+      expect(bill).toMatchObject({ status: "issued", amountReceivedPaise: 0 });
+    });
+
+    it("refuses to cancel a bill that has credit on it until the credit is removed", async () => {
+      const { application, founder, second } = await withCredit();
+      const used = await application.applyCredit(founder, second.id, {}, key());
+      await expect(application.voidInvoice(founder, second.id, { reason: "Entered twice" }, key())).rejects.toMatchObject({
+        status: 422,
+        code: "bill_has_payments",
+        message: "Cancel the payments and remove any credit on this bill first.",
+      });
+      await application.removeCreditAllocation(founder, used.payments[0]!.allocationId, {}, key());
+      await expect(application.voidInvoice(founder, second.id, { reason: "Entered twice" }, key())).resolves.toMatchObject({ status: "voided" });
     });
   });
 

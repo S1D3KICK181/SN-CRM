@@ -58,6 +58,8 @@ export function mapInvoiceDto(dto: InvoiceDto): InvoiceRecord {
     amount: paiseToRupees(item.lineSubtotalPaise),
   }));
   const payments: InvoicePaymentRecord[] = dto.payments.map((payment) => ({
+    allocationId: payment.allocationId,
+    source: payment.source,
     receiptId: payment.receiptId,
     receiptNumber: payment.receiptCode,
     date: formatIsoToDisplayDate(payment.receivedOn),
@@ -95,6 +97,8 @@ export function mapInvoiceDto(dto: InvoiceDto): InvoiceRecord {
 
 export function mapReceiptDto(dto: PaymentReceiptDto): ReceiptRecord {
   const allocations = dto.allocations.map((allocation) => ({
+    allocationId: allocation.allocationId,
+    source: allocation.source,
     invoiceId: allocation.invoiceId,
     invoiceNumber: allocation.invoiceCode,
     amount: paiseToRupees(allocation.amountPaise),
@@ -116,5 +120,6 @@ export function mapReceiptDto(dto: PaymentReceiptDto): ReceiptRecord {
     status: dto.status === 'voided' ? 'Voided' : 'Received',
     allocations,
     unallocated: paiseToRupees(dto.unallocatedPaise),
+    unallocatedPaise: dto.unallocatedPaise,
   };
 }

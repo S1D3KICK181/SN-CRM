@@ -100,7 +100,7 @@ describe('CancelFeeRecordDialog', () => {
   });
 
   it.each([
-    ['bill_has_payments', 'Cancel the payments on this bill first.'],
+    ['bill_has_payments', 'Cancel the payments and remove any credit on this bill first.'],
     ['already_voided', 'This record is already cancelled.'],
   ])('keeps the dialog open with the reason and shows the %s message', async (serverCode, message) => {
     const onSubmit = vi.fn().mockRejectedValue(
@@ -127,5 +127,26 @@ describe('CancelFeeRecordDialog', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Keep it' }));
     fireEvent.keyDown(document, { key: 'Escape' });
     expect(onClose).toHaveBeenCalledTimes(2);
+  });
+
+  it('shows the warning only when one is given', () => {
+    setupPayment();
+    expect(screen.queryByRole('status')).toBeNull();
+    cleanup();
+
+    render(
+      <CancelFeeRecordDialog
+        open
+        kind="payment"
+        label="RCT-0001001"
+        amountPaise={1050000}
+        warning="₹3,000 of this payment is used as credit on VYP-141. Those bills will show it as pending again."
+        onClose={vi.fn()}
+        onSubmit={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole('status').textContent).toBe(
+      '₹3,000 of this payment is used as credit on VYP-141. Those bills will show it as pending again.',
+    );
   });
 });

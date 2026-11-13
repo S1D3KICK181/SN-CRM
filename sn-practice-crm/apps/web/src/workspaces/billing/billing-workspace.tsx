@@ -20,7 +20,7 @@ import {
   type ReceiptRecord,
 } from '../../data';
 import { Card } from '../../ui/workspace-primitives';
-import { billLabel, canRecordPayment } from './billing-form-model';
+import { billLabel, canRecordPayment, creditByClient, creditUsedWarning } from './billing-form-model';
 import { CancelFeeRecordDialog } from './cancel-fee-record-dialog';
 import { InvoiceDetailDrawer } from './invoice-detail-drawer';
 import { RecordPaymentDialog } from './record-payment-dialog';
@@ -29,7 +29,10 @@ import { RecordVyaparBillDialog } from './record-vyapar-bill-dialog';
 const STAFF_BANNER =
   'Showing bills for the clients you look after. You can record payments; the Founder or Manager records and cancels bills.';
 
-export type BillingActions = Pick<UseBillingResult, 'recordBill' | 'recordPayment' | 'voidBill' | 'voidPayment'>;
+export type BillingActions = Pick<
+  UseBillingResult,
+  'recordBill' | 'recordPayment' | 'voidBill' | 'voidPayment' | 'applyCredit' | 'removeCredit'
+>;
 
 interface BillingWorkspaceProps {
   role: CompanyRole;
@@ -115,8 +118,10 @@ export function BillingWorkspace({ role, model, clients, actions, loading, error
     };
   }, [openInvoices]);
 
+  const credits = useMemo(() => creditByClient(receipts), [receipts]);
+
   const receivablesByClient = useMemo(() => {
-    const byClient = new Map<string, { clientId: string; clientName: string; clientCode: string; outstanding: number; count: number; worstDaysOverdue: number }>();
+    const byClient = new Map<string, { clientId: string; clientName: string; clientCode: string; outstanding: number; count: number; worstDaysOverdue: number; creditPaise: number }>();
     for (const inv of openInvoices) {
       const entry = byClient.get(inv.clientId) ?? {
         clientId: inv.clientId,
@@ -125,14 +130,29 @@ export function BillingWorkspace({ role, model, clients, actions, loading, error
         outstanding: 0,
         count: 0,
         worstDaysOverdue: 0,
+        creditPaise: credits.get(inv.clientId) ?? 0,
       };
       entry.outstanding += inv.balance;
       entry.count += 1;
       entry.worstDaysOverdue = Math.max(entry.worstDaysOverdue, inv.daysOverdue);
       byClient.set(inv.clientId, entry);
     }
+    // Clients who hold credit but have nothing pending are listed too.
+    for (const [clientId, creditPaise] of credits) {
+      if (byClient.has(clientId)) continue;
+      const receipt = receipts.find((candidate) => candidate.clientId === clientId);
+      byClient.set(clientId, {
+        clientId,
+        clientName: receipt?.clientName ?? '',
+        clientCode: clients.find((client) => client.id === clientId)?.code ?? '',
+        outstanding: 0,
+        count: 0,
+        worstDaysOverdue: 0,
+        creditPaise,
+      });
+    }
     return [...byClient.values()].sort((a, b) => b.outstanding - a.outstanding);
-  }, [openInvoices]);
+  }, [openInvoices, credits, receipts, clients]);
 
   const filteredInvoices = useMemo(() => {
     return invoices.filter((inv) => {
@@ -500,13 +520,14 @@ export function BillingWorkspace({ role, model, clients, actions, loading, error
                         <th>Client Name</th>
                         <th>Open bills</th>
                         <th>Outstanding Amount</th>
+                        <th>Credit</th>
                         <th>Ageing Status</th>
                       </tr>
                     </thead>
                     <tbody>
                       {receivablesByClient.length === 0 ? (
                         <tr>
-                          <td colSpan={4} style={{ textAlign: 'center', padding: '32px 16px', color: 'var(--ink-muted)' }}>
+                          <td colSpan={5} style={{ textAlign: 'center', padding: '32px 16px', color: 'var(--ink-muted)' }}>
                             No outstanding receivables.
                           </td>
                         </tr>
@@ -530,9 +551,18 @@ export function BillingWorkspace({ role, model, clients, actions, loading, error
                               </strong>
                             </td>
                             <td>
-                              <span className={`invoice-chip ${c.worstDaysOverdue > 0 ? 'is-overdue' : 'is-partial'}`}>
-                                {c.worstDaysOverdue > 0 ? `${c.worstDaysOverdue}d overdue` : 'Current'}
+                              <span style={{ fontSize: 12, color: c.creditPaise > 0 ? 'var(--success)' : 'var(--ink-muted)' }}>
+                                {c.creditPaise > 0 ? formatINR(c.creditPaise / 100) : '—'}
                               </span>
+                            </td>
+                            <td>
+                              {c.count === 0 ? (
+                                <span style={{ fontSize: 12, color: 'var(--ink-muted)' }}>Nothing pending</span>
+                              ) : (
+                                <span className={`invoice-chip ${c.worstDaysOverdue > 0 ? 'is-overdue' : 'is-partial'}`}>
+                                  {c.worstDaysOverdue > 0 ? `${c.worstDaysOverdue}d overdue` : 'Current'}
+                                </span>
+                              )}
                             </td>
                           </tr>
                         ))
@@ -585,7 +615,10 @@ export function BillingWorkspace({ role, model, clients, actions, loading, error
                               ) : (
                                 <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
                                   {allocations.map((allocation) => (
-                                    <span className="client-id-chip" key={allocation.invoiceId}>{allocation.invoiceNumber}</span>
+                                    <span className="client-id-chip" key={allocation.allocationId}>
+                                      {allocation.invoiceNumber}
+                                      {allocation.source === 'credit' ? ' (credit)' : ''}
+                                    </span>
                                   ))}
                                 </div>
                               )}
@@ -606,7 +639,7 @@ export function BillingWorkspace({ role, model, clients, actions, loading, error
                               </strong>
                               {!voided && unallocated > 0 ? (
                                 <small style={{ display: 'block', fontSize: 11, color: 'var(--warning)' }}>
-                                  Unallocated {formatINR(unallocated)}
+                                  {formatINR(unallocated)} kept as credit
                                 </small>
                               ) : null}
                             </td>
@@ -639,6 +672,16 @@ export function BillingWorkspace({ role, model, clients, actions, loading, error
           onCancelPayment={(payment: InvoicePaymentRecord, from) =>
             openDialog({ kind: 'cancel-payment', invoiceId: selectedInvoice.id, receiptId: payment.receiptId }, from)
           }
+          creditPaise={credits.get(selectedInvoice.clientId) ?? 0}
+          onUseCredit={async (key) => {
+            const before = Math.round(selectedInvoice.amountReceived * 100);
+            const dto = await actions.applyCredit(selectedInvoice.id, key);
+            onToast(`${formatINR((dto.amountReceivedPaise - before) / 100)} of credit used on ${billLabel(selectedInvoice)}.`);
+          }}
+          onRemoveCredit={async (payment, key) => {
+            await actions.removeCredit(payment.allocationId, key);
+            onToast(`Credit removed from ${billLabel(selectedInvoice)}.`);
+          }}
           onClose={() => setSelectedInvoiceId(null)}
         />
       ) : null}
@@ -647,10 +690,12 @@ export function BillingWorkspace({ role, model, clients, actions, loading, error
         <RecordVyaparBillDialog
           open
           clients={clients}
+          creditByClient={credits}
           onClose={closeDialog}
           onSubmit={async (input, key) => {
             const dto = await actions.recordBill(input, key);
-            onToast(`Vyapar bill ${dto.vyaparBillNumber ?? dto.code} recorded for ${dto.clientName}.`);
+            const used = dto.amountReceivedPaise > 0 ? ` ${formatINR(dto.amountReceivedPaise / 100)} of credit used.` : '';
+            onToast(`Vyapar bill ${dto.vyaparBillNumber ?? dto.code} recorded for ${dto.clientName}.${used}`);
           }}
         />
       ) : null}
@@ -660,8 +705,12 @@ export function BillingWorkspace({ role, model, clients, actions, loading, error
           invoice={dialogInvoice}
           onClose={closeDialog}
           onSubmit={async (input, key) => {
-            await actions.recordPayment(input, key);
-            onToast(`Payment of ${formatINR(input.amountPaise / 100)} recorded on ${billLabel(dialogInvoice)}.`);
+            const receipt = await actions.recordPayment(input, key);
+            const extra =
+              receipt.unallocatedPaise > 0
+                ? ` ${formatINR(receipt.unallocatedPaise / 100)} kept as credit for ${dialogInvoice.clientName}.`
+                : '';
+            onToast(`Payment of ${formatINR(input.amountPaise / 100)} recorded on ${billLabel(dialogInvoice)}.${extra}`);
           }}
         />
       ) : null}
@@ -683,6 +732,10 @@ export function BillingWorkspace({ role, model, clients, actions, loading, error
           kind="payment"
           label={dialogPayment.receiptNumber}
           amountPaise={dialogPayment.amountPaise}
+          warning={creditUsedWarning(
+            receipts.find((receipt) => receipt.id === dialogPayment.receiptId),
+            invoices,
+          )}
           onClose={closeDialog}
           onSubmit={async (reason, key) => {
             await actions.voidPayment(dialogPayment.receiptId, { reason }, key);

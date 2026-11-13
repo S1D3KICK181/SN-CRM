@@ -4,6 +4,7 @@ import type {
   InvoicePaymentDto,
   InvoiceStatus,
   PaymentAllocationDto,
+  PaymentAllocationSource,
   PaymentMethod,
   PaymentReceiptDto,
   PaymentReceiptStatus,
@@ -34,6 +35,7 @@ export interface HttpBillingAdapterOptions {
 
 const VALID_COMPANY_ROLES = new Set<CompanyRole>(['founder', 'manager', 'senior_staff', 'staff', 'trainee']);
 const RECEIPT_STATUSES: readonly PaymentReceiptStatus[] = ['received', 'voided'];
+const ALLOCATION_SOURCES: readonly PaymentAllocationSource[] = ['payment', 'credit'];
 const ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
 function getDemoActorId(role: CompanyRole): string | null {
@@ -179,6 +181,8 @@ function parseInvoiceItem(raw: unknown): InvoiceItemDto {
 function parseInvoicePayment(raw: unknown): InvoicePaymentDto {
   const rec = asObject(raw, 'invoice payment');
   return {
+    allocationId: readUuid(rec, 'allocationId', 'invoice payment'),
+    source: readEnum(rec, 'source', 'invoice payment', ALLOCATION_SOURCES),
     receiptId: readUuid(rec, 'receiptId', 'invoice payment'),
     receiptCode: readString(rec, 'receiptCode', 'invoice payment'),
     receivedOn: readIsoDate(rec, 'receivedOn', 'invoice payment'),
@@ -225,6 +229,8 @@ export function parseInvoiceDto(raw: unknown): InvoiceDto {
 function parsePaymentAllocation(raw: unknown): PaymentAllocationDto {
   const rec = asObject(raw, 'receipt allocation');
   return {
+    allocationId: readUuid(rec, 'allocationId', 'receipt allocation'),
+    source: readEnum(rec, 'source', 'receipt allocation', ALLOCATION_SOURCES),
     invoiceId: readUuid(rec, 'invoiceId', 'receipt allocation'),
     invoiceCode: readString(rec, 'invoiceCode', 'receipt allocation'),
     amountPaise: readPaise(rec, 'amountPaise', 'receipt allocation'),
@@ -547,6 +553,38 @@ export class HttpBillingAdapter implements BillingPort {
     options?: PortExecutionOptions,
   ): Promise<PaymentReceiptDto> {
     return this.mutate(role, '/api/v1/payment-receipts', input, idempotencyKey, parsePaymentReceiptDto, options);
+  }
+
+  applyCredit(
+    role: CompanyRole,
+    invoiceId: string,
+    idempotencyKey: string,
+    options?: PortExecutionOptions,
+  ): Promise<InvoiceDto> {
+    return this.mutate(
+      role,
+      `/api/v1/invoices/${encodeURIComponent(invoiceId)}/apply-credit`,
+      {},
+      idempotencyKey,
+      parseInvoiceDto,
+      options,
+    );
+  }
+
+  removeCreditAllocation(
+    role: CompanyRole,
+    allocationId: string,
+    idempotencyKey: string,
+    options?: PortExecutionOptions,
+  ): Promise<InvoiceDto> {
+    return this.mutate(
+      role,
+      `/api/v1/payment-allocations/${encodeURIComponent(allocationId)}/remove`,
+      {},
+      idempotencyKey,
+      parseInvoiceDto,
+      options,
+    );
   }
 
   voidPaymentReceipt(

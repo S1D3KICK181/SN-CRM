@@ -221,4 +221,50 @@ describe('RecordVyaparBillDialog', () => {
     fireEvent.keyDown(document, { key: 'Escape' });
     expect(onClose).toHaveBeenCalledTimes(3);
   });
+
+  describe('client credit', () => {
+    const credit = new Map([[ASTER, 500000]]);
+    const label = 'Use ₹5,000 credit against this bill';
+    function setupWithCredit(onSubmit: (input: RecordVyaparBillInput, key: string) => Promise<void> = vi.fn().mockResolvedValue(undefined)) {
+      render(
+        <RecordVyaparBillDialog open clients={clients} creditByClient={credit} today={TODAY} onClose={vi.fn()} onSubmit={onSubmit} />,
+      );
+      return { onSubmit };
+    }
+
+    it('shows the checkbox, ticked, only once a client with credit is chosen', () => {
+      setupWithCredit();
+      expect(screen.queryByRole('checkbox')).toBeNull();
+      type('Client', BHARAT);
+      expect(screen.queryByRole('checkbox')).toBeNull();
+      type('Client', ASTER);
+      expect((screen.getByLabelText(label) as HTMLInputElement).checked).toBe(true);
+      type('Client', '');
+      expect(screen.queryByRole('checkbox')).toBeNull();
+    });
+
+    it('sends applyCredit true by default and false when unticked, with a new key for the new payload', async () => {
+      const onSubmit = vi.fn().mockRejectedValue(new Error('offline'));
+      setupWithCredit(onSubmit);
+      fillValid();
+      fireEvent.click(submitButton());
+      await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+      expect(onSubmit.mock.calls[0]?.[0]).toMatchObject({ applyCredit: true });
+
+      fireEvent.click(screen.getByLabelText(label));
+      fireEvent.click(submitButton());
+      await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(2));
+      expect(onSubmit.mock.calls[1]?.[0]).toMatchObject({ applyCredit: false });
+      expect(onSubmit.mock.calls[1]?.[1]).not.toBe(onSubmit.mock.calls[0]?.[1]);
+    });
+
+    it('leaves applyCredit out when the client has no credit', async () => {
+      const onSubmit = vi.fn().mockResolvedValue(undefined);
+      setup(onSubmit);
+      fillValid();
+      fireEvent.click(submitButton());
+      await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+      expect(onSubmit.mock.calls[0]?.[0]).not.toHaveProperty('applyCredit');
+    });
+  });
 });

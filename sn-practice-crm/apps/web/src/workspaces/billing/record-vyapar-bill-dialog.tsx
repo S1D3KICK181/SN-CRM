@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { FilePlus2, X } from 'lucide-react';
 import type { ClientDto, RecordVyaparBillInput } from '@sn/contracts';
+import { formatINR } from '../../data';
 import {
   addDaysToIsoDate,
   billingSaveErrorMessage,
@@ -18,6 +19,8 @@ import {
 type Props = {
   open: boolean;
   clients: readonly ClientDto[];
+  /** Credit each client holds in paise, keyed by client id (see creditByClient). */
+  creditByClient?: ReadonlyMap<string, number>;
   /** Today as YYYY-MM-DD in Asia/Kolkata; only tests pass this. */
   today?: string;
   opener?: HTMLElement | null;
@@ -28,9 +31,18 @@ type Props = {
 
 const focusable = 'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled])';
 
-export function RecordVyaparBillDialog({ open, clients, today: todayOverride, opener, onClose, onSubmit }: Props) {
+export function RecordVyaparBillDialog({
+  open,
+  clients,
+  creditByClient,
+  today: todayOverride,
+  opener,
+  onClose,
+  onSubmit,
+}: Props) {
   const [today, setToday] = useState(() => todayOverride ?? todayInKolkata());
   const [values, setValues] = useState<BillFormValues>(() => initialBillValues(today));
+  const [useCredit, setUseCredit] = useState(true);
   const [errors, setErrors] = useState<BillFormErrors>({});
   const [formError, setFormError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
@@ -58,6 +70,7 @@ export function RecordVyaparBillDialog({ open, clients, today: todayOverride, op
       const fresh = todayOverride ?? todayInKolkata();
       setToday(fresh);
       setValues(initialBillValues(fresh));
+      setUseCredit(true);
       setErrors({});
       setFormError(null);
       dueEdited.current = false;
@@ -103,12 +116,15 @@ export function RecordVyaparBillDialog({ open, clients, today: todayOverride, op
 
   if (!open) return null;
 
-  const update = (key: keyof BillFormValues, value: string) => {
+  const clientCreditPaise = values.clientId ? (creditByClient?.get(values.clientId) ?? 0) : 0;
+
+  const update =(key: keyof BillFormValues, value: string) => {
     setValues((current) => {
       const next = { ...current, [key]: value };
       if (key === 'billDate' && !dueEdited.current) next.dueDate = addDaysToIsoDate(value, DUE_DAYS_DEFAULT);
       return next;
     });
+    if (key === 'clientId') setUseCredit(true);
     setErrors((current) => ({ ...current, [key]: undefined }));
   };
 
@@ -122,7 +138,7 @@ export function RecordVyaparBillDialog({ open, clients, today: todayOverride, op
       requestAnimationFrame(() => dialogRef.current?.querySelector<HTMLElement>('[aria-invalid="true"]')?.focus());
       return;
     }
-    const input = toRecordBillInput(values);
+    const input = toRecordBillInput(values, clientCreditPaise > 0 ? useCredit : undefined);
     attempt.current = nextSaveAttempt(attempt.current, input);
     lock.current = true;
     setPending(true);
@@ -207,6 +223,25 @@ export function RecordVyaparBillDialog({ open, clients, today: todayOverride, op
               </select>
               {fieldError('clientId')}
             </div>
+            {clientCreditPaise > 0 ? (
+              <div style={{ margin: '-4px 0 4px' }}>
+                {/* Not a .field: its input rules would stretch the checkbox to full width. */}
+                <label
+                  htmlFor="bill-applyCredit"
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 13, fontWeight: 600, color: 'var(--ink)', cursor: 'pointer' }}
+                >
+                  <input
+                    id="bill-applyCredit"
+                    type="checkbox"
+                    checked={useCredit}
+                    disabled={pending}
+                    onChange={(event) => setUseCredit(event.target.checked)}
+                    style={{ width: 16, height: 16, margin: 0, flex: 'none', accentColor: 'var(--brand)' }}
+                  />
+                  Use {formatINR(clientCreditPaise / 100)} credit against this bill
+                </label>
+              </div>
+            ) : null}
             <div className="field">
               <label htmlFor="bill-vyaparBillNumber">Vyapar bill number</label>
               <input

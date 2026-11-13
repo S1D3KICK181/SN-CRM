@@ -1,6 +1,13 @@
+import { useRef, useState } from 'react';
 import { ReceiptIndianRupee, X } from 'lucide-react';
 import { formatINR, type InvoiceRecord, type InvoicePaymentRecord } from '../../data';
-import { billLabel, canRecordPayment } from './billing-form-model';
+import {
+  billingSaveErrorMessage,
+  billLabel,
+  canRecordPayment,
+  nextSaveAttempt,
+  type SaveAttempt,
+} from './billing-form-model';
 
 interface InvoiceDetailDrawerProps {
   invoice: InvoiceRecord;
@@ -11,6 +18,12 @@ interface InvoiceDetailDrawerProps {
   onRecordPayment: (opener: HTMLElement) => void;
   onCancelBill: (opener: HTMLElement) => void;
   onCancelPayment: (payment: InvoicePaymentRecord, opener: HTMLElement) => void;
+  /** Credit the client holds, in paise. */
+  creditPaise: number;
+  /** Resolves when the credit was used; rejects with a BillingOperationError when not. */
+  onUseCredit: (idempotencyKey: string) => Promise<void>;
+  /** Founder and Manager only. Resolves when the credit was removed from this bill. */
+  onRemoveCredit: (payment: InvoicePaymentRecord, idempotencyKey: string) => Promise<void>;
   onClose: () => void;
 }
 
@@ -25,12 +38,40 @@ export function InvoiceDetailDrawer({
   onRecordPayment,
   onCancelBill,
   onCancelPayment,
+  creditPaise,
+  onUseCredit,
+  onRemoveCredit,
   onClose,
 }: InvoiceDetailDrawerProps) {
+  const [creditPending, setCreditPending] = useState(false);
+  const [creditError, setCreditError] = useState<string | null>(null);
+  const creditLock = useRef(false);
+  const creditAttempt = useRef<SaveAttempt | null>(null);
+
+  // One credit change at a time. The key is reused when the same change is retried after a
+  // failure, and dropped once it succeeds so a later change gets a fresh key.
+  const runCreditChange = async (payload: unknown, run: (key: string) => Promise<void>) => {
+    if (creditLock.current) return;
+    creditAttempt.current = nextSaveAttempt(creditAttempt.current, payload);
+    creditLock.current = true;
+    setCreditPending(true);
+    setCreditError(null);
+    try {
+      await run(creditAttempt.current.key);
+      creditAttempt.current = null;
+    } catch (err: unknown) {
+      setCreditError(billingSaveErrorMessage(err));
+    } finally {
+      creditLock.current = false;
+      setCreditPending(false);
+    }
+  };
+
   const items = invoice.items ?? [];
   const payments = invoice.payments ?? [];
   const hasReceivedPayments = payments.some((payment) => !payment.voided);
   const showCrmRef = Boolean(invoice.vyaparBillNumber);
+  const showUseCredit = mayRecordPayment && canRecordPayment(invoice) && creditPaise > 0;
 
   return (
     <>
@@ -153,6 +194,30 @@ export function InvoiceDetailDrawer({
             </div>
           </div>
 
+          {showUseCredit ? (
+            <div
+              className="drawer-card"
+              style={{ padding: 14, marginTop: 16, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}
+            >
+              <span style={{ fontSize: 12 }}>
+                {invoice.clientName} has {formatINR(creditPaise / 100)} credit.
+              </span>
+              <button
+                className="soft-button"
+                type="button"
+                disabled={creditPending}
+                onClick={() => void runCreditChange({ op: 'apply-credit', invoiceId: invoice.id }, onUseCredit)}
+              >
+                Use credit
+              </button>
+            </div>
+          ) : null}
+          {creditError ? (
+            <p className="dialog-validation-summary" role="alert" style={{ marginTop: 12 }}>
+              {creditError}
+            </p>
+          ) : null}
+
           {/* Payments */}
           <div style={{ marginTop: 16 }}>
             <span style={LABEL_STYLE}>Payments ({payments.length})</span>
@@ -163,11 +228,30 @@ export function InvoiceDetailDrawer({
                 {payments.map((payment, index) => (
                   <div key={`${payment.receiptId}-${index}`} className="history-card-row">
                     <div>
-                      <strong>{payment.receiptNumber} · {formatINR(payment.amount)}</strong>
+                      <strong>
+                        {payment.source === 'credit'
+                          ? `Credit from ${payment.receiptNumber} · ${formatINR(payment.amount)}`
+                          : `${payment.receiptNumber} · ${formatINR(payment.amount)}`}
+                      </strong>
                       <small>{payment.date}</small>
                     </div>
                     {payment.voided ? <span className="invoice-chip is-overdue">Cancelled</span> : null}
-                    {canCancel && !payment.voided ? (
+                    {canCancel && !payment.voided && payment.source === 'credit' ? (
+                      <button
+                        className="soft-button"
+                        type="button"
+                        aria-label={`Remove credit from ${payment.receiptNumber}`}
+                        disabled={creditPending}
+                        onClick={() =>
+                          void runCreditChange({ op: 'remove-credit', allocationId: payment.allocationId }, (key) =>
+                            onRemoveCredit(payment, key),
+                          )
+                        }
+                      >
+                        Remove credit
+                      </button>
+                    ) : null}
+                    {canCancel && !payment.voided && payment.source !== 'credit' ? (
                       <button
                         className="soft-button"
                         type="button"
@@ -203,7 +287,7 @@ export function InvoiceDetailDrawer({
               </button>
               {hasReceivedPayments ? (
                 <small id={CANCEL_BLOCKED_NOTE_ID} style={{ color: 'var(--ink-muted)', fontSize: 12 }}>
-                  Cancel the payments on this bill first.
+                  Cancel the payments and remove any credit on this bill first.
                 </small>
               ) : null}
             </>

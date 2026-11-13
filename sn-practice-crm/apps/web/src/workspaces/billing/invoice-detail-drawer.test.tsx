@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { BillingOperationError } from '../../api/billing-types';
 import { InvoiceDetailDrawer } from './invoice-detail-drawer';
 import type { InvoiceRecord } from '../../data';
 
@@ -34,8 +35,8 @@ function createInvoice(overrides: Partial<InvoiceRecord> = {}): InvoiceRecord {
       { id: '72000000-0000-4000-a000-000000000003', description: 'Reconciliation review', quantity: 1.5, rate: 12000, gstPercent: 0, amount: 18000 },
     ],
     payments: [
-      { receiptId: '73000000-0000-4000-a000-000000000001', receiptNumber: 'RCT-0001001', date: '29/10/2026', amount: 10500, amountPaise: 1050000, voided: false },
-      { receiptId: '73000000-0000-4000-a000-000000000002', receiptNumber: 'RCT-0001002', date: '08/11/2026', amount: 6000, amountPaise: 600000, voided: true },
+      { allocationId: '74000000-0000-4000-a000-000000000001', source: 'payment', receiptId: '73000000-0000-4000-a000-000000000001', receiptNumber: 'RCT-0001001', date: '29/10/2026', amount: 10500, amountPaise: 1050000, voided: false },
+      { allocationId: '74000000-0000-4000-a000-000000000002', source: 'payment', receiptId: '73000000-0000-4000-a000-000000000002', receiptNumber: 'RCT-0001002', date: '08/11/2026', amount: 6000, amountPaise: 600000, voided: true },
     ],
     ...overrides,
   };
@@ -52,6 +53,9 @@ function renderDrawer(
     onRecordPayment: vi.fn(),
     onCancelBill: vi.fn(),
     onCancelPayment: vi.fn(),
+    creditPaise: 0,
+    onUseCredit: vi.fn().mockResolvedValue(undefined),
+    onRemoveCredit: vi.fn().mockResolvedValue(undefined),
     onClose: vi.fn(),
     ...overrides,
   };
@@ -170,7 +174,7 @@ describe('InvoiceDetailDrawer', () => {
 
     const button = within(drawer).getByRole('button', { name: 'Cancel bill' }) as HTMLButtonElement;
     expect(button.disabled).toBe(true);
-    const note = within(drawer).getByText('Cancel the payments on this bill first.');
+    const note = within(drawer).getByText('Cancel the payments and remove any credit on this bill first.');
     expect(button.getAttribute('aria-describedby')).toBe(note.id);
     fireEvent.click(button);
     expect(onCancelBill).not.toHaveBeenCalled();
@@ -183,7 +187,7 @@ describe('InvoiceDetailDrawer', () => {
 
     const button = within(drawer).getByRole('button', { name: 'Cancel bill' }) as HTMLButtonElement;
     expect(button.disabled).toBe(false);
-    expect(within(drawer).queryByText('Cancel the payments on this bill first.')).toBeNull();
+    expect(within(drawer).queryByText('Cancel the payments and remove any credit on this bill first.')).toBeNull();
     fireEvent.click(button);
     expect(onCancelBill).toHaveBeenCalledWith(button);
   });
@@ -213,5 +217,85 @@ describe('InvoiceDetailDrawer', () => {
     fireEvent.click(screen.getByLabelText('Close drawer'));
     fireEvent.click(within(drawer).getByRole('button', { name: 'Close' }));
     expect(onClose).toHaveBeenCalledTimes(2);
+  });
+
+  describe('client credit', () => {
+    const creditPayment = {
+      allocationId: '74000000-0000-4000-a000-0000000000c1',
+      source: 'credit' as const,
+      receiptId: '73000000-0000-4000-a000-000000000009',
+      receiptNumber: 'RCT-0001009',
+      date: '10/11/2026',
+      amount: 3000,
+      amountPaise: 300000,
+      voided: false,
+    };
+
+    it('offers Use credit on an open bill when the client has credit and the user can record payments', async () => {
+      const onUseCredit = vi.fn().mockResolvedValue(undefined);
+      const { drawer } = renderDrawer(createInvoice(), { creditPaise: 500000, onUseCredit });
+
+      expect(within(drawer).getByText('Aster Foods has ₹5,000 credit.')).toBeTruthy();
+      fireEvent.click(within(drawer).getByRole('button', { name: 'Use credit' }));
+      await waitFor(() => expect(onUseCredit).toHaveBeenCalledTimes(1));
+      expect(typeof onUseCredit.mock.calls[0]?.[0]).toBe('string');
+    });
+
+    it('hides Use credit with no credit, on a closed bill, or when the user cannot record payments', () => {
+      const none = renderDrawer(createInvoice(), { creditPaise: 0 });
+      expect(within(none.drawer).queryByText(/credit\./)).toBeNull();
+      expect(within(none.drawer).queryByRole('button', { name: 'Use credit' })).toBeNull();
+      cleanup();
+
+      const paid = renderDrawer(createInvoice({ status: 'Paid', balance: 0, balancePaise: 0 }), { creditPaise: 500000 });
+      expect(within(paid.drawer).queryByRole('button', { name: 'Use credit' })).toBeNull();
+      cleanup();
+
+      const cannot = renderDrawer(createInvoice(), { creditPaise: 500000, canRecordPayment: false });
+      expect(within(cannot.drawer).queryByRole('button', { name: 'Use credit' })).toBeNull();
+    });
+
+    it('shows a server error from Use credit and reuses the key on a retry, then mints a new one after success', async () => {
+      const onUseCredit = vi
+        .fn()
+        .mockRejectedValueOnce(
+          new BillingOperationError({ code: 'unexpected', message: 'x', status: 422, serverCode: 'no_credit_available' }),
+        )
+        .mockResolvedValue(undefined);
+      const { drawer } = renderDrawer(createInvoice(), { creditPaise: 500000, onUseCredit });
+
+      fireEvent.click(within(drawer).getByRole('button', { name: 'Use credit' }));
+      expect((await within(drawer).findByRole('alert')).textContent).toBe('This client has no credit to use.');
+      fireEvent.click(within(drawer).getByRole('button', { name: 'Use credit' }));
+      await waitFor(() => expect(onUseCredit).toHaveBeenCalledTimes(2));
+      expect(onUseCredit.mock.calls[1]?.[0]).toBe(onUseCredit.mock.calls[0]?.[0]);
+      await waitFor(() => expect(within(drawer).queryByRole('alert')).toBeNull());
+
+      fireEvent.click(within(drawer).getByRole('button', { name: 'Use credit' }));
+      await waitFor(() => expect(onUseCredit).toHaveBeenCalledTimes(3));
+      expect(onUseCredit.mock.calls[2]?.[0]).not.toBe(onUseCredit.mock.calls[0]?.[0]);
+    });
+
+    it('lists a credit entry as Credit from the receipt and lets only people who can cancel remove it', async () => {
+      const invoice = createInvoice({ payments: [creditPayment] });
+      const onRemoveCredit = vi.fn().mockResolvedValue(undefined);
+      const { drawer } = renderDrawer(invoice, { onRemoveCredit });
+
+      expect(within(drawer).getByText('Credit from RCT-0001009 · ₹3,000')).toBeTruthy();
+      expect(within(drawer).queryByRole('button', { name: /Cancel payment/ })).toBeNull();
+      fireEvent.click(within(drawer).getByRole('button', { name: 'Remove credit from RCT-0001009' }));
+      await waitFor(() => expect(onRemoveCredit).toHaveBeenCalledTimes(1));
+      expect(onRemoveCredit.mock.calls[0]?.[0]).toMatchObject({ allocationId: '74000000-0000-4000-a000-0000000000c1' });
+      cleanup();
+
+      const staff = renderDrawer(invoice, { canCancel: false });
+      expect(within(staff.drawer).getByText('Credit from RCT-0001009 · ₹3,000')).toBeTruthy();
+      expect(within(staff.drawer).queryByRole('button', { name: /Remove credit/ })).toBeNull();
+    });
+
+    it('does not offer Remove credit on payment entries', () => {
+      const { drawer } = renderDrawer(createInvoice());
+      expect(within(drawer).queryByRole('button', { name: /Remove credit/ })).toBeNull();
+    });
   });
 });

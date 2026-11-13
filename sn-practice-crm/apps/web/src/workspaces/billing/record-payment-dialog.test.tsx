@@ -51,7 +51,7 @@ describe('RecordPaymentDialog', () => {
     expect(dialog.textContent).toContain('VYP-140 · Aster Foods · ₹33,060.75 pending');
     expect((screen.getByLabelText('Date received') as HTMLInputElement).value).toBe(TODAY);
     expect((screen.getByLabelText('Date received') as HTMLInputElement).max).toBe(TODAY);
-    expect((screen.getByLabelText('Amount received (₹)') as HTMLInputElement).value).toBe('33060.75');
+    expect((screen.getByLabelText('Cash received (₹)') as HTMLInputElement).value).toBe('33060.75');
     const paidBy = screen.getByLabelText('Paid by') as HTMLSelectElement;
     expect(paidBy.value).toBe('');
     expect([...paidBy.options].map((o) => o.textContent)).toEqual([
@@ -71,21 +71,19 @@ describe('RecordPaymentDialog', () => {
   it('shows the validation messages and sends nothing', () => {
     const { onSubmit } = setup();
     type('Date received', '2026-11-14');
-    type('Amount received (₹)', '33060.76');
     type('Reference', 'r'.repeat(101));
     type('Notes', 'n'.repeat(501));
     fireEvent.click(submitButton());
 
     for (const message of [
       'The payment date cannot be in the future.',
-      'The amount is more than the ₹33,060.75 still pending.',
       'Choose how it was paid.',
       'Use at most 100 characters.',
       'Use at most 500 characters.',
     ]) {
       expect(screen.getByText(message)).toBeTruthy();
     }
-    type('Amount received (₹)', '0');
+    type('Cash received (₹)', '0');
     fireEvent.click(submitButton());
     expect(screen.getByText('Enter an amount above ₹0 with up to 2 decimals.')).toBeTruthy();
     expect(onSubmit).not.toHaveBeenCalled();
@@ -137,14 +135,14 @@ describe('RecordPaymentDialog', () => {
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(2));
     expect(onSubmit.mock.calls[1]?.[1]).toBe(onSubmit.mock.calls[0]?.[1]);
 
-    type('Amount received (₹)', '100');
+    type('Cash received (₹)', '100');
     fireEvent.click(submitButton());
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(3));
     expect(onSubmit.mock.calls[2]?.[1]).not.toBe(onSubmit.mock.calls[0]?.[1]);
   });
 
   it.each([
-    ['payment_exceeds_balance', 'The payment is more than what is still pending on this bill.'],
+    ['no_credit_available', 'This client has no credit to use.'],
     ['bill_not_open', 'This bill is already paid or cancelled.'],
   ])('keeps the dialog open with the input and shows the %s message', async (serverCode, message) => {
     const onSubmit = vi.fn().mockRejectedValue(
@@ -152,12 +150,12 @@ describe('RecordPaymentDialog', () => {
     );
     const { onClose } = setup(onSubmit);
     type('Paid by', 'upi');
-    type('Amount received (₹)', '500');
+    type('Cash received (₹)', '500');
     fireEvent.click(submitButton());
 
     await waitFor(() => expect(screen.getByRole('alert').textContent).toBe(message));
     expect(onClose).not.toHaveBeenCalled();
-    expect((screen.getByLabelText('Amount received (₹)') as HTMLInputElement).value).toBe('500');
+    expect((screen.getByLabelText('Cash received (₹)') as HTMLInputElement).value).toBe('500');
     expect((screen.getByLabelText('Paid by') as HTMLSelectElement).value).toBe('upi');
   });
 
@@ -168,5 +166,22 @@ describe('RecordPaymentDialog', () => {
     fireEvent.click(submitButton());
     await waitFor(() => expect(screen.getByRole('alert').textContent).toBe("You don't have permission to do this."));
     expect(document.body.textContent).not.toContain('secret');
+  });
+
+  it('accepts more cash than is pending, previews the credit and submits the exact paise', async () => {
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+    setup(onSubmit);
+    expect(screen.queryByRole('status')).toBeNull();
+    type('Cash received (₹)', '34000.50');
+    expect(screen.getByRole('status').textContent).toBe(
+      '₹33,060.75 pays this bill in full. The extra ₹939.75 is kept as credit for Aster Foods.',
+    );
+    type('Paid by', 'upi');
+    fireEvent.click(submitButton());
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(onSubmit.mock.calls[0]?.[0]).toMatchObject({ amountPaise: 3400050 });
+
+    type('Cash received (₹)', '33060.75');
+    expect(screen.queryByRole('status')).toBeNull();
   });
 });

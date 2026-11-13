@@ -13,6 +13,7 @@ import type {
   LedgerEntryDto,
   OfficeAccountsSummaryDto,
   PaymentAllocationDto,
+  PaymentAllocationSource,
   PaymentMethod,
   PaymentReceiptDto,
   PaymentReceiptStatus,
@@ -25,6 +26,7 @@ import { ApiError, notFound } from './errors';
 import { maskGstinForRoutineRead, maskPanForRoutineRead } from './client-privacy';
 import { computeRequestHash } from './idempotency';
 import type {
+  ApplyCreditCommand,
   ClientReference,
   CreateAssignmentRecord,
   CreateClientRecord,
@@ -35,6 +37,7 @@ import type {
   MutateEngagementCommand,
   RecordPaymentCommand,
   RecordVyaparBillCommand,
+  RemoveCreditAllocationCommand,
   RepositoryContext,
   ServiceReference,
   UpdateAssignmentCommand,
@@ -50,7 +53,8 @@ import {
   duplicateVyaparBill,
   financialYearStart,
   kolkataToday,
-  paymentExceedsBalance,
+  noCreditAvailable,
+  notCreditAllocation,
 } from './repository';
 
 export interface StoredOperationReceipt {
@@ -90,6 +94,13 @@ export interface InvoiceSeedRecord {
   updatedAt: string;
 }
 
+export interface PaymentAllocationSeedRecord {
+  id: string;
+  invoiceId: string;
+  amountPaise: number;
+  source: PaymentAllocationSource;
+}
+
 export interface PaymentReceiptSeedRecord {
   id: string;
   code: string;
@@ -102,7 +113,7 @@ export interface PaymentReceiptSeedRecord {
   status: PaymentReceiptStatus;
   voidReason: string | null;
   voidedAt: string | null;
-  allocations: { invoiceId: string; amountPaise: number }[];
+  allocations: PaymentAllocationSeedRecord[];
   createdAt: string;
 }
 
@@ -1040,6 +1051,8 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
       for (const allocation of receipt.allocations) {
         if (allocation.invoiceId !== invoice.id) continue;
         payments.push({
+          allocationId: allocation.id,
+          source: allocation.source,
           receiptId: receipt.id,
           receiptCode: receipt.code,
           receivedOn: receipt.receivedOn,
@@ -1094,6 +1107,8 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
     const client = this.clients.get(receipt.clientId);
     const allocations: PaymentAllocationDto[] = receipt.allocations
       .map((allocation) => ({
+        allocationId: allocation.id,
+        source: allocation.source,
         invoiceId: allocation.invoiceId,
         invoiceCode: invoiceCodes.get(allocation.invoiceId) ?? '',
         amountPaise: allocation.amountPaise,
@@ -1257,6 +1272,7 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
         updatedAt: nowIso,
       };
       this.invoiceSeeds.push(invoice);
+      if (command.applyCredit === true) this.spendClientCredit(invoice);
       return {
         result: this.toInvoiceDto(invoice, kolkataToday(this.now())),
         isDemo: visible.client.isDemo ?? false,
@@ -1273,7 +1289,8 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
       if (!invoice) throw notFound('Invoice');
       if (invoice.status !== 'issued' && invoice.status !== 'part_paid') throw billNotOpen();
       const bill = this.toInvoiceDto(invoice, kolkataToday(this.now()));
-      if (command.amountPaise > bill.balancePaise) throw paymentExceedsBalance(bill.balancePaise);
+      // An overpayment is kept: the receipt is for the full amount, the rest stays as client credit
+      const allocatedPaise = Math.min(command.amountPaise, bill.balancePaise);
 
       const nowIso = this.now().toISOString();
       this.receiptCounter += 1;
@@ -1289,7 +1306,9 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
         status: 'received',
         voidReason: null,
         voidedAt: null,
-        allocations: [{ invoiceId: invoice.id, amountPaise: command.amountPaise }],
+        allocations: [
+          { id: crypto.randomUUID(), invoiceId: invoice.id, amountPaise: allocatedPaise, source: 'payment' },
+        ],
         createdAt: nowIso,
       };
       this.paymentReceipts.push(receipt);
@@ -1342,6 +1361,83 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
       }
       return {
         result: this.toReceiptDto(receipt),
+        isDemo: this.clients.get(receipt.clientId)?.isDemo ?? false,
+      };
+    });
+  }
+
+  // --- Client credit (FEE-02a) ---
+
+  // Spends the client's credit on one open bill, oldest receipt first (received date, then code).
+  // Receipts that already have an allocation to this bill are skipped. Returns the paise applied.
+  private spendClientCredit(invoice: InvoiceSeedRecord): number {
+    const total = invoice.items.reduce((sum, item) => sum + item.lineTotalPaise, 0);
+    let pendingPaise = total - this.toInvoiceDto(invoice, kolkataToday(this.now())).amountReceivedPaise;
+    const candidates = this.paymentReceipts
+      .filter(
+        (receipt) =>
+          receipt.clientId === invoice.clientId &&
+          receipt.status === 'received' &&
+          !receipt.allocations.some((allocation) => allocation.invoiceId === invoice.id),
+      )
+      .sort((a, b) => a.receivedOn.localeCompare(b.receivedOn) || a.code.localeCompare(b.code));
+
+    let appliedPaise = 0;
+    for (const receipt of candidates) {
+      if (pendingPaise <= 0) break;
+      const unallocatedPaise =
+        receipt.amountPaise - receipt.allocations.reduce((sum, allocation) => sum + allocation.amountPaise, 0);
+      if (unallocatedPaise <= 0) continue;
+      const takePaise = Math.min(pendingPaise, unallocatedPaise);
+      receipt.allocations.push({
+        id: crypto.randomUUID(),
+        invoiceId: invoice.id,
+        amountPaise: takePaise,
+        source: 'credit',
+      });
+      pendingPaise -= takePaise;
+      appliedPaise += takePaise;
+    }
+    if (appliedPaise > 0) this.recomputeInvoiceStatus(invoice);
+    return appliedPaise;
+  }
+
+  async applyCredit(ctx: RepositoryContext, command: ApplyCreditCommand): Promise<InvoiceDto> {
+    const { idempotencyKey, ...payload } = command;
+    return this.runIdempotent<InvoiceDto>(ctx, idempotencyKey, 'applyCredit', payload, () => {
+      const actor = this.getActor(ctx);
+      if (!actor || actor.role === 'trainee') throw this.forbiddenOperation();
+      const invoice = this.findVisibleInvoice(actor, command.invoiceId);
+      if (!invoice) throw notFound('Invoice');
+      if (invoice.status !== 'issued' && invoice.status !== 'part_paid') throw billNotOpen();
+      if (this.spendClientCredit(invoice) <= 0) throw noCreditAvailable();
+      return {
+        result: this.toInvoiceDto(invoice, kolkataToday(this.now())),
+        isDemo: this.clients.get(invoice.clientId)?.isDemo ?? false,
+      };
+    });
+  }
+
+  async removeCreditAllocation(ctx: RepositoryContext, command: RemoveCreditAllocationCommand): Promise<InvoiceDto> {
+    const { idempotencyKey, ...payload } = command;
+    return this.runIdempotent<InvoiceDto>(ctx, idempotencyKey, 'removeCreditAllocation', payload, () => {
+      const actor = this.getActor(ctx);
+      if (!actor || !this.isManagement(actor)) throw this.forbiddenOperation();
+      const receipt = this.paymentReceipts.find(
+        (candidate) =>
+          this.isFeeVisible(actor, candidate.clientId) &&
+          candidate.allocations.some((allocation) => allocation.id === command.allocationId),
+      );
+      const allocation = receipt?.allocations.find((candidate) => candidate.id === command.allocationId);
+      if (!receipt || !allocation) throw notFound('Payment allocation');
+      if (allocation.source !== 'credit') throw notCreditAllocation();
+
+      receipt.allocations = receipt.allocations.filter((candidate) => candidate.id !== command.allocationId);
+      const invoice = this.invoiceSeeds.find((candidate) => candidate.id === allocation.invoiceId);
+      if (!invoice) throw notFound('Invoice');
+      this.recomputeInvoiceStatus(invoice);
+      return {
+        result: this.toInvoiceDto(invoice, kolkataToday(this.now())),
         isDemo: this.clients.get(receipt.clientId)?.isDemo ?? false,
       };
     });

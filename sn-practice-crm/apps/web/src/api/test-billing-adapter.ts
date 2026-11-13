@@ -1,4 +1,5 @@
 import type {
+  ApplyCreditInput,
   InvoiceDto,
   PaymentReceiptDto,
   RecordPaymentInput,
@@ -17,11 +18,11 @@ export interface RecordedBillingCall {
 }
 
 export interface RecordedBillingMutation {
-  kind: 'record-bill' | 'void-bill' | 'record-payment' | 'void-payment';
+  kind: 'record-bill' | 'void-bill' | 'record-payment' | 'void-payment' | 'apply-credit' | 'remove-credit';
   role: CompanyRole;
-  /** Bill or receipt id for the void calls. */
+  /** Bill id, receipt id or credit allocation id for the calls that act on one record. */
   targetId?: string;
-  input: RecordVyaparBillInput | RecordPaymentInput | VoidFeeRecordInput;
+  input: RecordVyaparBillInput | RecordPaymentInput | VoidFeeRecordInput | ApplyCreditInput;
   idempotencyKey: string;
 }
 
@@ -53,7 +54,7 @@ export class DeterministicTestBillingAdapter implements BillingPort {
     this.defaultError = error;
   }
 
-  /** Response returned by the bill record and void calls. */
+  /** Response returned by the bill record, void and credit calls. */
   setMutationInvoice(invoice: InvoiceDto | undefined): void {
     this.mutationInvoice = invoice;
   }
@@ -137,6 +138,28 @@ export class DeterministicTestBillingAdapter implements BillingPort {
     this.abortIfNeeded(options);
     this.mutations.push({ kind: 'record-payment', role, input, idempotencyKey });
     return this.receiptResult();
+  }
+
+  async applyCredit(
+    role: CompanyRole,
+    invoiceId: string,
+    idempotencyKey: string,
+    options?: PortExecutionOptions,
+  ): Promise<InvoiceDto> {
+    this.abortIfNeeded(options);
+    this.mutations.push({ kind: 'apply-credit', role, targetId: invoiceId, input: {}, idempotencyKey });
+    return this.invoiceResult();
+  }
+
+  async removeCreditAllocation(
+    role: CompanyRole,
+    allocationId: string,
+    idempotencyKey: string,
+    options?: PortExecutionOptions,
+  ): Promise<InvoiceDto> {
+    this.abortIfNeeded(options);
+    this.mutations.push({ kind: 'remove-credit', role, targetId: allocationId, input: {}, idempotencyKey });
+    return this.invoiceResult();
   }
 
   async voidPaymentReceipt(

@@ -188,6 +188,17 @@ export interface VoidFeeRecordCommand {
   readonly idempotencyKey: string;
 }
 
+// --- Client credit commands (FEE-02a) ---
+
+export interface ApplyCreditCommand {
+  readonly invoiceId: string; // RFC 4122 UUID of the open bill
+  readonly idempotencyKey: string;
+}
+export interface RemoveCreditAllocationCommand {
+  readonly allocationId: string; // RFC 4122 UUID of a credit allocation
+  readonly idempotencyKey: string;
+}
+
 /** Today's calendar date (YYYY-MM-DD) in Asia/Kolkata, matching the SQL read path. */
 export function kolkataToday(now: Date): string {
   return new Intl.DateTimeFormat('en-CA', {
@@ -210,13 +221,6 @@ export function financialYearLabel(startYear: number): string {
   return `${startYear}–${String((startYear + 1) % 100).padStart(2, '0')}`;
 }
 
-function formatRupees(paise: number): string {
-  return new Intl.NumberFormat('en-IN', {
-    minimumFractionDigits: paise % 100 === 0 ? 0 : 2,
-    maximumFractionDigits: 2,
-  }).format(paise / 100);
-}
-
 export function duplicateVyaparBill(vyaparBillNumber: string, billDate: string): ApiError {
   return new ApiError(
     409,
@@ -229,11 +233,15 @@ export function billNotOpen(): ApiError {
   return new ApiError(422, 'bill_not_open', 'This bill is already paid or cancelled.');
 }
 
-export function paymentExceedsBalance(balancePaise: number): ApiError {
+export function noCreditAvailable(): ApiError {
+  return new ApiError(422, 'no_credit_available', 'This client has no credit to use.');
+}
+
+export function notCreditAllocation(): ApiError {
   return new ApiError(
     422,
-    'payment_exceeds_balance',
-    `The payment is more than the ₹${formatRupees(balancePaise)} still pending on this bill.`,
+    'not_credit_allocation',
+    'This is a direct payment. Cancel the payment instead.',
   );
 }
 
@@ -242,7 +250,7 @@ export function alreadyVoided(): ApiError {
 }
 
 export function billHasPayments(): ApiError {
-  return new ApiError(422, 'bill_has_payments', 'Cancel the payments on this bill first.');
+  return new ApiError(422, 'bill_has_payments', 'Cancel the payments and remove any credit on this bill first.');
 }
 
 export interface CrmRepository {
@@ -325,6 +333,10 @@ export interface CrmRepository {
   recordPayment(ctx: RepositoryContext, command: RecordPaymentCommand): Promise<PaymentReceiptDto>;
   voidInvoice(ctx: RepositoryContext, command: VoidFeeRecordCommand): Promise<InvoiceDto>;
   voidPaymentReceipt(ctx: RepositoryContext, command: VoidFeeRecordCommand): Promise<PaymentReceiptDto>;
+
+  // Client credit (FEE-02a): the unallocated part of received payment receipts
+  applyCredit(ctx: RepositoryContext, command: ApplyCreditCommand): Promise<InvoiceDto>;
+  removeCreditAllocation(ctx: RepositoryContext, command: RemoveCreditAllocationCommand): Promise<InvoiceDto>;
 
   // Office Accounts & Ledger
   getOfficeAccountsSummary(ctx: RepositoryContext): Promise<OfficeAccountsSummaryDto>;

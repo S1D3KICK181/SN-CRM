@@ -50,6 +50,8 @@ function invoiceDto(overrides: Partial<InvoiceDto> = {}): InvoiceDto {
     ],
     payments: [
       {
+        allocationId: '73000000-0000-4000-a000-000000000001',
+        source: 'payment',
         receiptId: '71000000-0000-4000-a000-000000000001',
         receiptCode: 'RCT-0001001',
         receivedOn: '2026-10-29',
@@ -57,6 +59,8 @@ function invoiceDto(overrides: Partial<InvoiceDto> = {}): InvoiceDto {
         receiptStatus: 'received',
       },
       {
+        allocationId: '73000000-0000-4000-a000-000000000002',
+        source: 'credit',
         receiptId: '71000000-0000-4000-a000-000000000002',
         receiptCode: 'RCT-0001002',
         receivedOn: '2026-11-08',
@@ -88,8 +92,8 @@ function receiptDto(overrides: Partial<PaymentReceiptDto> = {}): PaymentReceiptD
     allocatedPaise: 3500000,
     unallocatedPaise: 500000,
     allocations: [
-      { invoiceId: '70000000-0000-4000-a000-000000000001', invoiceCode: 'INV-0001001', amountPaise: 2950000 },
-      { invoiceId: '70000000-0000-4000-a000-000000000002', invoiceCode: 'INV-0001002', amountPaise: 550000 },
+      { allocationId: '73000000-0000-4000-a000-000000000001', source: 'payment', invoiceId: '70000000-0000-4000-a000-000000000001', invoiceCode: 'INV-0001001', amountPaise: 2950000 },
+      { allocationId: '73000000-0000-4000-a000-000000000003', source: 'payment', invoiceId: '70000000-0000-4000-a000-000000000002', invoiceCode: 'INV-0001002', amountPaise: 550000 },
     ],
     createdAt: '2026-10-29T04:30:00.000Z',
     ...overrides,
@@ -160,8 +164,8 @@ describe('billing mapper', () => {
         { id: '72000000-0000-4000-a000-000000000003', description: 'GST reconciliation review', quantity: 1.5, rate: 12000.5, gstPercent: 18, amount: 18000.75 },
       ]);
       expect(record.payments).toEqual([
-        { receiptId: '71000000-0000-4000-a000-000000000001', receiptNumber: 'RCT-0001001', date: '29/10/2026', amount: 10500, amountPaise: 1050000, voided: false },
-        { receiptId: '71000000-0000-4000-a000-000000000002', receiptNumber: 'RCT-0001002', date: '08/11/2026', amount: 6000, amountPaise: 600000, voided: true },
+        { allocationId: '73000000-0000-4000-a000-000000000001', source: 'payment', receiptId: '71000000-0000-4000-a000-000000000001', receiptNumber: 'RCT-0001001', date: '29/10/2026', amount: 10500, amountPaise: 1050000, voided: false },
+        { allocationId: '73000000-0000-4000-a000-000000000002', source: 'credit', receiptId: '71000000-0000-4000-a000-000000000002', receiptNumber: 'RCT-0001002', date: '08/11/2026', amount: 6000, amountPaise: 600000, voided: true },
       ]);
     });
 
@@ -219,10 +223,11 @@ describe('billing mapper', () => {
         notes: 'Settles two invoices',
         status: 'Received',
         unallocated: 5000,
+        unallocatedPaise: 500000,
       });
       expect(record.allocations).toEqual([
-        { invoiceId: '70000000-0000-4000-a000-000000000001', invoiceNumber: 'INV-0001001', amount: 29500 },
-        { invoiceId: '70000000-0000-4000-a000-000000000002', invoiceNumber: 'INV-0001002', amount: 5500 },
+        { allocationId: '73000000-0000-4000-a000-000000000001', source: 'payment', invoiceId: '70000000-0000-4000-a000-000000000001', invoiceNumber: 'INV-0001001', amount: 29500 },
+        { allocationId: '73000000-0000-4000-a000-000000000003', source: 'payment', invoiceId: '70000000-0000-4000-a000-000000000002', invoiceNumber: 'INV-0001002', amount: 5500 },
       ]);
     });
 
@@ -247,6 +252,7 @@ describe('billing mapper', () => {
       expect(record.status).toBe('Voided');
       expect(record.paymentMode).toBe('Cheque');
       expect(record.unallocated).toBe(40000);
+      expect(record.unallocatedPaise).toBe(4000000);
     });
   });
 });
