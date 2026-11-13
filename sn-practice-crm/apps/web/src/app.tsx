@@ -1,7 +1,5 @@
 import {
   Activity,
-  AlertTriangle,
-  BookOpenCheck,
   BriefcaseBusiness,
   Building2,
   CalendarClock,
@@ -16,17 +14,12 @@ import {
   FileClock,
   FileStack,
   FileText,
-  Files,
   IndianRupee,
   ListChecks,
-  MessageSquareText,
   Plus,
   ReceiptIndianRupee,
   Repeat2,
-  ShieldCheck,
-  TrendingUp,
   UserRoundCheck,
-  UsersRound,
   WalletCards,
   X,
 } from 'lucide-react';
@@ -42,7 +35,7 @@ import { SessionProvider, useSessionActor } from './shell/session-context';
 import { SignInGate } from './shell/sign-in-gate';
 import { ApplicationChrome } from './shell/application-chrome';
 import { MODULE_DESCRIPTIONS, type PageKey } from './shell/navigation';
-import { Card, Field, MoreButton, Status } from './ui/workspace-primitives';
+import { Card, Field, MoreButton } from './ui/workspace-primitives';
 import { ClientsWorkspace } from './workspaces/clients/clients-workspace';
 import { EngagementsWorkspace } from './workspaces/engagements/engagements-workspace';
 import { BillingWorkspace, type BillingActions } from './workspaces/billing/billing-workspace';
@@ -67,6 +60,24 @@ export {
 import { AssignmentDetailDrawer } from './workspaces/assignments/assignment-detail-drawer';
 import { AssignmentsTable } from './workspaces/assignments/assignments-table';
 import { AssignmentsWorkspace } from './workspaces/assignments/assignments-workspace';
+import { todayInKolkata } from './workspaces/billing/billing-form-model';
+import {
+  BilledAndCollectedCard,
+  ComingUpCard,
+  DashboardMetricStrip,
+  FeesSnapshotCard,
+  NeedsAttentionCard,
+  OpenWorkByPersonCard,
+  PendingByClientCard,
+  RecurringSchedulesCard,
+} from './workspaces/dashboard/dashboard-cards';
+import {
+  buildMetricTiles,
+  myAssignments,
+  openAssignments,
+  type FeesState,
+  type MetricTile,
+} from './workspaces/dashboard/dashboard-metrics';
 import {
   CreateAssignmentDialog,
   type DialogClientOption,
@@ -90,7 +101,6 @@ import {
 import {
   ASSIGNMENTS,
   CLIENTS,
-  CLIENT_OUTSTANDING,
   DELEGATED_TASKS,
   PERSONAL_TASKS,
   RECURRING_SCHEDULES,
@@ -586,9 +596,15 @@ function AuthenticatedApp({
       {activePage === 'Dashboard' ? (
         <RoleDashboard
           role={role}
+          actorId={actor.id}
+          actorName={actor.name}
           assignments={assignments}
           schedules={schedules}
           invoices={invoices}
+          receipts={receipts}
+          billingLoading={billingLoading}
+          billingError={billingError ? billingError.message : null}
+          onRetryBilling={retryBilling}
           personalTasks={personalTasks}
           delegatedTasks={visibleDelegatedWork}
           assignedToMe={assignedToMe}
@@ -660,9 +676,15 @@ function AuthenticatedApp({
 
 function RoleDashboard({
   role,
+  actorId,
+  actorName = '',
   assignments,
   schedules,
   invoices,
+  receipts,
+  billingLoading = false,
+  billingError = null,
+  onRetryBilling,
   personalTasks,
   delegatedTasks,
   assignedToMe = [],
@@ -678,9 +700,15 @@ function RoleDashboard({
   onNavigate,
 }: {
   role: CompanyRole;
+  actorId: string;
+  actorName?: string;
   assignments: AssignmentRow[];
   schedules: RecurringScheduleRecord[];
   invoices: InvoiceRecord[];
+  receipts: ReceiptRecord[];
+  billingLoading?: boolean;
+  billingError?: string | null;
+  onRetryBilling?: () => void;
   personalTasks: PersonalTaskRecord[];
   delegatedTasks: DelegatedTaskRecord[];
   assignedToMe?: DelegatedTaskRecord[];
@@ -696,19 +724,39 @@ function RoleDashboard({
   onNavigate?: (page: PageKey) => void;
 }) {
   const copy = ROLE_COPY[role];
+  const firstName = actorName.trim().split(/\s+/)[0] ?? '';
+  // Founder keeps the overview title; everyone else is greeted by their own first name.
+  const headingTitle = role === 'founder' || !firstName ? copy.title : `Good day, ${firstName}`;
   const leadership = role === 'founder' || role === 'manager';
+  const today = todayInKolkata();
+  const feesState: FeesState = billingLoading ? 'loading' : billingError ? 'error' : 'ready';
+  const tiles = buildMetricTiles({
+    role,
+    actorId,
+    today,
+    assignments,
+    personalTasks,
+    delegatedTasks,
+    assignedToMe,
+    reviewableTasks,
+    invoices,
+    feesState,
+  });
+  const fees = { invoices, receipts, today, feesState, onRetry: onRetryBilling };
   return (
     <>
       <PageHeading
         eyebrow={copy.eyebrow}
-        title={copy.title}
+        title={headingTitle}
         description={copy.description}
         primaryLabel={leadership ? 'New assignment' : 'New personal task'}
         onPrimary={() => onCompose(leadership ? 'assignment' : 'personal')}
-        onSecondary={() => onToast('Today’s work plan is ready')}
       />
       {role === 'founder' ? (
         <FounderDashboard
+          tiles={tiles}
+          today={today}
+          fees={fees}
           assignments={assignments}
           schedules={schedules}
           onToast={onToast}
@@ -718,6 +766,9 @@ function RoleDashboard({
       ) : null}
       {role === 'manager' ? (
         <ManagerDashboard
+          tiles={tiles}
+          today={today}
+          fees={fees}
           assignments={assignments}
           schedules={schedules}
           onToast={onToast}
@@ -727,7 +778,9 @@ function RoleDashboard({
       ) : null}
       {role === 'senior_staff' ? (
         <SeniorDashboard
-          assignments={assignments}
+          tiles={tiles}
+          today={today}
+          mine={myAssignments(role, assignments, actorId)}
           personalTasks={personalTasks}
           delegatedTasks={delegatedTasks}
           reviewableTasks={reviewableTasks}
@@ -742,7 +795,9 @@ function RoleDashboard({
       ) : null}
       {role === 'staff' ? (
         <StaffDashboard
-          assignments={assignments}
+          tiles={tiles}
+          today={today}
+          mine={myAssignments(role, assignments, actorId)}
           personalTasks={personalTasks}
           delegatedTasks={delegatedTasks}
           onCompose={onCompose}
@@ -754,8 +809,8 @@ function RoleDashboard({
       ) : null}
       {role === 'trainee' ? (
         <TraineeDashboard
+          tiles={tiles}
           personalTasks={personalTasks}
-          delegatedTasks={delegatedTasks}
           assignedToMe={assignedToMe}
           onToast={onToast}
           onTogglePersonalTask={onTogglePersonalTask}
@@ -781,7 +836,7 @@ function PageHeading({
   description: string;
   primaryLabel?: string;
   onPrimary?: () => void;
-  onSecondary: () => void;
+  onSecondary?: () => void;
 }) {
   return (
     <section className="page-heading">
@@ -791,9 +846,11 @@ function PageHeading({
         <p>{description}</p>
       </div>
       <div className="heading-actions">
-        <button className="soft-button" type="button" onClick={onSecondary}>
-          <CalendarClock aria-hidden="true" /> Today’s plan
-        </button>
+        {onSecondary ? (
+          <button className="soft-button" type="button" onClick={onSecondary}>
+            <CalendarClock aria-hidden="true" /> Today’s plan
+          </button>
+        ) : null}
         {primaryLabel && onPrimary ? (
           <button className="primary-button" type="button" onClick={onPrimary}>
             <Plus aria-hidden="true" /> {primaryLabel}
@@ -804,13 +861,27 @@ function PageHeading({
   );
 }
 
+interface DashboardFees {
+  invoices: InvoiceRecord[];
+  receipts: ReceiptRecord[];
+  today: string;
+  feesState: FeesState;
+  onRetry?: () => void;
+}
+
 function FounderDashboard({
+  tiles,
+  today,
+  fees,
   assignments,
   schedules,
   onToast,
   onSelectAssignment,
   onNavigate,
 }: {
+  tiles: MetricTile[];
+  today: string;
+  fees: DashboardFees;
   assignments: AssignmentRow[];
   schedules: RecurringScheduleRecord[];
   onToast: (message: string) => void;
@@ -819,39 +890,49 @@ function FounderDashboard({
 }) {
   return (
     <div className="dashboard-stack">
-      <MetricStrip variant="leadership" />
+      <DashboardMetricStrip tiles={tiles} />
       <div className="dashboard-grid chart-and-snapshot">
-        <BillingCollectionsChart />
-        <CollectionsSnapshot />
+        <BilledAndCollectedCard {...fees} />
+        <FeesSnapshotCard {...fees} />
       </div>
       <div className="dashboard-grid assignments-and-outstanding">
         <AssignmentsTable
           title="All open assignments"
-          rows={assignments}
+          rows={openAssignments(assignments)}
           onToast={onToast}
           onSelectAssignment={onSelectAssignment}
           onNavigate={onNavigate}
           canEdit={true}
         />
-        <ClientOutstanding />
+        <PendingByClientCard
+          invoices={fees.invoices}
+          feesState={fees.feesState}
+          onRetry={fees.onRetry}
+          onNavigate={onNavigate}
+        />
       </div>
-      <div className="dashboard-grid four-up">
-        <DeadlineRadar schedules={schedules} assignments={assignments} />
-        <TeamCapacity />
-        <PracticeComplianceRadar schedules={schedules} />
-        <StatutoryExceptions schedules={schedules} />
+      <div className="dashboard-grid three-up">
+        <ComingUpCard assignments={assignments} today={today} />
+        <OpenWorkByPersonCard assignments={assignments} />
+        <RecurringSchedulesCard schedules={schedules} />
       </div>
     </div>
   );
 }
 
 function ManagerDashboard({
+  tiles,
+  today,
+  fees,
   assignments,
   schedules,
   onToast,
   onSelectAssignment,
   onNavigate,
 }: {
+  tiles: MetricTile[];
+  today: string;
+  fees: DashboardFees;
   assignments: AssignmentRow[];
   schedules: RecurringScheduleRecord[];
   onToast: (message: string) => void;
@@ -860,34 +941,47 @@ function ManagerDashboard({
 }) {
   return (
     <div className="dashboard-stack">
-      <MetricStrip variant="manager" />
+      <DashboardMetricStrip tiles={tiles} />
       <div className="dashboard-grid operations-top">
-        <OperationalTriage />
-        <DeadlineRadar schedules={schedules} assignments={assignments} />
+        <NeedsAttentionCard
+          assignments={assignments}
+          invoices={fees.invoices}
+          today={today}
+          feesState={fees.feesState}
+          onRetry={fees.onRetry}
+        />
+        <ComingUpCard assignments={assignments} today={today} />
       </div>
       <AssignmentsTable
         title="All open assignments"
-        rows={assignments}
+        rows={openAssignments(assignments)}
         onToast={onToast}
         onSelectAssignment={onSelectAssignment}
         onNavigate={onNavigate}
         canEdit={true}
       />
       <div className="dashboard-grid chart-and-snapshot">
-        <BillingCollectionsChart />
-        <PracticeComplianceRadar schedules={schedules} />
+        <BilledAndCollectedCard {...fees} />
+        <RecurringSchedulesCard schedules={schedules} />
       </div>
-      <div className="dashboard-grid three-up">
-        <TeamCapacity />
-        <StatutoryExceptions schedules={schedules} />
-        <ClientOutstanding compact />
+      <div className="dashboard-grid operations-top">
+        <OpenWorkByPersonCard assignments={assignments} />
+        <PendingByClientCard
+          compact
+          invoices={fees.invoices}
+          feesState={fees.feesState}
+          onRetry={fees.onRetry}
+          onNavigate={onNavigate}
+        />
       </div>
     </div>
   );
 }
 
 function SeniorDashboard({
-  assignments,
+  tiles,
+  today,
+  mine,
   personalTasks,
   delegatedTasks,
   reviewableTasks,
@@ -899,7 +993,9 @@ function SeniorDashboard({
   onReopenDelegatedTask,
   onNavigate,
 }: {
-  assignments: AssignmentRow[];
+  tiles: MetricTile[];
+  today: string;
+  mine: AssignmentRow[];
   personalTasks: PersonalTaskRecord[];
   delegatedTasks: DelegatedTaskRecord[];
   reviewableTasks?: DelegatedTaskRecord[];
@@ -911,20 +1007,19 @@ function SeniorDashboard({
   onReopenDelegatedTask?: (task: DelegatedTaskRecord) => void;
   onNavigate?: (page: PageKey) => void;
 }) {
-  const visible = assignments.filter((a) => a.owner === 'Priya Desai' || a.reviewer === 'Priya Desai');
   return (
     <div className="dashboard-stack">
-      <MetricStrip variant="senior" />
+      <DashboardMetricStrip tiles={tiles} />
       <div className="dashboard-grid operations-top">
         <AssignmentsTable
           title="Assignments I own or review"
-          rows={visible}
+          rows={openAssignments(mine)}
           onToast={onToast}
           onSelectAssignment={onSelectAssignment}
           onNavigate={onNavigate}
           compact
         />
-        <DeadlineRadar assignments={assignments} />
+        <ComingUpCard assignments={mine} today={today} />
       </div>
       <div className="dashboard-grid three-up">
         <DelegatedWork
@@ -950,7 +1045,9 @@ function SeniorDashboard({
 }
 
 function StaffDashboard({
-  assignments,
+  tiles,
+  today,
+  mine,
   personalTasks,
   delegatedTasks,
   onCompose,
@@ -959,7 +1056,9 @@ function StaffDashboard({
   onTogglePersonalTask,
   onNavigate,
 }: {
-  assignments: AssignmentRow[];
+  tiles: MetricTile[];
+  today: string;
+  mine: AssignmentRow[];
   personalTasks: PersonalTaskRecord[];
   delegatedTasks: DelegatedTaskRecord[];
   onCompose: (mode: DialogMode) => void;
@@ -968,14 +1067,13 @@ function StaffDashboard({
   onTogglePersonalTask: (taskId: string) => void;
   onNavigate?: (page: PageKey) => void;
 }) {
-  const myAssignments = assignments.filter((assignment) => assignment.owner === 'Rohan Mehta');
   return (
     <div className="dashboard-stack">
-      <MetricStrip variant="staff" />
+      <DashboardMetricStrip tiles={tiles} />
       <div className="dashboard-grid operations-top">
         <AssignmentsTable
           title="My assignments"
-          rows={myAssignments}
+          rows={openAssignments(mine)}
           onToast={onToast}
           onSelectAssignment={onSelectAssignment}
           onNavigate={onNavigate}
@@ -987,23 +1085,22 @@ function StaffDashboard({
           onAdd={() => onCompose('personal')}
         />
       </div>
-      <div className="dashboard-grid three-up">
+      <div className="dashboard-grid operations-top">
         <DelegatedWork
           tasks={delegatedTasks}
           role="staff"
           onAdd={() => onCompose('delegated')}
           onAddInternal={() => onCompose('internal')}
         />
-        <DeadlineRadar assignments={assignments} />
-        <DocumentRequests />
+        <ComingUpCard assignments={mine} today={today} />
       </div>
     </div>
   );
 }
 
 function TraineeDashboard({
+  tiles,
   personalTasks,
-  delegatedTasks: _delegatedTasks,
   assignedToMe = [],
   onToast,
   onTogglePersonalTask,
@@ -1011,8 +1108,8 @@ function TraineeDashboard({
   onSubmitTaskForReview,
   onNavigate,
 }: {
+  tiles: MetricTile[];
   personalTasks: PersonalTaskRecord[];
-  delegatedTasks: DelegatedTaskRecord[];
   assignedToMe?: DelegatedTaskRecord[];
   onToast: (message: string) => void;
   onTogglePersonalTask: (taskId: string) => void;
@@ -1022,7 +1119,7 @@ function TraineeDashboard({
 }) {
   return (
     <div className="dashboard-stack">
-      <MetricStrip variant="trainee" />
+      <DashboardMetricStrip tiles={tiles} />
       <div className="dashboard-grid operations-top trainee-top">
         <TaskQueue
           tasks={assignedToMe}
@@ -1037,53 +1134,24 @@ function TraineeDashboard({
         />
       </div>
       <div className="dashboard-grid three-up">
-        <TodayChecklist />
-        <DocumentRequests />
         <GuidanceCard />
       </div>
     </div>
   );
 }
 
-type MetricVariant = 'leadership' | 'manager' | 'senior' | 'staff' | 'trainee';
-
-function MetricStrip({ variant }: { variant: MetricVariant }) {
-  const data: Record<MetricVariant, Array<[string, string, string, AssignmentTone]>> = {
-    leadership: [
-      ['Due today', '7', '2 at risk', 'danger'],
-      ['Open assignments', '38', '33 assigned', 'default'],
-      ['Pending review', '6', 'Founder or Manager action', 'warning'],
-      ['Outstanding fees', '₹1,21,750', '₹88,500 overdue', 'danger'],
-    ],
-    manager: [
-      ['Due today', '7', '2 at risk', 'danger'],
-      ['Unassigned work', '5', 'Needs allocation', 'warning'],
-      ['Pending review', '6', 'Your action', 'warning'],
-      ['Cash balance', '₹42,680', 'Reconciled yesterday', 'success'],
-    ],
-    senior: [
-      ['My assignments', '8', '6 on track', 'default'],
-      ['Due today', '2', '1 awaiting documents', 'danger'],
-      ['Subtask review', '3', 'Trainee submissions', 'warning'],
-      ['Delegated tasks', '6', '4 in progress', 'success'],
-    ],
-    staff: [
-      ['My assignments', '5', '4 on track', 'default'],
-      ['Due today', '1', 'GST reconciliation', 'danger'],
-      ['With trainee', '2', 'One due tomorrow', 'warning'],
-      ['Personal tasks', '4', '2 scheduled today', 'success'],
-    ],
-    trainee: [
-      ['Assigned tasks', '7', '5 in progress', 'default'],
-      ['Due today', '3', 'Start with evidence', 'danger'],
-      ['Checklists', '18/24', '75% complete', 'success'],
-      ['Personal tasks', '2', 'Next at 15:00', 'warning'],
-    ],
-  };
+/** Office Accounts is still a sample screen; its summary strip keeps its fixed sample figures. */
+function AccountsMetricStrip() {
+  const data: Array<[string, string, string, AssignmentTone]> = [
+    ['Due today', '7', '2 at risk', 'danger'],
+    ['Unassigned work', '5', 'Needs allocation', 'warning'],
+    ['Pending review', '6', 'Your action', 'warning'],
+    ['Cash balance', '₹42,680', 'Reconciled yesterday', 'success'],
+  ];
 
   return (
     <section className="metric-strip" aria-label="Operational summary">
-      {data[variant].map(([label, value, note, tone]) => (
+      {data.map(([label, value, note, tone]) => (
         <article className={`metric-card tone-${tone}`} key={label}>
           <span>{label}</span>
           <strong>{value}</strong>
@@ -1094,217 +1162,10 @@ function MetricStrip({ variant }: { variant: MetricVariant }) {
   );
 }
 
-function BillingCollectionsChart() {
-  return (
-    <Card
-      title="Billing & collections"
-      description="Invoices raised versus cash collected · FY 2026–27"
-      className="chart-card"
-      action={
-        <div className="segmented" aria-label="Chart period">
-          <button type="button">Quarter</button>
-          <button type="button" className="is-active">Year</button>
-        </div>
-      }
-    >
-      <div className="chart-summary">
-        <div><span>Collected</span><strong>₹8.42L</strong></div>
-        <div><span>Invoiced</span><strong>₹9.64L</strong></div>
-        <p><TrendingUp aria-hidden="true" /> 12.8% ahead of last year</p>
-      </div>
-      <div className="line-chart" aria-label="Monthly billing and collection trend">
-        <svg viewBox="0 0 760 230" role="img" aria-label="Collections and billing from April to September">
-          <path className="chart-grid" d="M20 30H740M20 85H740M20 140H740M20 195H740" />
-          <path className="chart-area" d="M20 177C90 168 120 126 170 137S265 116 320 107S415 73 470 91S555 43 610 62S690 38 740 28V195H20Z" />
-          <path className="chart-line" d="M20 177C90 168 120 126 170 137S265 116 320 107S415 73 470 91S555 43 610 62S690 38 740 28" />
-          <path className="chart-line-secondary" d="M20 187C80 182 125 158 170 162S255 140 320 151S408 111 470 125S555 84 610 101S690 70 740 77" />
-          <circle className="chart-point" cx="740" cy="28" r="5" />
-        </svg>
-        <div className="chart-labels"><span>Apr</span><span>May</span><span>Jun</span><span>Jul</span><span>Aug</span><span>Sep</span></div>
-      </div>
-      <div className="chart-legend"><span><i className="legend-primary" />Invoiced</span><span><i className="legend-gold" />Collected</span></div>
-    </Card>
-  );
-}
-
-function CollectionsSnapshot() {
-  const items = [
-    ['Raised this month', '₹1,84,000', '12 invoices'],
-    ['Collected this month', '₹1,27,500', '69% realized'],
-    ['Outstanding', '₹1,21,750', '4 clients'],
-    ['Overdue', '₹88,500', '62 days oldest'],
-  ];
-  return (
-    <Card title="Collections snapshot" description="Current billing position" action={<MoreButton />} className="snapshot-card">
-      <div className="snapshot-grid">
-        {items.map(([label, value, note], index) => (
-          <article className={index === 3 ? 'snapshot-item is-danger' : 'snapshot-item'} key={label}>
-            <span>{label}</span><strong>{value}</strong><small>{note}</small>
-          </article>
-        ))}
-      </div>
-      <div className="collection-progress"><span><strong>69%</strong> of October billing collected</span><i><b /></i></div>
-    </Card>
-  );
-}
-
-function ClientOutstanding({ compact = false }: { compact?: boolean }) {
-  return (
-    <Card title="Top client outstanding" description="Prioritized by value and age" action={<MoreButton />} className={compact ? 'outstanding-card is-compact' : 'outstanding-card'}>
-      <div className="outstanding-total"><span>Total outstanding</span><strong>₹1,21,750</strong><small>₹88,500 currently overdue</small></div>
-      <div className="list-stack">
-        {CLIENT_OUTSTANDING.slice(0, compact ? 3 : 4).map((item) => (
-          <button className="list-row" type="button" key={item.client}>
-            <span className="client-monogram">{item.client.split(' ').slice(0, 2).map((part) => part[0]).join('')}</span>
-            <span><strong>{item.client}</strong><small>{item.age}</small></span>
-            <span className={`amount tone-${item.tone}`}>{item.amount}</span>
-          </button>
-        ))}
-      </div>
-    </Card>
-  );
-}
-
-function DeadlineRadar({
-  schedules = [],
-  assignments = [],
-}: {
-  schedules?: RecurringScheduleRecord[];
-  assignments?: AssignmentRow[];
-}) {
-  const items: Array<[string, string, string, AssignmentTone]> = [
-    ['Today', 'TDS return evidence', 'Sharma Retail', 'danger'],
-    ['03/11', 'GSTR-1 filing', 'Aster Foods', 'warning'],
-    ['06/11', 'Internal audit close', 'BluePeak Technologies', 'default'],
-    ['11/11', 'GSTR-1 Monthly', 'Kedia Holdings', 'default'],
-    ['20/11', 'GSTR-3B Monthly', 'Aster Foods', 'default'],
-  ];
-  return (
-    <Card title="Deadline radar" description="Next statutory filing milestones" action={<CalendarClock aria-hidden="true" />} className="compact-card">
-      <div className="deadline-list">
-        {items.map(([date, title, client, tone]) => (
-          <div className="deadline-row" key={`${date}-${title}-${client}`}>
-            <span className="deadline-date"><strong>{date}</strong></span>
-            <span><strong>{title}</strong><small>{client}</small></span>
-            <Status tone={tone}>{tone === 'danger' ? 'Urgent' : tone === 'warning' ? 'Approaching' : 'Scheduled'}</Status>
-          </div>
-        ))}
-      </div>
-    </Card>
-  );
-}
-
-function TeamCapacity() {
-  const people = [['Priya Desai', 'GST & compliance', 86], ['Rohan Mehta', 'Audit & bookkeeping', 68], ['Neha Kapoor', 'Delivery support', 54]] as const;
-  return (
-    <Card title="Team capacity" description="Committed work · next 7 days" action={<UsersRound aria-hidden="true" />} className="compact-card">
-      <div className="capacity-list">
-        {people.map(([name, functionName, load]) => (
-          <div className="capacity-row" key={name}>
-            <span><strong>{name}</strong><small>{functionName}</small></span>
-            <span className="capacity-value">{load}%</span>
-            <i><b style={{ width: `${load}%` }} /></i>
-          </div>
-        ))}
-      </div>
-    </Card>
-  );
-}
-
-function PracticeComplianceRadar({ schedules = [] }: { schedules?: RecurringScheduleRecord[] }) {
-  const pendingGst = schedules.filter((s) => s.category === 'GST' && s.currentStatus !== 'Filed').length;
-  const pendingTds = schedules.filter((s) => s.category === 'TDS' && s.currentStatus !== 'Filed').length;
-  const bankRecNeeded = schedules.filter((s) => s.bankRecStatus === 'Awaited' || s.bankRecStatus === 'In progress').length;
-  const readyToFile = schedules.filter((s) => s.currentStatus === 'Ready to File').length;
-
-  return (
-    <Card
-      title="Compliance Radar"
-      description="Active statutory client obligations"
-      action={<CalendarClock aria-hidden="true" />}
-      className="compact-card"
-    >
-      <div className="exception-summary">
-        <strong>{schedules.length || 7}</strong>
-        <span>Continuous mandates<br />across practice clients</span>
-      </div>
-      <div className="mini-list">
-        <span><i className="dot-warning" />Pending GST (11th &amp; 20th) <b>{pendingGst || 4}</b></span>
-        <span><i className="dot-danger" />Bank Rec statement needed <b>{bankRecNeeded || 3}</b></span>
-        <span><i className="dot-default" />Pending TDS / 26Q <b>{pendingTds || 2}</b></span>
-        <span><i className="dot-success" />Ready for DSC filing <b>{readyToFile || 1}</b></span>
-      </div>
-    </Card>
-  );
-}
-
-function StatutoryExceptions({ schedules = [] }: { schedules?: RecurringScheduleRecord[] }) {
-  const awaitedDocs = schedules.filter((s) => s.currentStatus === 'Docs Awaited').length || 1;
-  const bankPending = schedules.filter((s) => s.bankRecStatus === 'Awaited').length || 2;
-  const filedCount = schedules.filter((s) => s.currentStatus === 'Filed').length || 1;
-
-  return (
-    <Card
-      title="Statutory Exceptions"
-      description="Blockers requiring client or partner action"
-      action={<AlertTriangle aria-hidden="true" />}
-      className="compact-card"
-    >
-      <div className="mini-list" style={{ marginTop: 6 }}>
-        <span><i className="dot-danger" />Bank Statements overdue <b>{bankPending}</b></span>
-        <span><i className="dot-warning" />Client purchase data awaited <b>{awaitedDocs}</b></span>
-        <span><i className="dot-success" />Filing proofs &amp; ARNs recorded <b>{filedCount}</b></span>
-      </div>
-    </Card>
-  );
-}
-
-function OperationalTriage() {
-  const items = [
-    ['GST portal exceptions unresolved', 'Aster Foods · statutory filing', 'High risk', 'danger'],
-    ['Evidence pack is incomplete', 'Sharma Retail · client dependency', '3 documents', 'warning'],
-    ['Audit response awaits review', 'BluePeak · quality gate', 'Manager', 'default'],
-    ['Collection exposure is concentrated', 'BluePeak · 62 days overdue', '₹88,500', 'gold'],
-  ];
-  return (
-    <Card title="Operational triage" description="Risk, value, and dependencies across the practice" action={<ShieldCheck aria-hidden="true" />} className="triage-card">
-      <div className="triage-lead"><span><small>Risk concentration</small><strong>Two blockers can change this week’s outcome.</strong></span><b>4<small>signals</small></b></div>
-      <div className="triage-list">
-        {items.map(([title, meta, impact, tone]) => (
-          <button className="triage-row" type="button" key={title}><span className={`signal-icon tone-${tone}`}><Activity aria-hidden="true" /></span><span><strong>{title}</strong><small>{meta}</small></span><Status tone={tone === 'gold' ? 'warning' : tone as AssignmentTone}>{impact}</Status></button>
-        ))}
-      </div>
-    </Card>
-  );
-}
-
-
-
-function DocumentRequests() {
-  return (
-    <Card title="Document requests" description="Items blocking assigned work" action={<Files aria-hidden="true" />} className="compact-card">
-      <div className="document-count"><strong>5</strong><span>documents awaited<br />from 2 clients</span></div>
-      <div className="mini-list"><span><i className="dot-danger" />Bank statement · Sharma Retail <b>2d late</b></span><span><i className="dot-warning" />Purchase register · Aster Foods <b>Today</b></span><span><i className="dot-default" />Payroll inputs · Northstar <b>04/11</b></span></div>
-    </Card>
-  );
-}
-
-
-
-function TodayChecklist() {
-  return (
-    <Card title="Today’s checklist" description="Evidence-first completion" action={<BookOpenCheck aria-hidden="true" />} className="compact-card">
-      <div className="checklist-ring"><span><strong>75%</strong><small>18 of 24</small></span><p>6 checklist items remain across three delegated tasks.</p></div>
-      <div className="collection-progress"><span><strong>Next:</strong> verify portal totals</span><i><b style={{ width: '75%' }} /></i></div>
-    </Card>
-  );
-}
-
 function GuidanceCard() {
   return (
     <Card title="Need guidance?" description="Keep the work trail clear" action={<UserRoundCheck aria-hidden="true" />} className="compact-card guidance-card">
-      <p>Ask the Assignment Owner a question inside the task so the answer remains with the client work.</p>
-      <button className="soft-button full-width" type="button"><MessageSquareText aria-hidden="true" /> Ask Priya Desai</button>
+      <p>Ask the assignment owner your question inside the task, so the answer stays with the client work.</p>
     </Card>
   );
 }
@@ -1509,7 +1370,7 @@ function CashLedger() {
 }
 
 function AccountsWorkspace() {
-  return <div className="dashboard-stack"><MetricStrip variant="manager" /><div className="dashboard-grid chart-and-snapshot"><CashLedger /><Card title="Recent ledger entries" description="Manager-operated · immutable audit trail" action={<IndianRupee aria-hidden="true" />}><div className="ledger-list">{[['Client receipt · Aster Foods', '+ ₹14,500', 'success'], ['Office stationery', '− ₹2,340', 'danger'], ['Travel reimbursement · Rohan', '− ₹1,280', 'danger'], ['Cash withdrawal from bank', '+ ₹10,000', 'success']].map(([label, value, tone]) => <div key={label}><span><strong>{label}</strong><small>29/10/2026 · Ananya Rao</small></span><b className={`tone-${tone}`}>{value}</b></div>)}</div></Card></div></div>;
+  return <div className="dashboard-stack"><AccountsMetricStrip /><div className="dashboard-grid chart-and-snapshot"><CashLedger /><Card title="Recent ledger entries" description="Manager-operated · immutable audit trail" action={<IndianRupee aria-hidden="true" />}><div className="ledger-list">{[['Client receipt · Aster Foods', '+ ₹14,500', 'success'], ['Office stationery', '− ₹2,340', 'danger'], ['Travel reimbursement · Rohan', '− ₹1,280', 'danger'], ['Cash withdrawal from bank', '+ ₹10,000', 'success']].map(([label, value, tone]) => <div key={label}><span><strong>{label}</strong><small>29/10/2026 · Ananya Rao</small></span><b className={`tone-${tone}`}>{value}</b></div>)}</div></Card></div></div>;
 }
 
 export function ComposerDialog({

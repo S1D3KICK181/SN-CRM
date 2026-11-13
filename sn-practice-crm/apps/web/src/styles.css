@@ -842,6 +842,58 @@ svg {
   background: var(--gold);
 }
 
+.fee-bars {
+  display: flex;
+  align-items: stretch;
+  gap: 12px;
+  height: 200px;
+  margin-top: 17px;
+}
+
+.fee-bars-month {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  gap: 6px;
+}
+
+.fee-bars-pair {
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 3px;
+  border-bottom: 1px solid var(--border);
+}
+
+.fee-bar {
+  display: block;
+  width: 40%;
+  max-width: 18px;
+  border-radius: 4px 4px 0 0;
+}
+
+.fee-bar.is-billed {
+  background: var(--brand);
+}
+
+.fee-bar.is-collected {
+  background: var(--gold);
+}
+
+.fee-bars-label {
+  color: var(--ink-muted);
+  font-size: 9px;
+  text-align: center;
+}
+
+.dashboard-empty {
+  margin: 12px 0 0;
+  color: var(--ink-muted);
+  font-size: 11px;
+}
+
 .snapshot-card {
   min-height: 370px;
 }

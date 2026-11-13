@@ -283,13 +283,6 @@ export const DELEGATED_TASKS: DelegatedTaskRecord[] = [
   },
 ];
 
-export const CLIENT_OUTSTANDING = [
-  { client: 'BluePeak Technologies LLP', amount: '₹88,500', age: '62 days', tone: 'danger' as const },
-  { client: 'Aster Foods Private Limited', amount: '₹14,500', age: '18 days', tone: 'warning' as const },
-  { client: 'Northstar Exports', amount: '₹12,000', age: '9 days', tone: 'default' as const },
-  { client: 'Kedia Holdings', amount: '₹6,750', age: 'Current', tone: 'success' as const },
-];
-
 export type ClientType =
   | 'Private Limited'
   | 'LLP'
@@ -772,27 +765,28 @@ export const ROLE_COPY: Record<CompanyRole, { eyebrow?: string; title: string; d
   founder: {
     eyebrow: '',
     title: 'Practice overview',
-    description: 'Delivery, client exposure, team capacity, and cash position for FY 2026–27.',
+    description: 'Work due, reviews waiting, pending fees, and recurring work across the practice.',
   },
+  // Non-founder titles are replaced by "Good day, <first name>" for the signed-in person.
   manager: {
     eyebrow: '',
-    title: 'Good day, Ananya',
-    description: 'Today’s delivery pressure, review queue, recurring work, and office accounts.',
+    title: 'Good day',
+    description: 'Today’s delivery pressure, review queue, recurring work, and pending fees.',
   },
   senior_staff: {
     eyebrow: '',
-    title: 'Good day, Priya',
+    title: 'Good day',
     description: 'Your client obligations, work delegated to the team, and items awaiting your review.',
   },
   staff: {
     eyebrow: '',
-    title: 'Good day, Rohan',
-    description: 'Your assignments, trainee follow-ups, personal reminders, and approaching deadlines.',
+    title: 'Good day',
+    description: 'Your assignments, work you have delegated, personal reminders, and approaching deadlines.',
   },
   trainee: {
     eyebrow: '',
-    title: 'Good day, Neha',
-    description: 'A focused queue of delegated work, checklists, evidence, and personal reminders.',
+    title: 'Good day',
+    description: 'A focused queue of delegated work and personal reminders.',
   },
 };
 
