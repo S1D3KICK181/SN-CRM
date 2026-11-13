@@ -1,5 +1,11 @@
 import type { CompanyRole } from '@sn/domain';
-import type { InvoiceDto, PaymentReceiptDto } from '@sn/contracts';
+import type {
+  InvoiceDto,
+  PaymentReceiptDto,
+  RecordPaymentInput,
+  RecordVyaparBillInput,
+  VoidFeeRecordInput,
+} from '@sn/contracts';
 import type { InvoiceRecord, ReceiptRecord } from '../data';
 import type { PortExecutionOptions } from './types';
 import { sanitizeRequestId, sanitizeServerCode } from './metadata-safety';
@@ -46,7 +52,7 @@ export class BillingOperationError extends Error {
  */
 export const SAFE_BILLING_ERROR_MESSAGES: Readonly<Record<BillingErrorCode, string>> = {
   unauthorized: 'Session expired. Please sign in again to view billing records.',
-  forbidden: 'Billing records are visible to the Founder and Manager only.',
+  forbidden: 'You do not have permission to view these fee records.',
   not_found: 'The billing service could not be located.',
   network: 'Unable to reach the server. Please check your network connection and try again.',
   aborted: 'The billing request was cancelled.',
@@ -80,12 +86,38 @@ export function sanitizeBillingError(err: unknown): BillingOperationError {
 }
 
 /**
- * Stateless, read-only BillingPort. Role must be passed explicitly on every invocation;
- * no ambient mutable role state.
+ * Stateless BillingPort. Role must be passed explicitly on every invocation;
+ * no ambient mutable role state. Every mutation requires an idempotency key.
  */
 export interface BillingPort {
   listInvoices(role: CompanyRole, options?: PortExecutionOptions): Promise<InvoiceDto[]>;
   listPaymentReceipts(role: CompanyRole, options?: PortExecutionOptions): Promise<PaymentReceiptDto[]>;
+  recordVyaparBill(
+    role: CompanyRole,
+    input: RecordVyaparBillInput,
+    idempotencyKey: string,
+    options?: PortExecutionOptions,
+  ): Promise<InvoiceDto>;
+  voidInvoice(
+    role: CompanyRole,
+    invoiceId: string,
+    input: VoidFeeRecordInput,
+    idempotencyKey: string,
+    options?: PortExecutionOptions,
+  ): Promise<InvoiceDto>;
+  recordPayment(
+    role: CompanyRole,
+    input: RecordPaymentInput,
+    idempotencyKey: string,
+    options?: PortExecutionOptions,
+  ): Promise<PaymentReceiptDto>;
+  voidPaymentReceipt(
+    role: CompanyRole,
+    receiptId: string,
+    input: VoidFeeRecordInput,
+    idempotencyKey: string,
+    options?: PortExecutionOptions,
+  ): Promise<PaymentReceiptDto>;
 }
 
 export interface BillingState {

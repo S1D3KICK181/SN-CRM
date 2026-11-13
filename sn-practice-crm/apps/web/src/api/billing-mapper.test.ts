@@ -105,9 +105,9 @@ describe('billing mapper', () => {
       ['draft', 30, 'Draft'],
       ['paid', 0, 'Paid'],
       ['paid', 9, 'Paid'],
-      ['issued', 0, 'Unpaid'],
+      ['issued', 0, 'Pending'],
       ['issued', 1, 'Overdue'],
-      ['part_paid', 0, 'Partially Paid'],
+      ['part_paid', 0, 'Partly Paid'],
       ['part_paid', 5, 'Overdue'],
     ])('maps %s with %i days overdue to %s', (status, daysOverdue, label) => {
       expect(mapInvoiceStatusLabel(status, daysOverdue)).toBe(label);
@@ -144,7 +144,8 @@ describe('billing mapper', () => {
         total: 49560.75,
         amountReceived: 16500,
         balance: 33060.75,
-        status: 'Partially Paid',
+        balancePaise: 3306075,
+        status: 'Partly Paid',
         daysOverdue: 0,
         assignmentCode: 'AS-001001',
         notes: 'Billed in two parts',
@@ -159,9 +160,14 @@ describe('billing mapper', () => {
         { id: '72000000-0000-4000-a000-000000000003', description: 'GST reconciliation review', quantity: 1.5, rate: 12000.5, gstPercent: 18, amount: 18000.75 },
       ]);
       expect(record.payments).toEqual([
-        { receiptNumber: 'RCT-0001001', date: '29/10/2026', amount: 10500, voided: false },
-        { receiptNumber: 'RCT-0001002', date: '08/11/2026', amount: 6000, voided: true },
+        { receiptId: '71000000-0000-4000-a000-000000000001', receiptNumber: 'RCT-0001001', date: '29/10/2026', amount: 10500, amountPaise: 1050000, voided: false },
+        { receiptId: '71000000-0000-4000-a000-000000000002', receiptNumber: 'RCT-0001002', date: '08/11/2026', amount: 6000, amountPaise: 600000, voided: true },
       ]);
+    });
+
+    it('carries the Vyapar bill number when there is one and omits it otherwise', () => {
+      expect(mapInvoiceDto(invoiceDto({ vyaparBillNumber: 'VYP-140' })).vyaparBillNumber).toBe('VYP-140');
+      expect('vyaparBillNumber' in mapInvoiceDto(invoiceDto({ vyaparBillNumber: null }))).toBe(false);
     });
 
     it('describes the invoice by its first line plus the count of the others', () => {
@@ -207,6 +213,7 @@ describe('billing mapper', () => {
         invoiceNumber: 'INV-0001001',
         receiptDate: '29/10/2026',
         amount: 40000,
+        amountPaise: 4000000,
         paymentMode: 'Bank transfer',
         referenceNumber: 'NEFT-AST-01001',
         notes: 'Settles two invoices',

@@ -1,11 +1,19 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { CompanyRole } from '@sn/domain';
+import type {
+  InvoiceDto,
+  PaymentReceiptDto,
+  RecordPaymentInput,
+  RecordVyaparBillInput,
+  VoidFeeRecordInput,
+} from '@sn/contracts';
 import type { InvoiceRecord, ReceiptRecord } from '../data';
 import { useOptionalSessionActor } from '../shell/session-context';
 import { mapInvoiceDto, mapReceiptDto } from './billing-mapper';
 import { HttpBillingAdapter } from './http-billing-adapter';
 import {
   BillingOperationError,
+  SAFE_BILLING_ERROR_MESSAGES,
   sanitizeBillingError,
   type BillingPort,
 } from './billing-types';
@@ -24,6 +32,15 @@ export interface UseBillingResult {
   readonly error: BillingOperationError | null;
   readonly hasLiveSnapshot: boolean;
   readonly retry: () => void;
+  /** Mutations throw a sanitized BillingOperationError and reload both lists on success. */
+  readonly recordBill: (input: RecordVyaparBillInput, idempotencyKey: string) => Promise<InvoiceDto>;
+  readonly recordPayment: (input: RecordPaymentInput, idempotencyKey: string) => Promise<PaymentReceiptDto>;
+  readonly voidBill: (invoiceId: string, input: VoidFeeRecordInput, idempotencyKey: string) => Promise<InvoiceDto>;
+  readonly voidPayment: (
+    receiptId: string,
+    input: VoidFeeRecordInput,
+    idempotencyKey: string,
+  ) => Promise<PaymentReceiptDto>;
 }
 
 interface BillingSnapshot {
@@ -40,12 +57,12 @@ const NO_INVOICES: InvoiceRecord[] = [];
 const NO_RECEIPTS: ReceiptRecord[] = [];
 
 function mayReadBilling(role: CompanyRole): boolean {
-  return role === 'founder' || role === 'manager';
+  return role === 'founder' || role === 'manager' || role === 'senior_staff' || role === 'staff';
 }
 
 /**
- * Read-only billing data. Only the Founder and Manager load anything; every other role
- * gets empty lists and never triggers a request. Data loaded for one role is never
+ * Billing data and mutations. Everyone except the Trainee loads (the API scopes the lists
+ * to the clients each role looks after); the Trainee gets empty lists and never triggers a request. Data loaded for one role is never
  * exposed to another (zero-frame suppression on role or port change).
  */
 export function useBilling(role: CompanyRole, options: UseBillingOptions = {}): UseBillingResult {
@@ -120,6 +137,61 @@ export function useBilling(role: CompanyRole, options: UseBillingOptions = {}): 
     setAttempt((value) => value + 1);
   }, []);
 
+  const reloadBoth = useCallback(async () => {
+    try {
+      const [invoiceDtos, receiptDtos] = await Promise.all([port.listInvoices(role), port.listPaymentReceipts(role)]);
+      setSnapshot({
+        port,
+        role,
+        invoices: invoiceDtos.map(mapInvoiceDto),
+        receipts: receiptDtos.map(mapReceiptDto),
+        loading: false,
+        error: null,
+        hasLiveSnapshot: true,
+      });
+    } catch {
+      // The change itself was saved; fall back to the normal reload so the lists catch up.
+      setAttempt((value) => value + 1);
+    }
+  }, [port, role]);
+
+  const mutate = useCallback(
+    async <T,>(run: () => Promise<T>): Promise<T> => {
+      if (!allowed) {
+        throw new BillingOperationError({ code: 'forbidden', message: SAFE_BILLING_ERROR_MESSAGES.forbidden });
+      }
+      let result: T;
+      try {
+        result = await run();
+      } catch (err: unknown) {
+        throw sanitizeBillingError(err);
+      }
+      await reloadBoth();
+      return result;
+    },
+    [allowed, reloadBoth],
+  );
+
+  const recordBill = useCallback(
+    (input: RecordVyaparBillInput, key: string) => mutate(() => port.recordVyaparBill(role, input, key)),
+    [mutate, port, role],
+  );
+  const recordPayment = useCallback(
+    (input: RecordPaymentInput, key: string) => mutate(() => port.recordPayment(role, input, key)),
+    [mutate, port, role],
+  );
+  const voidBill = useCallback(
+    (invoiceId: string, input: VoidFeeRecordInput, key: string) =>
+      mutate(() => port.voidInvoice(role, invoiceId, input, key)),
+    [mutate, port, role],
+  );
+  const voidPayment = useCallback(
+    (receiptId: string, input: VoidFeeRecordInput, key: string) =>
+      mutate(() => port.voidPaymentReceipt(role, receiptId, input, key)),
+    [mutate, port, role],
+  );
+  const actions = { retry, recordBill, recordPayment, voidBill, voidPayment };
+
   if (!allowed) {
     return {
       invoices: NO_INVOICES,
@@ -127,7 +199,7 @@ export function useBilling(role: CompanyRole, options: UseBillingOptions = {}): 
       loading: false,
       error: null,
       hasLiveSnapshot: false,
-      retry,
+      ...actions,
     };
   }
 
@@ -140,7 +212,7 @@ export function useBilling(role: CompanyRole, options: UseBillingOptions = {}): 
       loading: true,
       error: null,
       hasLiveSnapshot: false,
-      retry,
+      ...actions,
     };
   }
 
@@ -150,6 +222,6 @@ export function useBilling(role: CompanyRole, options: UseBillingOptions = {}): 
     loading: current.loading,
     error: current.error,
     hasLiveSnapshot: current.hasLiveSnapshot,
-    retry,
+    ...actions,
   };
 }

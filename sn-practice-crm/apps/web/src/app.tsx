@@ -45,7 +45,7 @@ import { MODULE_DESCRIPTIONS, type PageKey } from './shell/navigation';
 import { Card, Field, MoreButton, Status } from './ui/workspace-primitives';
 import { ClientsWorkspace } from './workspaces/clients/clients-workspace';
 import { EngagementsWorkspace } from './workspaces/engagements/engagements-workspace';
-import { BillingWorkspace } from './workspaces/billing/billing-workspace';
+import { BillingWorkspace, type BillingActions } from './workspaces/billing/billing-workspace';
 import { TeamWorkspace } from './workspaces/team/team-workspace';
 import {
   TasksWorkspace,
@@ -230,6 +230,10 @@ function AuthenticatedApp({
     loading: billingLoading,
     error: billingError,
     retry: retryBilling,
+    recordBill,
+    recordPayment,
+    voidBill,
+    voidPayment,
   } = useBilling(role);
   const [clients, setClients] = useState<ClientRecord[]>(CLIENTS);
 
@@ -613,6 +617,7 @@ function AuthenticatedApp({
           billingLoading={billingLoading}
           billingError={billingError ? billingError.message : null}
           onRetryBilling={retryBilling}
+          billingActions={{ recordBill, recordPayment, voidBill, voidPayment }}
           assignmentsLoading={assignmentsLoading}
           assignmentsError={assignmentsError ? assignmentsError.message : null}
           onRetryAssignments={refreshAssignments}
@@ -1302,6 +1307,14 @@ function GuidanceCard() {
   );
 }
 
+const billingUnavailable = () => Promise.reject(new Error('Billing actions are not connected.'));
+const NO_BILLING_ACTIONS: BillingActions = {
+  recordBill: billingUnavailable,
+  recordPayment: billingUnavailable,
+  voidBill: billingUnavailable,
+  voidPayment: billingUnavailable,
+};
+
 export function ModuleWorkspace({
   page,
   role,
@@ -1326,6 +1339,7 @@ export function ModuleWorkspace({
   billingLoading,
   billingError,
   onRetryBilling,
+  billingActions,
   onGenerateDue,
   isGeneratingDue,
   assignmentsLoading,
@@ -1355,6 +1369,7 @@ export function ModuleWorkspace({
   billingLoading?: boolean;
   billingError?: string | null;
   onRetryBilling?: () => void;
+  billingActions?: BillingActions;
   onGenerateDue?: () => void;
   isGeneratingDue?: boolean;
   assignmentsLoading?: boolean;
@@ -1428,9 +1443,12 @@ export function ModuleWorkspace({
             invoices,
             receipts,
           }}
+          clients={directoryClients ?? []}
+          actions={billingActions ?? NO_BILLING_ACTIONS}
           loading={billingLoading ?? false}
           error={billingError ?? null}
           onRetry={onRetryBilling ?? (() => undefined)}
+          onToast={onToast}
         />
       ) : null}
       {page === 'My Tasks' ? (

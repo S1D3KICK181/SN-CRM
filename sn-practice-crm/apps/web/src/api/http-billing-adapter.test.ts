@@ -188,7 +188,7 @@ describe('HttpBillingAdapter', () => {
   it('normalizes HTTP errors into sanitized BillingOperationError without leaking server text', async () => {
     const cases = [
       { status: 401, code: 'unauthorized', message: 'Session expired. Please sign in again to view billing records.' },
-      { status: 403, code: 'forbidden', message: 'Billing records are visible to the Founder and Manager only.' },
+      { status: 403, code: 'forbidden', message: 'You do not have permission to view these fee records.' },
       { status: 404, code: 'not_found', message: 'The billing service could not be located.' },
       { status: 500, code: 'unexpected', message: 'An unexpected error occurred while loading billing records. Please try again.' },
     ];
@@ -266,5 +266,117 @@ describe('HttpBillingAdapter', () => {
     const fetchFn = vi.fn().mockResolvedValue(okResponse([]));
     await new HttpBillingAdapter({ fetchFn, baseUrl: 'http://127.0.0.1:4321/' }).listPaymentReceipts('manager');
     expect((fetchFn.mock.calls[0] as [string])[0]).toBe('http://127.0.0.1:4321/api/v1/payment-receipts');
+  });
+});
+
+describe('HttpBillingAdapter mutations', () => {
+  const billInput = {
+    clientId: '10000000-0000-4000-a000-000000000001',
+    vyaparBillNumber: 'VYP-140',
+    billDate: '2026-11-01',
+    dueDate: '2026-11-16',
+    amountPaise: 250000,
+    description: 'Returns for October',
+  };
+  const paymentInput = {
+    invoiceId: '70000000-0000-4000-a000-000000000002',
+    receivedOn: '2026-11-02',
+    amountPaise: 100000,
+    method: 'upi' as const,
+    reference: 'UPI-1',
+    notes: null,
+  };
+
+  function created(data: unknown, status = 201): Response {
+    return new Response(JSON.stringify({ data, requestId: 'req-1' }), {
+      status,
+      headers: { 'content-type': 'application/json' },
+    });
+  }
+
+  it('POSTs a Vyapar bill with the key header and JSON body, and parses the result', async () => {
+    const fetchFn = vi.fn().mockResolvedValue(created({ ...invoice, vyaparBillNumber: 'VYP-140' }));
+    const adapter = new HttpBillingAdapter({ fetchFn });
+    const result = await adapter.recordVyaparBill('founder', billInput, 'key-bill-1');
+
+    const [url, init] = fetchFn.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('/api/v1/invoices');
+    expect(init.method).toBe('POST');
+    const headers = new Headers(init.headers);
+    expect(headers.get('idempotency-key')).toBe('key-bill-1');
+    expect(headers.get('content-type')).toBe('application/json');
+    expect(headers.get('x-demo-user-id')).toBe(ROLE_TO_DEMO_ACTOR_ID.founder);
+    expect(JSON.parse(String(init.body))).toEqual(billInput);
+    expect(result.vyaparBillNumber).toBe('VYP-140');
+  });
+
+  it('POSTs a payment and the two void routes', async () => {
+    const fetchPay = vi.fn().mockResolvedValue(created(receipt));
+    const paid = await new HttpBillingAdapter({ fetchFn: fetchPay }).recordPayment('staff', paymentInput, 'key-pay-1');
+    expect(paid.code).toBe('RCT-0001001');
+    const [payUrl, payInit] = fetchPay.mock.calls[0] as [string, RequestInit];
+    expect(payUrl).toBe('/api/v1/payment-receipts');
+    expect(new Headers(payInit.headers).get('idempotency-key')).toBe('key-pay-1');
+    expect(JSON.parse(String(payInit.body))).toEqual(paymentInput);
+
+    const fetchVoidBill = vi.fn().mockResolvedValue(created({ ...invoice, status: 'voided' }, 200));
+    const voided = await new HttpBillingAdapter({ fetchFn: fetchVoidBill }).voidInvoice(
+      'manager',
+      invoice.id,
+      { reason: 'Raised twice' },
+      'key-void-1',
+    );
+    const [voidBillUrl, voidBillInit] = fetchVoidBill.mock.calls[0] as [string, RequestInit];
+    expect(voidBillUrl).toBe(`/api/v1/invoices/${invoice.id}/void`);
+    expect(voidBillInit.method).toBe('POST');
+    expect(new Headers(voidBillInit.headers).get('idempotency-key')).toBe('key-void-1');
+    expect(JSON.parse(String(voidBillInit.body))).toEqual({ reason: 'Raised twice' });
+    expect(voided.status).toBe('voided');
+
+    const fetchVoidPay = vi.fn().mockResolvedValue(created({ ...receipt, status: 'voided' }, 200));
+    const voidedReceipt = await new HttpBillingAdapter({ fetchFn: fetchVoidPay }).voidPaymentReceipt(
+      'manager',
+      receipt.id,
+      { reason: 'Bounced' },
+      'key-void-2',
+    );
+    expect((fetchVoidPay.mock.calls[0] as [string, RequestInit])[0]).toBe(`/api/v1/payment-receipts/${receipt.id}/void`);
+    expect(voidedReceipt.status).toBe('voided');
+  });
+
+  it('refuses a blank idempotency key without calling fetch', async () => {
+    const fetchFn = vi.fn();
+    const adapter = new HttpBillingAdapter({ fetchFn });
+    await expect(adapter.recordVyaparBill('founder', billInput, '   ')).rejects.toBeInstanceOf(Error);
+    expect(fetchFn).not.toHaveBeenCalled();
+  });
+
+  it.each(['duplicate_vyapar_bill', 'payment_exceeds_balance', 'bill_not_open', 'bill_has_payments', 'already_voided'])(
+    'keeps the %s server code on a 409 and hides the server text',
+    async (code) => {
+      const fetchFn = vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ error: { code, message: 'internal detail' } }), {
+          status: 409,
+          headers: { 'content-type': 'application/json' },
+        }),
+      );
+      const caught = await new HttpBillingAdapter({ fetchFn })
+        .recordVyaparBill('founder', billInput, 'key-1')
+        .catch((err: unknown) => err);
+      expect(caught).toBeInstanceOf(BillingOperationError);
+      expect((caught as BillingOperationError).serverCode).toBe(code);
+      expect((caught as BillingOperationError).status).toBe(409);
+      expect((caught as BillingOperationError).message).not.toContain('internal detail');
+    },
+  );
+
+  it('maps 403 and 404 on a mutation', async () => {
+    for (const [status, code] of [[403, 'forbidden'], [404, 'not_found']] as const) {
+      const fetchFn = vi.fn().mockResolvedValue(new Response('{}', { status, headers: { 'content-type': 'application/json' } }));
+      const caught = await new HttpBillingAdapter({ fetchFn })
+        .voidInvoice('staff', invoice.id, { reason: 'Wrong client' }, 'key-1')
+        .catch((err: unknown) => err);
+      expect((caught as BillingOperationError).code).toBe(code);
+    }
   });
 });

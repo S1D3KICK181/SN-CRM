@@ -37,7 +37,7 @@ export function mapInvoiceStatusLabel(status: ApiInvoiceStatus, daysOverdue: num
     case 'issued':
     case 'part_paid':
       if (daysOverdue > 0) return 'Overdue';
-      return status === 'part_paid' ? 'Partially Paid' : 'Unpaid';
+      return status === 'part_paid' ? 'Partly Paid' : 'Pending';
   }
 }
 
@@ -58,9 +58,11 @@ export function mapInvoiceDto(dto: InvoiceDto): InvoiceRecord {
     amount: paiseToRupees(item.lineSubtotalPaise),
   }));
   const payments: InvoicePaymentRecord[] = dto.payments.map((payment) => ({
+    receiptId: payment.receiptId,
     receiptNumber: payment.receiptCode,
     date: formatIsoToDisplayDate(payment.receivedOn),
     amount: paiseToRupees(payment.amountPaise),
+    amountPaise: payment.amountPaise,
     voided: payment.receiptStatus === 'voided',
   }));
 
@@ -77,12 +79,14 @@ export function mapInvoiceDto(dto: InvoiceDto): InvoiceRecord {
     total: paiseToRupees(dto.totalPaise),
     amountReceived: paiseToRupees(dto.amountReceivedPaise),
     balance: paiseToRupees(dto.balancePaise),
+    balancePaise: dto.balancePaise,
     status: mapInvoiceStatusLabel(dto.status, dto.daysOverdue),
     daysOverdue: dto.daysOverdue,
     clientCode: dto.clientCode,
     items,
     payments,
   };
+  if (dto.vyaparBillNumber) record.vyaparBillNumber = dto.vyaparBillNumber;
   if (dto.assignmentCode) record.assignmentCode = dto.assignmentCode;
   if (dto.notes) record.notes = dto.notes;
   if (dto.voidReason) record.voidReason = dto.voidReason;
@@ -105,6 +109,7 @@ export function mapReceiptDto(dto: PaymentReceiptDto): ReceiptRecord {
     invoiceNumber: first?.invoiceNumber ?? '',
     receiptDate: formatIsoToDisplayDate(dto.receivedOn),
     amount: paiseToRupees(dto.amountPaise),
+    amountPaise: dto.amountPaise,
     paymentMode: mapPaymentMethodLabel(dto.method),
     referenceNumber: dto.reference ?? '',
     notes: dto.notes ?? '',

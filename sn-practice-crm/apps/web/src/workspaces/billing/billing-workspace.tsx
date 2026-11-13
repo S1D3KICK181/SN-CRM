@@ -11,16 +11,25 @@ import {
   TrendingUp,
 } from 'lucide-react';
 import type { CompanyRole } from '@sn/domain';
+import type { ClientDto } from '@sn/contracts';
+import type { UseBillingResult } from '../../api/use-billing';
 import {
   formatINR,
+  type InvoicePaymentRecord,
   type InvoiceRecord,
   type ReceiptRecord,
 } from '../../data';
 import { Card } from '../../ui/workspace-primitives';
+import { billLabel, canRecordPayment } from './billing-form-model';
+import { CancelFeeRecordDialog } from './cancel-fee-record-dialog';
 import { InvoiceDetailDrawer } from './invoice-detail-drawer';
+import { RecordPaymentDialog } from './record-payment-dialog';
+import { RecordVyaparBillDialog } from './record-vyapar-bill-dialog';
 
-const READ_ONLY_NOTE_ID = 'billing-read-only-note';
-const READ_ONLY_NOTE = 'Read-only for now: raising invoices and recording receipts are not available yet.';
+const STAFF_BANNER =
+  'Showing bills for the clients you look after. You can record payments; the Founder or Manager records and cancels bills.';
+
+export type BillingActions = Pick<UseBillingResult, 'recordBill' | 'recordPayment' | 'voidBill' | 'voidPayment'>;
 
 interface BillingWorkspaceProps {
   role: CompanyRole;
@@ -28,16 +37,26 @@ interface BillingWorkspaceProps {
     invoices: InvoiceRecord[];
     receipts: ReceiptRecord[];
   };
+  /** Live client directory for the Record Vyapar bill dialog. */
+  clients: readonly ClientDto[];
+  actions: BillingActions;
   loading: boolean;
   error: string | null;
   onRetry: () => void;
+  onToast: (message: string) => void;
 }
+
+type DialogState =
+  | { kind: 'bill' }
+  | { kind: 'payment'; invoiceId: string }
+  | { kind: 'cancel-bill'; invoiceId: string }
+  | { kind: 'cancel-payment'; invoiceId: string; receiptId: string };
 
 function invoiceChipClass(status: InvoiceRecord['status']): string {
   switch (status) {
     case 'Paid':
       return 'is-paid';
-    case 'Partially Paid':
+    case 'Partly Paid':
       return 'is-partial';
     case 'Overdue':
       return 'is-overdue';
@@ -49,17 +68,27 @@ function invoiceChipClass(status: InvoiceRecord['status']): string {
   }
 }
 
-const DISABLED_ACTION_STYLE = { cursor: 'not-allowed', opacity: 0.6 } as const;
-
-export function BillingWorkspace({ role, model, loading, error, onRetry }: BillingWorkspaceProps) {
+export function BillingWorkspace({ role, model, clients, actions, loading, error, onRetry, onToast }: BillingWorkspaceProps) {
   const { invoices, receipts } = model;
 
   const [tab, setTab] = useState<'invoices' | 'ageing' | 'receipts'>('invoices');
-  const [statusFilter, setStatusFilter] = useState<'All' | 'Unpaid' | 'Paid' | 'Draft'>('All');
+  const [statusFilter, setStatusFilter] = useState<'All' | 'Pending' | 'Paid' | 'Draft'>('All');
   const [search, setSearch] = useState('');
   const [selectedInvoiceId, setSelectedInvoiceId] = useState<string | null>(null);
+  const [dialog, setDialog] = useState<DialogState | null>(null);
+  const [opener, setOpener] = useState<HTMLElement | null>(null);
 
   const leadership = role === 'founder' || role === 'manager';
+  const staffView = role === 'senior_staff' || role === 'staff';
+
+  const openDialog = (next: DialogState, from?: HTMLElement) => {
+    setOpener(from ?? null);
+    setDialog(next);
+  };
+  const closeDialog = () => {
+    setDialog(null);
+    opener?.focus();
+  };
 
   const totals = useMemo(() => {
     const live = invoices.filter((i) => i.status !== 'Draft' && i.status !== 'Cancelled');
@@ -107,8 +136,8 @@ export function BillingWorkspace({ role, model, loading, error, onRetry }: Billi
 
   const filteredInvoices = useMemo(() => {
     return invoices.filter((inv) => {
-      if (statusFilter === 'Unpaid') {
-        if (!['Unpaid', 'Partially Paid', 'Overdue'].includes(inv.status)) return false;
+      if (statusFilter === 'Pending') {
+        if (inv.balancePaise <= 0) return false;
       } else if (statusFilter === 'Paid') {
         if (inv.status !== 'Paid') return false;
       } else if (statusFilter === 'Draft') {
@@ -119,6 +148,7 @@ export function BillingWorkspace({ role, model, loading, error, onRetry }: Billi
         const q = search.toLowerCase();
         const matches =
           inv.invoiceNumber.toLowerCase().includes(q) ||
+          (inv.vyaparBillNumber ?? '').toLowerCase().includes(q) ||
           inv.clientName.toLowerCase().includes(q) ||
           inv.description.toLowerCase().includes(q);
         if (!matches) return false;
@@ -133,14 +163,21 @@ export function BillingWorkspace({ role, model, loading, error, onRetry }: Billi
     [invoices, selectedInvoiceId],
   );
 
-  if (!leadership) {
+  const dialogInvoice =
+    dialog && dialog.kind !== 'bill' ? (invoices.find((inv) => inv.id === dialog.invoiceId) ?? null) : null;
+  const dialogPayment =
+    dialog?.kind === 'cancel-payment'
+      ? ((dialogInvoice?.payments ?? []).find((payment) => payment.receiptId === dialog.receiptId) ?? null)
+      : null;
+
+  if (role === 'trainee') {
     return (
       <Card title="Billing is restricted">
         <div style={{ padding: '48px 16px', textAlign: 'center', color: 'var(--ink-muted)' }}>
           <ShieldCheck size={48} color="var(--brand)" style={{ margin: '0 auto 16px', opacity: 0.7 }} />
-          <h3 style={{ fontSize: 16, fontWeight: 600, color: 'var(--ink)', marginBottom: 8 }}>Founder and Manager only</h3>
+          <h3 style={{ fontSize: 16, fontWeight: 600, color: 'var(--ink)', marginBottom: 8 }}>Not available to Trainees</h3>
           <p style={{ maxWidth: 460, margin: '0 auto', fontSize: 13, lineHeight: 1.6 }}>
-            Invoices, receipts and collections are visible to the Founder and Manager.
+            Fee records are visible to the Founder, the Manager and the staff who look after each client.
           </p>
         </div>
       </Card>
@@ -154,9 +191,9 @@ export function BillingWorkspace({ role, model, loading, error, onRetry }: Billi
 
   return (
     <div className="billing-layout">
-      <p id={READ_ONLY_NOTE_ID} style={{ margin: '0 0 14px', fontSize: 12, color: 'var(--ink-muted)' }}>
-        {READ_ONLY_NOTE}
-      </p>
+      {staffView ? (
+        <p style={{ margin: '0 0 14px', fontSize: 12, color: 'var(--ink-muted)' }}>{STAFF_BANNER}</p>
+      ) : null}
 
       {stale ? (
         <div className="workspace-warning-banner" role="status" style={{ marginBottom: 14 }}>
@@ -170,7 +207,7 @@ export function BillingWorkspace({ role, model, loading, error, onRetry }: Billi
       ) : null}
 
       {initialLoading ? (
-        <Card title="Fee Invoices & Practice Receivables" description="Loading billing records…">
+        <Card title="Vyapar bills and payments" description="Loading billing records…">
           <div aria-busy="true" aria-label="Loading billing records">
             {[1, 2, 3, 4].map((x) => (
               <div className="skeleton-row engagement-skeleton-row" key={x}>
@@ -180,7 +217,7 @@ export function BillingWorkspace({ role, model, loading, error, onRetry }: Billi
           </div>
         </Card>
       ) : initialError ? (
-        <Card title="Fee Invoices & Practice Receivables" description="Unable to load billing records">
+        <Card title="Vyapar bills and payments" description="Unable to load billing records">
           <div className="workspace-error-card" role="alert">
             <h3>Unable to load billing records</h3>
             <p>{error}</p>
@@ -197,7 +234,7 @@ export function BillingWorkspace({ role, model, loading, error, onRetry }: Billi
               <div className="workspace-stat-info">
                 <span>Billed to date</span>
                 <strong>{formatINR(totals.billed)}</strong>
-                <small>Excludes drafts and cancelled invoices</small>
+                <small>Excludes drafts and cancelled bills</small>
               </div>
               <span className="workspace-stat-icon">
                 <FileText aria-hidden="true" />
@@ -240,29 +277,19 @@ export function BillingWorkspace({ role, model, loading, error, onRetry }: Billi
 
           {/* Main Card with Sub-Navigation */}
           <Card
-            title="Fee Invoices & Practice Receivables"
-            description="Accounting charges, GST compliance invoices, and payment receipts."
+            title="Vyapar bills and payments"
+            description="Fees billed in Vyapar, payments received and what is still pending."
             action={
-              <div style={{ display: 'flex', gap: 8 }}>
+              leadership ? (
                 <button
                   className="primary-button"
                   type="button"
-                  disabled
-                  aria-describedby={READ_ONLY_NOTE_ID}
-                  style={{ fontSize: 12, padding: '7px 14px', ...DISABLED_ACTION_STYLE }}
+                  style={{ fontSize: 12, padding: '7px 14px' }}
+                  onClick={(event) => openDialog({ kind: 'bill' }, event.currentTarget)}
                 >
-                  <Plus size={14} /> Raise Invoice
+                  <Plus size={14} /> Record Vyapar bill
                 </button>
-                <button
-                  className="soft-button"
-                  type="button"
-                  disabled
-                  aria-describedby={READ_ONLY_NOTE_ID}
-                  style={{ fontSize: 12, padding: '7px 14px', ...DISABLED_ACTION_STYLE }}
-                >
-                  <ReceiptIndianRupee size={14} /> Record Receipt
-                </button>
-              </div>
+              ) : undefined
             }
           >
             {/* Sub-tabs bar */}
@@ -273,7 +300,7 @@ export function BillingWorkspace({ role, model, loading, error, onRetry }: Billi
                 onClick={() => setTab('invoices')}
               >
                 <FileText size={14} />
-                Invoices
+                Bills
                 <span className="tab-badge">{invoices.length}</span>
               </button>
               <button
@@ -282,7 +309,7 @@ export function BillingWorkspace({ role, model, loading, error, onRetry }: Billi
                 onClick={() => setTab('ageing')}
               >
                 <TrendingUp size={14} />
-                Ageing &amp; Receivables
+                Pending by client
                 <span className="tab-badge">{openInvoices.length}</span>
               </button>
               <button
@@ -291,7 +318,7 @@ export function BillingWorkspace({ role, model, loading, error, onRetry }: Billi
                 onClick={() => setTab('receipts')}
               >
                 <CheckCircle2 size={14} />
-                Receipts Register
+                Payments received
                 <span className="tab-badge">{receipts.length}</span>
               </button>
             </div>
@@ -301,7 +328,7 @@ export function BillingWorkspace({ role, model, loading, error, onRetry }: Billi
                 {/* Filter Controls */}
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14, gap: 12, flexWrap: 'wrap' }}>
                   <div style={{ display: 'flex', gap: 6 }}>
-                    {(['All', 'Unpaid', 'Paid', 'Draft'] as const).map((sf) => (
+                    {(['All', 'Pending', 'Paid', 'Draft'] as const).map((sf) => (
                       <button
                         key={sf}
                         type="button"
@@ -309,7 +336,7 @@ export function BillingWorkspace({ role, model, loading, error, onRetry }: Billi
                         className={`cadence-pill ${statusFilter === sf ? 'is-active' : ''}`}
                         style={{ fontSize: 11 }}
                       >
-                        {sf === 'Unpaid' ? 'Unpaid & Overdue' : sf}
+                        {sf}
                       </button>
                     ))}
                   </div>
@@ -320,7 +347,7 @@ export function BillingWorkspace({ role, model, loading, error, onRetry }: Billi
                     />
                     <input
                       type="text"
-                      placeholder="Search invoice or client…"
+                      placeholder="Search bill or client…"
                       value={search}
                       onChange={(e) => setSearch(e.target.value)}
                       style={{
@@ -339,8 +366,8 @@ export function BillingWorkspace({ role, model, loading, error, onRetry }: Billi
                   <table>
                     <thead>
                       <tr>
-                        <th>Invoice #</th>
-                        <th>Client Legal Entity</th>
+                        <th>Vyapar bill</th>
+                        <th>Client</th>
                         <th>Date</th>
                         <th>Due Date</th>
                         <th>Total Billed</th>
@@ -354,7 +381,7 @@ export function BillingWorkspace({ role, model, loading, error, onRetry }: Billi
                       {filteredInvoices.length === 0 ? (
                         <tr>
                           <td colSpan={9} style={{ textAlign: 'center', padding: '32px 16px', color: 'var(--ink-muted)' }}>
-                            {invoices.length === 0 ? 'No invoices recorded yet.' : 'No invoices found matching current filter.'}
+                            {invoices.length === 0 ? 'No bills recorded yet.' : 'No bills found matching current filter.'}
                           </td>
                         </tr>
                       ) : (
@@ -362,7 +389,12 @@ export function BillingWorkspace({ role, model, loading, error, onRetry }: Billi
                           <tr key={inv.id} onClick={() => setSelectedInvoiceId(inv.id)} style={{ cursor: 'pointer' }}>
                             <td>
                               <div>
-                                <strong style={{ color: 'var(--ink-strong)', fontSize: 12 }}>{inv.invoiceNumber}</strong>
+                                <strong style={{ color: 'var(--ink-strong)', fontSize: 12 }}>{billLabel(inv)}</strong>
+                                {inv.vyaparBillNumber ? (
+                                  <small style={{ display: 'block', color: 'var(--ink-muted)', fontSize: 11 }}>
+                                    CRM ref {inv.invoiceNumber}
+                                  </small>
+                                ) : null}
                                 <small style={{ display: 'block', color: 'var(--ink-muted)', fontSize: 11, maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                                   {inv.description}
                                 </small>
@@ -403,14 +435,13 @@ export function BillingWorkspace({ role, model, loading, error, onRetry }: Billi
                             </td>
                             <td>
                               <div style={{ display: 'flex', gap: 6 }} onClick={(e) => e.stopPropagation()}>
-                                {inv.balance > 0 ? (
+                                {canRecordPayment(inv) ? (
                                   <button
                                     className="primary-button"
                                     type="button"
-                                    disabled
-                                    aria-describedby={READ_ONLY_NOTE_ID}
-                                    aria-label={`Record payment for ${inv.invoiceNumber}`}
-                                    style={{ fontSize: 11, padding: '3px 8px', ...DISABLED_ACTION_STYLE }}
+                                    aria-label={`Record payment for ${billLabel(inv)}`}
+                                    style={{ fontSize: 11, padding: '3px 8px' }}
+                                    onClick={(event) => openDialog({ kind: 'payment', invoiceId: inv.id }, event.currentTarget)}
                                   >
                                     Record payment
                                   </button>
@@ -419,7 +450,7 @@ export function BillingWorkspace({ role, model, loading, error, onRetry }: Billi
                                   className="soft-button"
                                   type="button"
                                   style={{ fontSize: 11, padding: '3px 8px' }}
-                                  aria-label={`View ${inv.invoiceNumber}`}
+                                  aria-label={`View ${billLabel(inv)}`}
                                   onClick={() => setSelectedInvoiceId(inv.id)}
                                 >
                                   View
@@ -442,7 +473,7 @@ export function BillingWorkspace({ role, model, loading, error, onRetry }: Billi
                   <div className="ageing-bucket-card">
                     <span>0–30 Days (Current)</span>
                     <strong>{formatINR(ageingBuckets.current.total)}</strong>
-                    <small>{ageingBuckets.current.count} {ageingBuckets.current.count === 1 ? 'invoice' : 'invoices'} on track</small>
+                    <small>{ageingBuckets.current.count} {ageingBuckets.current.count === 1 ? 'bill' : 'bills'} on track</small>
                   </div>
                   <div className="ageing-bucket-card">
                     <span>31–60 Days</span>
@@ -467,16 +498,15 @@ export function BillingWorkspace({ role, model, loading, error, onRetry }: Billi
                     <thead>
                       <tr>
                         <th>Client Name</th>
-                        <th>Open Invoices</th>
+                        <th>Open bills</th>
                         <th>Outstanding Amount</th>
                         <th>Ageing Status</th>
-                        <th>Actions</th>
                       </tr>
                     </thead>
                     <tbody>
                       {receivablesByClient.length === 0 ? (
                         <tr>
-                          <td colSpan={5} style={{ textAlign: 'center', padding: '32px 16px', color: 'var(--ink-muted)' }}>
+                          <td colSpan={4} style={{ textAlign: 'center', padding: '32px 16px', color: 'var(--ink-muted)' }}>
                             No outstanding receivables.
                           </td>
                         </tr>
@@ -504,18 +534,6 @@ export function BillingWorkspace({ role, model, loading, error, onRetry }: Billi
                                 {c.worstDaysOverdue > 0 ? `${c.worstDaysOverdue}d overdue` : 'Current'}
                               </span>
                             </td>
-                            <td>
-                              <button
-                                className="primary-button"
-                                type="button"
-                                disabled
-                                aria-describedby={READ_ONLY_NOTE_ID}
-                                aria-label={`Record payment for ${c.clientName}`}
-                                style={{ fontSize: 11, padding: '3px 8px', ...DISABLED_ACTION_STYLE }}
-                              >
-                                Record payment
-                              </button>
-                            </td>
                           </tr>
                         ))
                       )}
@@ -538,7 +556,7 @@ export function BillingWorkspace({ role, model, loading, error, onRetry }: Billi
                         <th>Receipt #</th>
                         <th>Date</th>
                         <th>Client</th>
-                        <th>Linked Invoice</th>
+                        <th>Bill</th>
                         <th>Payment Mode</th>
                         <th>Bank Reference / UTR</th>
                         <th>Amount</th>
@@ -593,7 +611,7 @@ export function BillingWorkspace({ role, model, loading, error, onRetry }: Billi
                               ) : null}
                             </td>
                             <td>
-                              {voided ? <span className="invoice-chip is-overdue">Voided</span> : null}
+                              {voided ? <span className="invoice-chip is-overdue">Cancelled</span> : null}
                               {rec.notes ? (
                                 <small style={{ display: 'block', fontSize: 11, color: 'var(--ink-muted)' }}>{rec.notes}</small>
                               ) : null}
@@ -614,8 +632,62 @@ export function BillingWorkspace({ role, model, loading, error, onRetry }: Billi
       {selectedInvoice ? (
         <InvoiceDetailDrawer
           invoice={selectedInvoice}
-          readOnlyNoteId={READ_ONLY_NOTE_ID}
+          canCancel={leadership}
+          canRecordPayment
+          onRecordPayment={(from) => openDialog({ kind: 'payment', invoiceId: selectedInvoice.id }, from)}
+          onCancelBill={(from) => openDialog({ kind: 'cancel-bill', invoiceId: selectedInvoice.id }, from)}
+          onCancelPayment={(payment: InvoicePaymentRecord, from) =>
+            openDialog({ kind: 'cancel-payment', invoiceId: selectedInvoice.id, receiptId: payment.receiptId }, from)
+          }
           onClose={() => setSelectedInvoiceId(null)}
+        />
+      ) : null}
+
+      {leadership && dialog?.kind === 'bill' ? (
+        <RecordVyaparBillDialog
+          open
+          clients={clients}
+          onClose={closeDialog}
+          onSubmit={async (input, key) => {
+            const dto = await actions.recordBill(input, key);
+            onToast(`Vyapar bill ${dto.vyaparBillNumber ?? dto.code} recorded for ${dto.clientName}.`);
+          }}
+        />
+      ) : null}
+      {dialog?.kind === 'payment' && dialogInvoice && canRecordPayment(dialogInvoice) ? (
+        <RecordPaymentDialog
+          open
+          invoice={dialogInvoice}
+          onClose={closeDialog}
+          onSubmit={async (input, key) => {
+            await actions.recordPayment(input, key);
+            onToast(`Payment of ${formatINR(input.amountPaise / 100)} recorded on ${billLabel(dialogInvoice)}.`);
+          }}
+        />
+      ) : null}
+      {leadership && dialog?.kind === 'cancel-bill' && dialogInvoice ? (
+        <CancelFeeRecordDialog
+          open
+          kind="bill"
+          label={billLabel(dialogInvoice)}
+          onClose={closeDialog}
+          onSubmit={async (reason, key) => {
+            await actions.voidBill(dialogInvoice.id, { reason }, key);
+            onToast(`Bill ${billLabel(dialogInvoice)} cancelled.`);
+          }}
+        />
+      ) : null}
+      {leadership && dialog?.kind === 'cancel-payment' && dialogPayment ? (
+        <CancelFeeRecordDialog
+          open
+          kind="payment"
+          label={dialogPayment.receiptNumber}
+          amountPaise={dialogPayment.amountPaise}
+          onClose={closeDialog}
+          onSubmit={async (reason, key) => {
+            await actions.voidPayment(dialogPayment.receiptId, { reason }, key);
+            onToast(`Payment ${dialogPayment.receiptNumber} cancelled.`);
+          }}
         />
       ) : null}
     </div>

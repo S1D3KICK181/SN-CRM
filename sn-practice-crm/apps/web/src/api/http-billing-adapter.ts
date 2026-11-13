@@ -7,11 +7,15 @@ import type {
   PaymentMethod,
   PaymentReceiptDto,
   PaymentReceiptStatus,
+  RecordPaymentInput,
+  RecordVyaparBillInput,
+  VoidFeeRecordInput,
 } from '@sn/contracts';
 import { INVOICE_STATUSES, PAYMENT_METHODS } from '@sn/contracts';
 import type { CompanyRole } from '@sn/domain';
 import type { AuthSessionSource } from './auth/types';
 import { ROLE_TO_DEMO_ACTOR_ID } from './dev-auth';
+import { validateIdempotencyKey } from './engagements-types';
 import { isValidUuid } from './metadata-safety';
 import type { PortExecutionOptions } from './types';
 import {
@@ -296,6 +300,7 @@ export class HttpBillingAdapter implements BillingPort {
     role: CompanyRole,
     path: string,
     options?: PortExecutionOptions,
+    mutation?: { readonly body: unknown; readonly idempotencyKey: string },
   ): Promise<{ data: unknown; requestId?: string }> {
     if (options?.signal?.aborted) {
       throw this.abortedError(options);
@@ -359,11 +364,17 @@ export class HttpBillingAdapter implements BillingPort {
       headers.set('x-request-id', options.requestId);
     }
 
+    if (mutation) {
+      headers.set('content-type', 'application/json');
+      headers.set('idempotency-key', mutation.idempotencyKey);
+    }
+
     let response: Response;
     try {
       response = await this.fetchFn(this.buildUrl(path), {
-        method: 'GET',
+        method: mutation ? 'POST' : 'GET',
         headers,
+        body: mutation ? JSON.stringify(mutation.body) : undefined,
         signal: options?.signal,
       });
     } catch (err: unknown) {
@@ -472,5 +483,86 @@ export class HttpBillingAdapter implements BillingPort {
     } catch (err: unknown) {
       throw sanitizeBillingError(err);
     }
+  }
+
+  private requireIdempotencyKey(raw: string, requestId?: string): string {
+    const valid = validateIdempotencyKey(raw);
+    if (valid === null) {
+      throw new BillingOperationError({
+        code: 'unexpected',
+        message: 'Idempotency-Key is required: must be a non-blank string of at most 255 characters.',
+        requestId,
+      });
+    }
+    return valid;
+  }
+
+  private async mutate<T>(
+    role: CompanyRole,
+    path: string,
+    body: unknown,
+    idempotencyKey: string,
+    parse: (raw: unknown) => T,
+    options?: PortExecutionOptions,
+  ): Promise<T> {
+    const key = this.requireIdempotencyKey(idempotencyKey, options?.requestId);
+    try {
+      const result = await this.execute(role, path, options, { body, idempotencyKey: key });
+      return parse(result.data);
+    } catch (err: unknown) {
+      throw sanitizeBillingError(err);
+    }
+  }
+
+  recordVyaparBill(
+    role: CompanyRole,
+    input: RecordVyaparBillInput,
+    idempotencyKey: string,
+    options?: PortExecutionOptions,
+  ): Promise<InvoiceDto> {
+    return this.mutate(role, '/api/v1/invoices', input, idempotencyKey, parseInvoiceDto, options);
+  }
+
+  voidInvoice(
+    role: CompanyRole,
+    invoiceId: string,
+    input: VoidFeeRecordInput,
+    idempotencyKey: string,
+    options?: PortExecutionOptions,
+  ): Promise<InvoiceDto> {
+    return this.mutate(
+      role,
+      `/api/v1/invoices/${encodeURIComponent(invoiceId)}/void`,
+      input,
+      idempotencyKey,
+      parseInvoiceDto,
+      options,
+    );
+  }
+
+  recordPayment(
+    role: CompanyRole,
+    input: RecordPaymentInput,
+    idempotencyKey: string,
+    options?: PortExecutionOptions,
+  ): Promise<PaymentReceiptDto> {
+    return this.mutate(role, '/api/v1/payment-receipts', input, idempotencyKey, parsePaymentReceiptDto, options);
+  }
+
+  voidPaymentReceipt(
+    role: CompanyRole,
+    receiptId: string,
+    input: VoidFeeRecordInput,
+    idempotencyKey: string,
+    options?: PortExecutionOptions,
+  ): Promise<PaymentReceiptDto> {
+    return this.mutate(
+      role,
+      `/api/v1/payment-receipts/${encodeURIComponent(receiptId)}/void`,
+      input,
+      idempotencyKey,
+      parsePaymentReceiptDto,
+      options,
+    );
   }
 }

@@ -806,7 +806,7 @@ export function formatINR(amount: number): string {
   }).format(amount);
 }
 
-export type InvoiceStatus = 'Paid' | 'Partially Paid' | 'Unpaid' | 'Overdue' | 'Draft' | 'Cancelled';
+export type InvoiceStatus = 'Paid' | 'Partly Paid' | 'Pending' | 'Overdue' | 'Draft' | 'Cancelled';
 
 export interface InvoiceRecord {
   id: string;
@@ -821,9 +821,13 @@ export interface InvoiceRecord {
   total: number;
   amountReceived: number;
   balance: number;
+  /** Exact pending amount in paise; send this to the server, never a rupee float. */
+  balancePaise: number;
   status: InvoiceStatus;
   daysOverdue: number;
   clientCode?: string;
+  /** Bill number as raised in Vyapar; absent on older demo rows. */
+  vyaparBillNumber?: string;
   assignmentCode?: string;
   notes?: string;
   voidReason?: string;
@@ -843,9 +847,11 @@ export interface InvoiceLineRecord {
 
 /** One receipt allocated onto an invoice; amount in rupees, date DD/MM/YYYY. */
 export interface InvoicePaymentRecord {
+  receiptId: string;
   receiptNumber: string;
   date: string;
   amount: number;
+  amountPaise: number;
   voided: boolean;
 }
 
@@ -860,6 +866,7 @@ export interface ReceiptRecord {
   invoiceNumber: string;
   receiptDate: string;
   amount: number;
+  amountPaise: number;
   paymentMode: PaymentMode;
   referenceNumber: string;
   notes: string;
@@ -882,6 +889,7 @@ export const INVOICES: InvoiceRecord[] = [
     total: 88500,
     amountReceived: 0,
     balance: 88500,
+    balancePaise: 8850000,
     status: 'Overdue',
     daysOverdue: 62,
   },
@@ -898,6 +906,7 @@ export const INVOICES: InvoiceRecord[] = [
     total: 14500,
     amountReceived: 14500,
     balance: 0,
+    balancePaise: 0,
     status: 'Paid',
     daysOverdue: 0,
   },
@@ -914,6 +923,7 @@ export const INVOICES: InvoiceRecord[] = [
     total: 15000,
     amountReceived: 15000,
     balance: 0,
+    balancePaise: 0,
     status: 'Paid',
     daysOverdue: 0,
   },
@@ -930,7 +940,8 @@ export const INVOICES: InvoiceRecord[] = [
     total: 20000,
     amountReceived: 13250,
     balance: 6750,
-    status: 'Partially Paid',
+    balancePaise: 675000,
+    status: 'Partly Paid',
     daysOverdue: 10,
   },
   {
@@ -946,7 +957,8 @@ export const INVOICES: InvoiceRecord[] = [
     total: 35000,
     amountReceived: 23000,
     balance: 12000,
-    status: 'Partially Paid',
+    balancePaise: 1200000,
+    status: 'Partly Paid',
     daysOverdue: 9,
   },
   {
@@ -962,6 +974,7 @@ export const INVOICES: InvoiceRecord[] = [
     total: 75000,
     amountReceived: 75000,
     balance: 0,
+    balancePaise: 0,
     status: 'Paid',
     daysOverdue: 0,
   },
@@ -978,7 +991,8 @@ export const INVOICES: InvoiceRecord[] = [
     total: 14500,
     amountReceived: 0,
     balance: 14500,
-    status: 'Unpaid',
+    balancePaise: 1450000,
+    status: 'Pending',
     daysOverdue: 0,
   },
   {
@@ -994,7 +1008,8 @@ export const INVOICES: InvoiceRecord[] = [
     total: 35000,
     amountReceived: 0,
     balance: 35000,
-    status: 'Unpaid',
+    balancePaise: 3500000,
+    status: 'Pending',
     daysOverdue: 0,
   },
   {
@@ -1010,6 +1025,7 @@ export const INVOICES: InvoiceRecord[] = [
     total: 15000,
     amountReceived: 0,
     balance: 15000,
+    balancePaise: 1500000,
     status: 'Draft',
     daysOverdue: 0,
   },
@@ -1025,6 +1041,7 @@ export const RECEIPTS: ReceiptRecord[] = [
     invoiceNumber: 'SN/2026-27/0062',
     receiptDate: '29/10/2026',
     amount: 14500,
+    amountPaise: 1450000,
     paymentMode: 'Bank transfer',
     referenceNumber: 'HDFCN263028190',
     notes: 'Direct credit in practice current account.',
@@ -1038,6 +1055,7 @@ export const RECEIPTS: ReceiptRecord[] = [
     invoiceNumber: 'SN/2026-27/0078',
     receiptDate: '24/10/2026',
     amount: 13250,
+    amountPaise: 1325000,
     paymentMode: 'Cheque',
     referenceNumber: 'CHQ-440912',
     notes: 'Part-settlement. Balance ₹6,750 committed on 10/11.',
@@ -1051,6 +1069,7 @@ export const RECEIPTS: ReceiptRecord[] = [
     invoiceNumber: 'SN/2026-27/0079',
     receiptDate: '20/10/2026',
     amount: 23000,
+    amountPaise: 2300000,
     paymentMode: 'Bank transfer',
     referenceNumber: 'ICICR52026102000',
     notes: 'Part-settlement for export refund assignment.',
@@ -1064,6 +1083,7 @@ export const RECEIPTS: ReceiptRecord[] = [
     invoiceNumber: 'SN/2026-27/0071',
     receiptDate: '15/10/2026',
     amount: 15000,
+    amountPaise: 1500000,
     paymentMode: 'UPI',
     referenceNumber: 'UPI-261015-882190',
     notes: 'Full settlement for Q2 TDS.',
@@ -1077,6 +1097,7 @@ export const RECEIPTS: ReceiptRecord[] = [
     invoiceNumber: 'SN/2026-27/0050',
     receiptDate: '05/10/2026',
     amount: 75000,
+    amountPaise: 7500000,
     paymentMode: 'Bank transfer',
     referenceNumber: 'AXISN262788910',
     notes: 'Settled by corporate accounts via NEFT.',

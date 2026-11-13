@@ -1,18 +1,36 @@
 import { ReceiptIndianRupee, X } from 'lucide-react';
-import { formatINR, type InvoiceRecord } from '../../data';
+import { formatINR, type InvoiceRecord, type InvoicePaymentRecord } from '../../data';
+import { billLabel, canRecordPayment } from './billing-form-model';
 
 interface InvoiceDetailDrawerProps {
   invoice: InvoiceRecord;
-  /** Id of the page note that explains why recording a payment is disabled. */
-  readOnlyNoteId: string;
+  /** Founder and Manager: may cancel the bill and its payments. */
+  canCancel: boolean;
+  /** Everyone who can see the screen except the Trainee. */
+  canRecordPayment: boolean;
+  onRecordPayment: (opener: HTMLElement) => void;
+  onCancelBill: (opener: HTMLElement) => void;
+  onCancelPayment: (payment: InvoicePaymentRecord, opener: HTMLElement) => void;
   onClose: () => void;
 }
 
+const CANCEL_BLOCKED_NOTE_ID = 'cancel-bill-blocked-note';
+
 const LABEL_STYLE = { fontSize: 11, fontWeight: 700, color: 'var(--ink-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' } as const;
 
-export function InvoiceDetailDrawer({ invoice, readOnlyNoteId, onClose }: InvoiceDetailDrawerProps) {
+export function InvoiceDetailDrawer({
+  invoice,
+  canCancel,
+  canRecordPayment: mayRecordPayment,
+  onRecordPayment,
+  onCancelBill,
+  onCancelPayment,
+  onClose,
+}: InvoiceDetailDrawerProps) {
   const items = invoice.items ?? [];
   const payments = invoice.payments ?? [];
+  const hasReceivedPayments = payments.some((payment) => !payment.voided);
+  const showCrmRef = Boolean(invoice.vyaparBillNumber);
 
   return (
     <>
@@ -20,13 +38,14 @@ export function InvoiceDetailDrawer({ invoice, readOnlyNoteId, onClose }: Invoic
       <aside className="client-drawer" aria-label="Invoice details">
         <div className="client-drawer-header">
           <div className="drawer-client-lead">
-            <span className="drawer-monogram">IN</span>
+            <span className="drawer-monogram">BL</span>
             <div>
-              <h2>{invoice.invoiceNumber}</h2>
+              <h2>{billLabel(invoice)}</h2>
               <p>
                 {invoice.clientCode ? `${invoice.clientCode} · ` : ''}
                 {invoice.clientName}
               </p>
+              {showCrmRef ? <p>CRM ref {invoice.invoiceNumber}</p> : null}
             </div>
           </div>
           <button className="drawer-close-btn" type="button" onClick={onClose} aria-label="Close drawer">
@@ -37,12 +56,12 @@ export function InvoiceDetailDrawer({ invoice, readOnlyNoteId, onClose }: Invoic
         <div className="drawer-content">
           <div className="drawer-grid" style={{ marginBottom: 16 }}>
             <div className="drawer-item">
-              <span className="drawer-label">Invoice Status</span>
+              <span className="drawer-label">Bill status</span>
               <span
                 className={`invoice-chip ${
                   invoice.status === 'Paid'
                     ? 'is-paid'
-                    : invoice.status === 'Partially Paid'
+                    : invoice.status === 'Partly Paid'
                     ? 'is-partial'
                     : invoice.status === 'Overdue'
                     ? 'is-overdue'
@@ -55,15 +74,15 @@ export function InvoiceDetailDrawer({ invoice, readOnlyNoteId, onClose }: Invoic
               </span>
             </div>
             <div className="drawer-item">
-              <span className="drawer-label">Linked Assignment</span>
+              <span className="drawer-label">Linked assignment</span>
               <span className="drawer-val">{invoice.assignmentCode ?? 'Not linked'}</span>
             </div>
             <div className="drawer-item">
-              <span className="drawer-label">Issue Date</span>
+              <span className="drawer-label">Bill date</span>
               <span className="drawer-val">{invoice.invoiceDate}</span>
             </div>
             <div className="drawer-item">
-              <span className="drawer-label">Due Date</span>
+              <span className="drawer-label">Due date</span>
               <span className="drawer-val">
                 {invoice.dueDate}
                 {invoice.daysOverdue > 0 ? ` (${invoice.daysOverdue}d late)` : ''}
@@ -77,7 +96,7 @@ export function InvoiceDetailDrawer({ invoice, readOnlyNoteId, onClose }: Invoic
             ) : null}
             {invoice.status === 'Cancelled' && invoice.voidReason ? (
               <div className="drawer-item full-width">
-                <span className="drawer-label">Void Reason</span>
+                <span className="drawer-label">Cancellation reason</span>
                 <span className="drawer-val">{invoice.voidReason}</span>
               </div>
             ) : null}
@@ -98,7 +117,6 @@ export function InvoiceDetailDrawer({ invoice, readOnlyNoteId, onClose }: Invoic
                       <th>Description</th>
                       <th>Qty</th>
                       <th>Rate</th>
-                      <th>GST %</th>
                       <th>Amount</th>
                     </tr>
                   </thead>
@@ -108,7 +126,6 @@ export function InvoiceDetailDrawer({ invoice, readOnlyNoteId, onClose }: Invoic
                         <td style={{ fontSize: 12 }}>{item.description}</td>
                         <td style={{ fontSize: 12 }}>{item.quantity}</td>
                         <td style={{ fontSize: 12 }}>{formatINR(item.rate)}</td>
-                        <td style={{ fontSize: 12 }}>{item.gstPercent}%</td>
                         <td style={{ fontSize: 12 }}>{formatINR(item.amount)}</td>
                       </tr>
                     ))}
@@ -121,17 +138,8 @@ export function InvoiceDetailDrawer({ invoice, readOnlyNoteId, onClose }: Invoic
           {/* Totals */}
           <div className="drawer-card" style={{ padding: 14 }}>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 12 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span>Subtotal:</span>
-                <strong>{formatINR(invoice.subtotal)}</strong>
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--ink-muted)' }}>
-                <span>GST:</span>
-                <span>{formatINR(invoice.gstAmount)}</span>
-              </div>
-              <div style={{ height: 1, background: 'var(--border)', margin: '4px 0' }} />
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 14 }}>
-                <strong>Total:</strong>
+                <strong>Fee:</strong>
                 <strong style={{ color: 'var(--brand)' }}>{formatINR(invoice.total)}</strong>
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--success)' }}>
@@ -139,7 +147,7 @@ export function InvoiceDetailDrawer({ invoice, readOnlyNoteId, onClose }: Invoic
                 <strong>{formatINR(invoice.amountReceived)}</strong>
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 14, color: invoice.balance > 0 ? 'var(--danger)' : 'var(--success)' }}>
-                <strong>Balance:</strong>
+                <strong>Pending:</strong>
                 <strong>{formatINR(invoice.balance)}</strong>
               </div>
             </div>
@@ -153,12 +161,22 @@ export function InvoiceDetailDrawer({ invoice, readOnlyNoteId, onClose }: Invoic
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 8 }}>
                 {payments.map((payment, index) => (
-                  <div key={`${payment.receiptNumber}-${index}`} className="history-card-row">
+                  <div key={`${payment.receiptId}-${index}`} className="history-card-row">
                     <div>
                       <strong>{payment.receiptNumber} · {formatINR(payment.amount)}</strong>
                       <small>{payment.date}</small>
                     </div>
-                    {payment.voided ? <span className="invoice-chip is-overdue">Voided</span> : null}
+                    {payment.voided ? <span className="invoice-chip is-overdue">Cancelled</span> : null}
+                    {canCancel && !payment.voided ? (
+                      <button
+                        className="soft-button"
+                        type="button"
+                        aria-label={`Cancel payment ${payment.receiptNumber}`}
+                        onClick={(event) => onCancelPayment(payment, event.currentTarget)}
+                      >
+                        Cancel payment
+                      </button>
+                    ) : null}
                   </div>
                 ))}
               </div>
@@ -167,16 +185,28 @@ export function InvoiceDetailDrawer({ invoice, readOnlyNoteId, onClose }: Invoic
         </div>
 
         <div className="drawer-footer">
-          {invoice.balance > 0 ? (
-            <button
-              className="primary-button"
-              type="button"
-              disabled
-              aria-describedby={readOnlyNoteId}
-              style={{ cursor: 'not-allowed', opacity: 0.6 }}
-            >
+          {mayRecordPayment && canRecordPayment(invoice) ? (
+            <button className="primary-button" type="button" onClick={(event) => onRecordPayment(event.currentTarget)}>
               <ReceiptIndianRupee size={14} /> Record payment
             </button>
+          ) : null}
+          {canCancel && invoice.status !== 'Cancelled' ? (
+            <>
+              <button
+                className="soft-button engagement-end-button"
+                type="button"
+                disabled={hasReceivedPayments}
+                aria-describedby={hasReceivedPayments ? CANCEL_BLOCKED_NOTE_ID : undefined}
+                onClick={(event) => onCancelBill(event.currentTarget)}
+              >
+                Cancel bill
+              </button>
+              {hasReceivedPayments ? (
+                <small id={CANCEL_BLOCKED_NOTE_ID} style={{ color: 'var(--ink-muted)', fontSize: 12 }}>
+                  Cancel the payments on this bill first.
+                </small>
+              ) : null}
+            </>
           ) : null}
           <button className="soft-button" type="button" onClick={onClose}>
             Close

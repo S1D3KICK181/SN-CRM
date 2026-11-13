@@ -61,7 +61,7 @@ describe('useBilling', () => {
     cleanup();
   });
 
-  it.each(['founder', 'manager'] as const)('loads and maps invoices and receipts for %s', async (role) => {
+  it.each(['founder', 'manager', 'senior_staff', 'staff'] as const)('loads and maps invoices and receipts for %s', async (role) => {
     const port = new DeterministicTestBillingAdapter();
     port.setInvoicesResponse(role, [invoice]);
     port.setReceiptsResponse(role, [receipt]);
@@ -89,7 +89,7 @@ describe('useBilling', () => {
     });
   });
 
-  it.each(['senior_staff', 'staff', 'trainee'] as const)('never loads anything for %s', async (role) => {
+  it.each(['trainee'] as const)('never loads anything for %s', async (role) => {
     const port = new DeterministicTestBillingAdapter();
     port.setInvoicesResponse(role, [invoice]);
     port.setReceiptsResponse(role, [receipt]);
@@ -126,7 +126,7 @@ describe('useBilling', () => {
     });
     await waitFor(() => expect(result.current.invoices).toHaveLength(1));
 
-    rerender({ role: 'staff' });
+    rerender({ role: 'trainee' });
     expect(result.current.invoices).toEqual([]);
     expect(result.current.receipts).toEqual([]);
     expect(result.current.hasLiveSnapshot).toBe(false);
@@ -217,5 +217,87 @@ describe('useBilling', () => {
 
     expect(result.current.invoices).toHaveLength(1);
     expect(result.current.hasLiveSnapshot).toBe(true);
+  });
+});
+
+describe('useBilling mutations', () => {
+  afterEach(() => {
+    cleanup();
+  });
+
+  const billInput = {
+    clientId: '10000000-0000-4000-a000-000000000001',
+    vyaparBillNumber: 'VYP-140',
+    billDate: '2026-11-01',
+    dueDate: '2026-11-16',
+    amountPaise: 250000,
+    description: 'Returns for October',
+  };
+
+  async function setup(role: CompanyRole = 'founder') {
+    const port = new DeterministicTestBillingAdapter();
+    port.setInvoicesResponse(role, [invoice]);
+    port.setReceiptsResponse(role, [receipt]);
+    port.setMutationInvoice(invoice);
+    port.setMutationReceipt(receipt);
+    const hook = renderHook(() => useBilling(role, { port }));
+    await waitFor(() => expect(hook.result.current.hasLiveSnapshot).toBe(true));
+    return { port, ...hook };
+  }
+
+  it('recording a bill sends the key and reloads both lists', async () => {
+    const { port, result } = await setup();
+    const before = port.calls.length;
+    await act(async () => {
+      await result.current.recordBill(billInput, 'key-1');
+    });
+    expect(port.mutations).toEqual([{ kind: 'record-bill', role: 'founder', input: billInput, idempotencyKey: 'key-1' }]);
+    const after = port.calls.slice(before).map((call) => call.kind).sort();
+    expect(after).toEqual(['invoices', 'receipts']);
+  });
+
+  it('recording a payment, cancelling a bill and cancelling a payment each reload both lists', async () => {
+    const { port, result } = await setup('manager');
+    const runs: Array<[string, () => Promise<unknown>]> = [
+      ['record-payment', () => result.current.recordPayment({ invoiceId: invoice.id, receivedOn: '2026-11-02', amountPaise: 100, method: 'upi' }, 'k2')],
+      ['void-bill', () => result.current.voidBill(invoice.id, { reason: 'Raised twice' }, 'k3')],
+      ['void-payment', () => result.current.voidPayment(receipt.id, { reason: 'Bounced' }, 'k4')],
+    ];
+    for (const [kind, run] of runs) {
+      const before = port.calls.length;
+      await act(async () => {
+        await run();
+      });
+      expect(port.mutations.at(-1)?.kind).toBe(kind);
+      expect(port.calls.slice(before).map((call) => call.kind).sort()).toEqual(['invoices', 'receipts']);
+    }
+    expect(port.mutations.at(-1)?.targetId).toBe(receipt.id);
+  });
+
+  it('a failed mutation throws a sanitized error and does not reload', async () => {
+    const { port, result } = await setup();
+    port.setMutationError(
+      new BillingOperationError({ code: 'unexpected', message: 'raw stack', status: 409, serverCode: 'duplicate_vyapar_bill' }),
+    );
+    const before = port.calls.length;
+    let caught: unknown;
+    await act(async () => {
+      caught = await result.current.recordBill(billInput, 'key-1').catch((err: unknown) => err);
+    });
+    expect(caught).toBeInstanceOf(BillingOperationError);
+    expect((caught as BillingOperationError).serverCode).toBe('duplicate_vyapar_bill');
+    expect((caught as BillingOperationError).message).not.toContain('raw stack');
+    expect(port.calls.length).toBe(before);
+  });
+
+  it('refuses to mutate for the trainee without touching the port', async () => {
+    const port = new DeterministicTestBillingAdapter();
+    const { result } = renderHook(() => useBilling('trainee', { port }));
+    let caught: unknown;
+    await act(async () => {
+      caught = await result.current.recordBill(billInput, 'key-1').catch((err: unknown) => err);
+    });
+    expect((caught as BillingOperationError).code).toBe('forbidden');
+    expect(port.mutations).toHaveLength(0);
   });
 });

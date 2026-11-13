@@ -123,7 +123,7 @@ export const MODULE_DESCRIPTIONS: Record<PageKey, string> = {
   Team: 'Reporting lines, workload, capabilities, departments, and controlled access.',
   Documents: 'Client evidence, versions, requests, expiry dates, and Assignment links.',
   Communication: 'Client calls, emails, notes, reminders, and follow-ups with a complete activity trail.',
-  'Billing & Collections': 'Invoices, receipts, allocations, outstanding fees, ageing, and collection follow-ups.',
+  'Billing & Collections': 'Bills raised in Vyapar, payments received, and what each client still owes.',
   'Office Accounts': 'Manager-operated cash ledger, expenses, bank entries, and daily reconciliation.',
   Reports: 'Delivery, compliance, utilization, revenue, collection, and practice-performance reporting.',
   Settings: 'Founder-controlled access, practice configuration, numbering, templates, and audit history.',
