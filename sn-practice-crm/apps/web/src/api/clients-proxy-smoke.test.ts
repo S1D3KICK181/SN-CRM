@@ -148,7 +148,7 @@ describe('Vite Proxy & Real Clients API Smoke (Role-Scoped Secure Reads)', () =>
     expect(traineeClients.map((c) => c.code)).toEqual(['CL-001001']);
   });
 
-  it('proxies GET /api/v1/clients/:id for Aster, returning masked statutory IDs without raw pan/gstin properties', async () => {
+  it('proxies GET /api/v1/clients/:id for Aster, returning the full statutory IDs to the founder and only masked ones to a trainee', async () => {
     const adapter = new HttpClientsAdapter({
       baseUrl: `http://127.0.0.1:${vitePort}`,
     });
@@ -160,9 +160,16 @@ describe('Vite Proxy & Real Clients API Smoke (Role-Scoped Secure Reads)', () =>
     expect(aster.panMasked).toBe('******1234');
     expect(aster.gstinMasked).toBe('27**********1Z5');
 
-    // Strict non-disclosure: neither raw pan nor raw gstin properties exist
-    expect('pan' in aster).toBe(false);
-    expect('gstin' in aster).toBe(false);
+    // The founder looks after every client, so the full values are filled
+    expect(aster.pan).toBe('AABCA1234A');
+    expect(aster.gstin).toBe('27AABCA1234A1Z5');
+
+    // A trainee on the same client gets null full values and the same masked values
+    const traineeAster = await adapter.get('trainee', ASTER_CLIENT_ID);
+    expect(traineeAster.pan).toBeNull();
+    expect(traineeAster.gstin).toBeNull();
+    expect(traineeAster.panMasked).toBe('******1234');
+    expect(traineeAster.gstinMasked).toBe('27**********1Z5');
   });
 
   it('trainee GET /api/v1/clients/:id on hidden BluePeak maps to normalized not_found error', async () => {
@@ -181,15 +188,18 @@ describe('Vite Proxy & Real Clients API Smoke (Role-Scoped Secure Reads)', () =>
     );
   });
 
-  it('founder list serialized payload contains none of all six raw seed PANs or GSTINs', async () => {
+  it('trainee list serialized payload contains none of the raw seed PANs or GSTINs, and the founder list carries all six full values', async () => {
     const adapter = new HttpClientsAdapter({
       baseUrl: `http://127.0.0.1:${vitePort}`,
     });
 
     const founderClients = await adapter.list('founder');
     expect(founderClients).toHaveLength(6);
+    expect(founderClients.map((client) => client.pan)).toEqual([...SEED_RAW_PANS]);
+    expect(founderClients.map((client) => client.gstin)).toEqual([...SEED_RAW_GSTINS]);
 
-    const serialized = JSON.stringify(founderClients);
+    const traineeClients = await adapter.list('trainee');
+    const serialized = JSON.stringify(traineeClients);
 
     for (const pan of SEED_RAW_PANS) {
       expect(serialized).not.toContain(pan);
@@ -198,9 +208,7 @@ describe('Vite Proxy & Real Clients API Smoke (Role-Scoped Secure Reads)', () =>
       expect(serialized).not.toContain(gstin);
     }
 
-    for (const client of founderClients) {
-      expect('pan' in client).toBe(false);
-      expect('gstin' in client).toBe(false);
+    for (const client of [...founderClients, ...traineeClients]) {
       expect(client.panMasked).toMatch(/^\*{6}\d{4}$/);
       if (client.gstinMasked !== null) {
         expect(client.gstinMasked).toMatch(/^\d{2}\*{10}\w{3}$/);

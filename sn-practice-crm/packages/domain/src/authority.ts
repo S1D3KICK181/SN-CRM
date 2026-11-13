@@ -42,6 +42,8 @@ export type AuthorityRequest =
       action: 'client.read' | 'client.create' | 'billing.read' | 'billing.record_bill' | 'billing.record_payment' | 'billing.void';
       actor: Actor;
     }
+  | { action: 'client.update'; actor: Actor; isRelationshipOwner: boolean }
+  | { action: 'client.change_owner_or_status'; actor: Actor }
   | { action: 'finance.manage' | 'reports.view_practice' | 'team.manage_access' | 'service.manage'; actor: Actor }
   | { action: 'team.manage_reporting'; actor: Actor; subject: EmployeeRef; proposedManager: EmployeeRef | null }
   | {
@@ -174,6 +176,17 @@ export function authorize(request: AuthorityRequest): AuthorityDecision {
       return isLeadership(actor.role)
         ? ALLOWED
         : deny('role_not_permitted', 'Only Founder and Manager may create new clients.');
+
+    case 'client.update':
+      // Founder and Manager may edit any client; anyone else only when they are its relationship owner.
+      return isLeadership(actor.role) || request.isRelationshipOwner
+        ? ALLOWED
+        : deny('role_not_permitted', 'Only the Founder, the Manager, or the client’s relationship owner may edit this client.');
+
+    case 'client.change_owner_or_status':
+      return isLeadership(actor.role)
+        ? ALLOWED
+        : deny('role_not_permitted', 'Only the Founder or Manager may change the relationship owner or status.');
 
     case 'billing.read':
     case 'billing.record_payment':

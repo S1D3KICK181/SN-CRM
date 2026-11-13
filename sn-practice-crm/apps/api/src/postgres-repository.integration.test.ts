@@ -2,6 +2,7 @@ import type { AddressInfo } from 'node:net';
 import postgres from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { CrmApplication } from './application';
+import { maskGstinForRoutineRead, maskPanForRoutineRead } from './client-privacy';
 import { createApiServer } from './http';
 import { PostgresCrmRepository } from './postgres-repository';
 
@@ -549,10 +550,13 @@ describe('PostgresCrmRepository Integration Suite', () => {
       'CL-001006',
     ]);
 
-    // Full DTO mapping assertion on listClients result
-    expect(founderClients[0]).not.toHaveProperty('pan');
-    expect(founderClients[0]).not.toHaveProperty('gstin');
+    // Full DTO mapping assertion on listClients result (the Founder looks after every client)
     expect(founderClients[0]).toMatchObject({
+      pan: 'AABCA1234A',
+      gstin: '27AABCA1234A1Z5',
+      canEdit: true,
+      canChangeOwnerOrStatus: true,
+      contacts: [],
       id: '10000000-0000-4000-a000-000000000001',
       code: 'CL-001001',
       displayName: 'Aster Foods',
@@ -597,6 +601,7 @@ describe('PostgresCrmRepository Integration Suite', () => {
     expect(traineeAster).not.toBeNull();
     expect(traineeAster?.relationshipOwnerName).toBe('Priya Desai');
     expect(traineeAster?.activeAssignmentsCount).toBe(1);
+    expect(traineeAster).toMatchObject({ pan: null, gstin: null, panMasked: '******1234', gstinMasked: '27**********1Z5' });
 
     // 5. Trainee getClient for BluePeak returns null (RLS hidden)
     const traineeBluePeak = await repo.getClient(traineeCtx, '10000000-0000-4000-a000-000000000002');
@@ -609,9 +614,9 @@ describe('PostgresCrmRepository Integration Suite', () => {
     // 7. Founder DTO mapping verifies representative DB-faithful fields, valid ISO timestamps, and numeric active assignment count
     const founderAster = await repo.getClient(founderCtx, '10000000-0000-4000-a000-000000000001');
     expect(founderAster).not.toBeNull();
-    expect(founderAster).not.toHaveProperty('pan');
-    expect(founderAster).not.toHaveProperty('gstin');
     expect(founderAster).toMatchObject({
+      pan: 'AABCA1234A',
+      gstin: '27AABCA1234A1Z5',
       id: '10000000-0000-4000-a000-000000000001',
       code: 'CL-001001',
       displayName: 'Aster Foods',
@@ -719,7 +724,9 @@ describe('PostgresCrmRepository Integration Suite', () => {
       expect(created.activeAssignmentsCount).toBe(0);
       expect(created.createdById).toBe(FOUNDER_ID);
 
-      // Verify raw database row has plaintext stored securely and is_demo = false
+      // Verify raw database row has plaintext stored securely and is_demo = false (read as the owner role;
+      // the authenticated role cannot select pan or gstin)
+      await tx`RESET ROLE`;
       const rawRows = await tx`SELECT pan, gstin, code, created_by, is_demo FROM public.clients WHERE id = ${newClientId}::uuid`;
       expect(rawRows.length).toBe(1);
       expect(rawRows[0]!['pan']).toBe('ABCDE1234F');
@@ -2905,6 +2912,609 @@ describe('PostgresCrmRepository Integration Suite', () => {
         expect(unchanged?.isActive).toBe(target.isActive);
         // Every role still reads the active services for the pickers
         expect((await application.listServices(actor)).length).toBeGreaterThan(0);
+      });
+    });
+  });
+
+  describe('CLI-02a client master', () => {
+    const founderCtx = { actorId: FOUNDER_ID };
+    const managerCtx = { actorId: MANAGER_ID };
+    const seniorCtx = { actorId: SENIOR_ID };
+    const staffCtx = { actorId: STAFF_ID };
+    const traineeCtx = { actorId: TRAINEE_ID };
+    const ASTER = '10000000-0000-4000-a000-000000000001'; // owner: Manager; Senior reviews its assignment
+    const BLUEPEAK = '10000000-0000-4000-a000-000000000002'; // owner: Staff
+
+    function key() {
+      return `it-cli-${crypto.randomUUID()}`;
+    }
+
+    async function updatedAtOf(repo: PostgresCrmRepository, ctx: { actorId: string }, clientId: string) {
+      const client = await repo.getClient(ctx, clientId);
+      if (!client) throw new Error('Client not found');
+      return client.updatedAt;
+    }
+
+    it('IT-57: the founder edits every field and fields left out stay as they were', async () => {
+      await runIsolatedTest(async (repo, tx) => {
+        const updated = await repo.updateClient(founderCtx, {
+          id: ASTER,
+          displayName: 'Aster Foods Limited',
+          legalName: 'Aster Foods Limited',
+          pan: 'AABCA9999Z',
+          gstin: '27AABCA9999Z1Z5',
+          email: 'tax@asterfoods.local',
+          phone: '+91 98200 99999',
+          relationshipOwnerId: STAFF_ID,
+          status: 'on_hold',
+          notes: 'Moved to quarterly review',
+          entityType: 'private_limited',
+          addressLine1: '12 Marine Drive',
+          addressLine2: 'Nariman Point',
+          city: 'Mumbai',
+          state: 'Maharashtra',
+          pincode: '400021',
+          tan: 'MUMA12345B',
+          cinLlpin: 'U12345MH2020PTC123456',
+          udyamNumber: 'UDYAM-MH-01-0000001',
+          iec: 'ABCDE12345',
+          incorporationDate: '2015-04-01',
+          expectedUpdatedAt: await updatedAtOf(repo, founderCtx, ASTER),
+          idempotencyKey: key(),
+        });
+        expect(updated).toMatchObject({
+          displayName: 'Aster Foods Limited',
+          pan: 'AABCA9999Z',
+          panMasked: '******9999',
+          gstin: '27AABCA9999Z1Z5',
+          relationshipOwnerId: STAFF_ID,
+          relationshipOwnerName: 'Rohan Mehta',
+          status: 'on_hold',
+          entityType: 'private_limited',
+          addressLine1: '12 Marine Drive',
+          state: 'Maharashtra',
+          pincode: '400021',
+          tan: 'MUMA12345B',
+          cinLlpin: 'U12345MH2020PTC123456',
+          udyamNumber: 'UDYAM-MH-01-0000001',
+          iec: 'ABCDE12345',
+          incorporationDate: '2015-04-01',
+          canEdit: true,
+          canChangeOwnerOrStatus: true,
+        });
+
+        // Only the notes change; everything else is left as it was, and null clears a field
+        const notesOnly = await repo.updateClient(founderCtx, {
+          id: ASTER,
+          notes: null,
+          tan: null,
+          expectedUpdatedAt: updated.updatedAt,
+          idempotencyKey: key(),
+        });
+        expect(notesOnly).toMatchObject({ notes: null, tan: null, city: 'Mumbai', pan: 'AABCA9999Z', status: 'on_hold' });
+
+        await tx`RESET ROLE`;
+        const raw = await tx`
+          SELECT is_demo, created_by, code, incorporation_date::text AS incorporation_date
+          FROM public.clients WHERE id = ${ASTER}::uuid`;
+        expect(raw[0]).toMatchObject({
+          is_demo: true,
+          created_by: FOUNDER_ID,
+          code: 'CL-001001',
+          incorporation_date: '2015-04-01',
+        });
+      });
+    });
+
+    it('IT-58: the relationship owner edits details but the database refuses an owner or status change', async () => {
+      await runIsolatedTest(async (repo, tx) => {
+        const application = new CrmApplication(repo);
+        const staff = await application.requireActor(STAFF_ID);
+
+        const edited = await repo.updateClient(staffCtx, {
+          id: BLUEPEAK,
+          email: 'ops@bluepeak.local',
+          city: 'Pune',
+          state: 'Maharashtra',
+          expectedUpdatedAt: await updatedAtOf(repo, staffCtx, BLUEPEAK),
+          idempotencyKey: key(),
+        });
+        expect(edited).toMatchObject({
+          email: 'ops@bluepeak.local',
+          city: 'Pune',
+          canEdit: true,
+          canChangeOwnerOrStatus: false,
+        });
+
+        // The application says role_not_permitted before touching the database
+        await expect(
+          application.updateClient(staff, BLUEPEAK, { status: 'archived', expectedUpdatedAt: edited.updatedAt }, key()),
+        ).rejects.toMatchObject({ status: 403, code: 'role_not_permitted' });
+        await expect(
+          application.updateClient(
+            staff,
+            BLUEPEAK,
+            { relationshipOwnerId: SENIOR_ID, expectedUpdatedAt: edited.updatedAt },
+            key(),
+          ),
+        ).rejects.toMatchObject({ status: 403, code: 'role_not_permitted' });
+
+        // A caller that skips the application is stopped by the repository's database trigger
+        await expect(
+          repo.updateClient(staffCtx, { id: BLUEPEAK, status: 'archived', expectedUpdatedAt: edited.updatedAt, idempotencyKey: key() }),
+        ).rejects.toMatchObject({ status: 403 });
+
+        // ...and the trigger itself carries the plain message
+        await expect(
+          tx.savepoint(async (sp) => {
+            await sp`SELECT set_config('request.jwt.claim.sub', ${STAFF_ID}, true)`;
+            await sp`SELECT set_config('role', 'authenticated', true)`;
+            await sp`UPDATE public.clients SET relationship_owner_id = ${SENIOR_ID}::uuid WHERE id = ${BLUEPEAK}::uuid`;
+          }),
+        ).rejects.toMatchObject({
+          code: '42501',
+          message: 'Only the Founder or Manager may change the relationship owner or status.',
+        });
+
+        // The owner and status are still as they were
+        await tx`RESET ROLE`;
+        const raw = await tx`SELECT relationship_owner_id, status FROM public.clients WHERE id = ${BLUEPEAK}::uuid`;
+        expect(raw[0]).toMatchObject({ relationship_owner_id: STAFF_ID, status: 'active' });
+      });
+    });
+
+    it('IT-59: staff who are not the owner get 403, and staff who cannot see the client get 404', async () => {
+      await runIsolatedTest(async (repo, tx) => {
+        const application = new CrmApplication(repo);
+        const edit = { notes: 'Not mine', expectedUpdatedAt: await updatedAtOf(repo, founderCtx, ASTER) };
+
+        // Senior reviews an Aster assignment and the Trainee works on it, so both can see it but not edit it
+        await expect(repo.updateClient(seniorCtx, { id: ASTER, ...edit, idempotencyKey: key() })).rejects.toMatchObject({ status: 403 });
+        await expect(repo.updateClient(traineeCtx, { id: ASTER, ...edit, idempotencyKey: key() })).rejects.toMatchObject({ status: 403 });
+        await expect(
+          application.updateClient(await application.requireActor(SENIOR_ID), ASTER, edit, key()),
+        ).rejects.toMatchObject({ status: 403, code: 'role_not_permitted' });
+        // Staff has no link to Aster at all
+        await expect(repo.updateClient(staffCtx, { id: ASTER, ...edit, idempotencyKey: key() })).rejects.toMatchObject({ status: 404 });
+
+        // Row security agrees: a direct update by Senior or Staff changes nothing
+        for (const actorId of [SENIOR_ID, STAFF_ID]) {
+          const result = await tx.savepoint(async (sp) => {
+            await sp`SELECT set_config('request.jwt.claim.sub', ${actorId}, true)`;
+            await sp`SELECT set_config('role', 'authenticated', true)`;
+            return sp`UPDATE public.clients SET notes = 'sneaky' WHERE id = ${ASTER}::uuid`;
+          });
+          expect(result.count).toBe(0);
+        }
+        await tx`RESET ROLE`;
+        const raw = await tx`SELECT notes FROM public.clients WHERE id = ${ASTER}::uuid`;
+        expect(raw[0]!['notes']).toBeNull();
+      });
+    });
+
+    it('IT-60: the full PAN and GSTIN reach management and the staff who look after the client, nobody else', async () => {
+      await runIsolatedTest(async (repo, tx) => {
+        for (const ctx of [founderCtx, managerCtx]) {
+          const clients = await repo.listClients(ctx);
+          expect(clients).toHaveLength(6);
+          expect(clients.every((client) => client.pan !== null && client.gstin !== null)).toBe(true);
+        }
+
+        // Senior owns or reviews an assignment of each client it can see
+        const seniorClients = await repo.listClients(seniorCtx);
+        expect(seniorClients.map((client) => client.code)).toEqual(['CL-001001', 'CL-001003', 'CL-001004', 'CL-001005', 'CL-001006']);
+        expect(seniorClients.every((client) => client.pan !== null && client.gstin !== null)).toBe(true);
+
+        // Staff owns CL-001002 and CL-001004
+        const staffClients = await repo.listClients(staffCtx);
+        expect(staffClients.map((client) => [client.code, client.pan !== null])).toEqual([
+          ['CL-001002', true],
+          ['CL-001004', true],
+        ]);
+
+        // The Trainee sees Aster, but only masked
+        const traineeAster = await repo.getClient(traineeCtx, ASTER);
+        expect(traineeAster).toMatchObject({ pan: null, gstin: null });
+        expect(JSON.stringify(traineeAster)).not.toContain('AABCA1234A');
+        expect(JSON.stringify(traineeAster)).not.toContain('27AABCA1234A1Z5');
+
+        // Masked values are identical for every reader
+        const founderAster = await repo.getClient(founderCtx, ASTER);
+        const seniorAster = await repo.getClient(seniorCtx, ASTER);
+        for (const aster of [founderAster, seniorAster]) {
+          expect(aster).toMatchObject({ panMasked: traineeAster?.panMasked, gstinMasked: traineeAster?.gstinMasked });
+        }
+        expect(traineeAster).toMatchObject({ panMasked: '******1234', gstinMasked: '27**********1Z5' });
+
+        // Staff with no link to a client looks after nothing there; fee visibility is the same test
+        await tx`RESET ROLE`;
+        const unlinked = await tx`SELECT public.user_looks_after_client(${STAFF_ID}::uuid, ${ASTER}::uuid) AS looks_after`;
+        expect(unlinked[0]!['looks_after']).toBe(false);
+        const parity = await tx`
+          SELECT count(*)::int AS mismatches
+          FROM public.profiles p
+          CROSS JOIN public.clients c
+          WHERE public.user_looks_after_client(p.user_id, c.id) IS DISTINCT FROM public.user_fee_visible(p.user_id, c.id)`;
+        expect(parity[0]!['mismatches']).toBe(0);
+        const trainees = await tx`SELECT public.user_looks_after_client(${TRAINEE_ID}::uuid, ${ASTER}::uuid) AS looks_after`;
+        expect(trainees[0]!['looks_after']).toBe(false);
+      });
+    });
+
+    it('IT-61: invalid identifiers and a GSTIN that does not match the PAN are refused, in the application and in the database', async () => {
+      await runIsolatedTest(async (repo, tx) => {
+        const application = new CrmApplication(repo);
+        const founder = await application.requireActor(FOUNDER_ID);
+        const expectedUpdatedAt = await updatedAtOf(repo, founderCtx, ASTER);
+
+        const refusals: [Record<string, string>, string][] = [
+          [{ pan: 'ABCDE12345' }, 'Enter a valid 10-character PAN, like ABCDE1234F.'],
+          [{ gstin: '27AABCA1234A1Y5' }, 'Enter a valid 15-character GSTIN.'],
+          [{ gstin: '27ZZZZZ9999Z1Z5' }, 'The GSTIN does not match the PAN.'],
+          [{ tan: 'ABC12345DE' }, 'Enter a valid TAN, like ABCD12345E.'],
+          [{ cinLlpin: 'X12345' }, 'Enter a valid CIN or LLPIN.'],
+          [{ udyamNumber: 'UDYAM-1-2-3' }, 'Enter a valid Udyam number, like UDYAM-MH-01-0000001.'],
+          [{ iec: 'SHORT' }, 'Enter a valid 10-character IEC.'],
+          [{ pincode: '012345' }, 'Enter a valid 6-digit PIN code.'],
+        ];
+        for (const [change, message] of refusals) {
+          await expect(
+            application.updateClient(founder, ASTER, { ...change, expectedUpdatedAt }, key()),
+          ).rejects.toMatchObject({ status: 422, code: 'validation_failed', message });
+        }
+        expect((await repo.getClient(founderCtx, ASTER))?.updatedAt).toBe(expectedUpdatedAt);
+
+        // The table's own checks refuse bad values from a writer that skips the application
+        await tx`RESET ROLE`;
+        for (const [column, value, constraint] of [
+          ['tan', 'ABC12345DE', 'clients_tan_format'],
+          ['pincode', '012345', 'clients_pincode_format'],
+          ['iec', 'SHORT', 'clients_iec_format'],
+          ['udyam_number', 'UDYAM-1-2-3', 'clients_udyam_number_format'],
+          ['cin_llpin', 'X12345', 'clients_cin_llpin_format'],
+          ['entity_type', 'company', 'clients_entity_type_check'],
+        ] as const) {
+          await expect(
+            tx.savepoint(async (sp) => {
+              await sp`UPDATE public.clients SET ${sp(column)} = ${value} WHERE id = ${ASTER}::uuid`;
+            }),
+          ).rejects.toMatchObject({ code: '23514', constraint_name: constraint });
+        }
+      });
+    });
+
+    it('IT-62: a stale client or contact edit is refused and an unknown one is not found', async () => {
+      await runIsolatedTest(async (repo) => {
+        const staleToken = '2020-01-01T00:00:00.000Z';
+        await expect(
+          repo.updateClient(founderCtx, { id: ASTER, notes: 'late', expectedUpdatedAt: staleToken, idempotencyKey: key() }),
+        ).rejects.toMatchObject({
+          status: 409,
+          code: 'stale_client',
+          message: 'This client was changed by someone else. Reload and try again.',
+        });
+        await expect(
+          repo.updateClient(founderCtx, {
+            id: '10000000-0000-4000-a000-999999999999',
+            notes: 'x',
+            expectedUpdatedAt: staleToken,
+            idempotencyKey: key(),
+          }),
+        ).rejects.toMatchObject({ status: 404 });
+
+        const contact = await repo.createClientContact(founderCtx, {
+          clientId: ASTER,
+          name: 'Priya Nair',
+          phone: '98200 44444',
+          idempotencyKey: key(),
+        });
+        await expect(
+          repo.updateClientContact(founderCtx, { id: contact.id, notes: 'late', expectedUpdatedAt: staleToken, idempotencyKey: key() }),
+        ).rejects.toMatchObject({
+          status: 409,
+          code: 'stale_contact',
+          message: 'This contact was changed by someone else. Reload and try again.',
+        });
+        await expect(
+          repo.updateClientContact(founderCtx, {
+            id: '90000000-0000-4000-a000-999999999999',
+            notes: 'x',
+            expectedUpdatedAt: staleToken,
+            idempotencyKey: key(),
+          }),
+        ).rejects.toMatchObject({ status: 404 });
+      });
+    });
+
+    it('IT-63: contacts are added, edited and deleted, with one primary per client', async () => {
+      await runIsolatedTest(async (repo, tx) => {
+        const first = await repo.createClientContact(founderCtx, {
+          clientId: ASTER,
+          name: 'Zed Khan',
+          designation: 'Accountant',
+          whatsapp: '98200 11111',
+          isPrimary: true,
+          idempotencyKey: key(),
+        });
+        const second = await repo.createClientContact(founderCtx, {
+          clientId: ASTER,
+          name: 'Amit Shah',
+          email: 'amit@asterfoods.local',
+          isPrimary: true,
+          idempotencyKey: key(),
+        });
+        expect(first).toMatchObject({ name: 'Zed Khan', designation: 'Accountant', whatsapp: '98200 11111', phone: null });
+
+        // Creating a second primary demoted the first
+        let aster = await repo.getClient(founderCtx, ASTER);
+        expect(aster?.contacts.map((contact) => [contact.name, contact.isPrimary])).toEqual([
+          ['Amit Shah', true],
+          ['Zed Khan', false],
+        ]);
+
+        // Making the first primary again demotes the second
+        const promoted = await repo.updateClientContact(founderCtx, {
+          id: first.id,
+          isPrimary: true,
+          designation: null,
+          expectedUpdatedAt: first.updatedAt,
+          idempotencyKey: key(),
+        });
+        expect(promoted).toMatchObject({ isPrimary: true, designation: null, name: 'Zed Khan' });
+        aster = await repo.getClient(founderCtx, ASTER);
+        expect(aster?.contacts.map((contact) => [contact.name, contact.isPrimary])).toEqual([
+          ['Zed Khan', true],
+          ['Amit Shah', false],
+        ]);
+
+        // The partial unique index and the reach check hold for a writer that skips the repository
+        await tx`RESET ROLE`;
+        await expect(
+          tx.savepoint(async (sp) => {
+            await sp`UPDATE public.client_contacts SET is_primary = true WHERE id = ${second.id}::uuid`;
+          }),
+        ).rejects.toMatchObject({ code: '23505', constraint_name: 'client_contacts_one_primary_idx' });
+        await expect(
+          tx.savepoint(async (sp) => {
+            await sp`
+              INSERT INTO public.client_contacts (client_id, name, created_by)
+              VALUES (${ASTER}::uuid, 'Nobody Reachable', ${FOUNDER_ID}::uuid)`;
+          }),
+        ).rejects.toMatchObject({ code: '23514', constraint_name: 'client_contacts_reachable' });
+
+        await repo.deleteClientContact(founderCtx, second.id);
+        aster = await repo.getClient(founderCtx, ASTER);
+        expect(aster?.contacts.map((contact) => contact.name)).toEqual(['Zed Khan']);
+        await expect(repo.deleteClientContact(founderCtx, second.id)).rejects.toMatchObject({ status: 404 });
+      });
+    });
+
+    it('IT-64: contact changes follow the edit rule: owner may, others who see the client may not, unrelated staff cannot see it', async () => {
+      await runIsolatedTest(async (repo) => {
+        const own = await repo.createClientContact(staffCtx, {
+          clientId: BLUEPEAK,
+          name: 'Owner Contact',
+          phone: '98200 33333',
+          idempotencyKey: key(),
+        });
+        await repo.updateClientContact(staffCtx, {
+          id: own.id,
+          designation: 'CFO',
+          expectedUpdatedAt: own.updatedAt,
+          idempotencyKey: key(),
+        });
+
+        const other = await repo.createClientContact(founderCtx, {
+          clientId: ASTER,
+          name: 'Aster Contact',
+          phone: '98200 44444',
+          idempotencyKey: key(),
+        });
+        // Senior and Trainee see the contact, but cannot change anything
+        for (const ctx of [seniorCtx, traineeCtx]) {
+          expect((await repo.getClient(ctx, ASTER))?.contacts.map((contact) => contact.id)).toEqual([other.id]);
+          await expect(
+            repo.createClientContact(ctx, { clientId: ASTER, name: 'Nope Nope', phone: '98200 55555', idempotencyKey: key() }),
+          ).rejects.toMatchObject({ status: 403 });
+          await expect(
+            repo.updateClientContact(ctx, { id: other.id, notes: 'x', expectedUpdatedAt: other.updatedAt, idempotencyKey: key() }),
+          ).rejects.toMatchObject({ status: 403 });
+          await expect(repo.deleteClientContact(ctx, other.id)).rejects.toMatchObject({ status: 403 });
+        }
+        // Staff has no link to Aster: its contacts do not exist for them
+        await expect(repo.getClientIdForContact(staffCtx, other.id)).resolves.toBeNull();
+        await expect(repo.deleteClientContact(staffCtx, other.id)).rejects.toMatchObject({ status: 404 });
+        await expect(
+          repo.createClientContact(staffCtx, { clientId: ASTER, name: 'Nope Nope', phone: '98200 55555', idempotencyKey: key() }),
+        ).rejects.toMatchObject({ status: 404 });
+
+        await repo.deleteClientContact(staffCtx, own.id);
+        expect((await repo.getClient(staffCtx, BLUEPEAK))?.contacts).toEqual([]);
+      });
+    });
+
+    it('IT-65: an idempotent replay changes nothing twice, and stored results never hold a full PAN or GSTIN', async () => {
+      await runIsolatedTest(async (repo, tx) => {
+        const contactKey = key();
+        const command = { clientId: ASTER, name: 'Priya Nair', phone: '98200 44444', idempotencyKey: contactKey };
+        const created = await repo.createClientContact(founderCtx, command);
+        const replay = await repo.createClientContact(founderCtx, command);
+        expect(replay).toEqual(created);
+        await expect(
+          repo.createClientContact(founderCtx, { ...command, name: 'Someone Else' }),
+        ).rejects.toMatchObject({ status: 409, code: 'conflict' });
+        expect((await repo.getClient(founderCtx, ASTER))?.contacts).toHaveLength(1);
+
+        const editKey = key();
+        const edit = {
+          id: ASTER,
+          notes: 'Once',
+          pan: 'AABCA1234A',
+          expectedUpdatedAt: await updatedAtOf(repo, founderCtx, ASTER),
+          idempotencyKey: editKey,
+        };
+        const first = await repo.updateClient(founderCtx, edit);
+        const second = await repo.updateClient(founderCtx, edit);
+        expect(second).toEqual(first);
+        await expect(repo.updateClient(founderCtx, { ...edit, notes: 'Twice' })).rejects.toMatchObject({
+          status: 409,
+          code: 'conflict',
+        });
+
+        await tx`RESET ROLE`;
+        const receipts = await tx`
+          SELECT operation_type, result::text AS result
+          FROM public.operation_receipts
+          WHERE actor_id = ${FOUNDER_ID}::uuid AND idempotency_key IN (${editKey}, ${contactKey})`;
+        expect(receipts).toHaveLength(2);
+        const editReceipt = receipts.find((row) => row['operation_type'] === 'updateClient');
+        expect(editReceipt?.['result']).not.toMatch(/AABCA1234A|27AABCA1234A1Z5/);
+      });
+    });
+
+    it('IT-66: contacts inherit is_demo from their client, and removing demo data still works with contacts present', async () => {
+      await runIsolatedTest(async (repo, tx) => {
+        // Aster is demo data; a client created through the repository is not
+        const demoContact = await repo.createClientContact(founderCtx, {
+          clientId: ASTER,
+          name: 'Demo Contact',
+          phone: '98200 66666',
+          idempotencyKey: key(),
+        });
+        const liveClientId = crypto.randomUUID();
+        const now = new Date().toISOString();
+        await repo.createClient(founderCtx, { id: liveClientId, displayName: 'Live Contact Client', createdAt: now, updatedAt: now });
+        const liveContact = await repo.createClientContact(founderCtx, {
+          clientId: liveClientId,
+          name: 'Live Contact',
+          phone: '98200 77777',
+          idempotencyKey: key(),
+        });
+
+        await tx`RESET ROLE`;
+        const flags = await tx`
+          SELECT id::text AS id, is_demo FROM public.client_contacts
+          WHERE id IN (${demoContact.id}::uuid, ${liveContact.id}::uuid)`;
+        expect(flags.find((row) => row['id'] === demoContact.id)?.['is_demo']).toBe(true);
+        expect(flags.find((row) => row['id'] === liveContact.id)?.['is_demo']).toBe(false);
+
+        // The flag cannot be changed afterwards
+        await expect(
+          tx.savepoint(async (sp) => {
+            await sp`UPDATE public.client_contacts SET is_demo = false WHERE id = ${demoContact.id}::uuid`;
+          }),
+        ).rejects.toMatchObject({ code: '23514' });
+
+        await tx`SELECT set_config('request.jwt.claim.sub', ${FOUNDER_ID}, true)`;
+        await tx`SELECT set_config('role', 'authenticated', true)`;
+        const removal = await tx`SELECT public.remove_demo_data() AS result`;
+        expect(removal[0]!['result']).toMatchObject({ ok: true });
+
+        await tx`RESET ROLE`;
+        const demoLeft = await tx`SELECT count(*)::int AS c FROM public.client_contacts WHERE id = ${demoContact.id}::uuid`;
+        const liveLeft = await tx`SELECT count(*)::int AS c FROM public.client_contacts WHERE id = ${liveContact.id}::uuid`;
+        expect(demoLeft[0]!['c']).toBe(0);
+        expect(liveLeft[0]!['c']).toBe(1);
+        const demoContactsAnywhere = await tx`SELECT count(*)::int AS c FROM public.client_contacts WHERE is_demo = true`;
+        expect(demoContactsAnywhere[0]!['c']).toBe(0);
+      });
+    });
+
+    async function asRole(tx: postgres.TransactionSql, actorId: string) {
+      await tx`SELECT set_config('request.jwt.claim.sub', ${actorId}, true)`;
+      await tx`SELECT set_config('role', 'authenticated', true)`;
+    }
+
+    it('IT-67: the authenticated role cannot select pan or gstin from clients, but can read every other column', async () => {
+      await runIsolatedTest(async (_repo, tx) => {
+        for (const actorId of [TRAINEE_ID, STAFF_ID, SENIOR_ID, MANAGER_ID, FOUNDER_ID]) {
+          for (const column of ['pan', 'gstin']) {
+            await expect(
+              tx.savepoint(async (sp) => {
+                await asRole(sp, actorId);
+                await sp`SELECT ${sp(column)} FROM public.clients`;
+              }),
+            ).rejects.toMatchObject({ code: '42501' });
+          }
+          await expect(
+            tx.savepoint(async (sp) => {
+              await asRole(sp, actorId);
+              await sp`SELECT * FROM public.clients`;
+            }),
+          ).rejects.toMatchObject({ code: '42501' });
+          await expect(
+            tx.savepoint(async (sp) => {
+              await asRole(sp, actorId);
+              await sp`SELECT code FROM public.clients WHERE pan = 'AABCA1234A'`;
+            }),
+          ).rejects.toMatchObject({ code: '42501' });
+
+          const rows = await tx.savepoint(async (sp) => {
+            await asRole(sp, actorId);
+            return sp`SELECT code, display_name, tan, incorporation_date FROM public.clients`;
+          });
+          expect(rows.length).toBeGreaterThan(0);
+        }
+      });
+    });
+
+    it('IT-68: client_identifiers masks for everyone and reveals the full values only to readers who look after the client', async () => {
+      await runIsolatedTest(async (_repo, tx) => {
+        async function identifiers(actorId: string, clientId: string) {
+          return tx.savepoint(async (sp) => {
+            await asRole(sp, actorId);
+            return sp`SELECT pan_masked, gstin_masked, pan, gstin FROM public.client_identifiers(${clientId}::uuid)`;
+          });
+        }
+
+        const masked = { pan_masked: '******1234', gstin_masked: '27**********1Z5' };
+        for (const actorId of [FOUNDER_ID, MANAGER_ID, SENIOR_ID]) {
+          expect((await identifiers(actorId, ASTER))[0]).toEqual({ ...masked, pan: 'AABCA1234A', gstin: '27AABCA1234A1Z5' });
+        }
+        // The Trainee can see Aster but looks after nothing
+        expect((await identifiers(TRAINEE_ID, ASTER))[0]).toEqual({ ...masked, pan: null, gstin: null });
+        // Staff owns BluePeak, so sees the full values there
+        expect((await identifiers(STAFF_ID, BLUEPEAK))[0]).toMatchObject({ pan: 'AABCB2345B', gstin: '27AABCB2345B1Z4' });
+        // Staff cannot see Aster at all: no row, not even masked
+        expect(await identifiers(STAFF_ID, ASTER)).toHaveLength(0);
+        expect(await identifiers(TRAINEE_ID, BLUEPEAK)).toHaveLength(0);
+        expect(await identifiers(FOUNDER_ID, '10000000-0000-4000-a000-999999999999')).toHaveLength(0);
+
+        // The function is not callable without signing in
+        await tx`RESET ROLE`;
+        const grants = await tx`
+          SELECT has_function_privilege('anon', 'public.client_identifiers(uuid)', 'execute') AS anon_can,
+                 has_function_privilege('authenticated', 'public.client_identifiers(uuid)', 'execute') AS auth_can`;
+        expect(grants[0]).toEqual({ anon_can: false, auth_can: true });
+      });
+    });
+
+    it('IT-69: the SQL masking functions give exactly the same results as the TypeScript masking', async () => {
+      await runIsolatedTest(async (_repo, tx) => {
+        const inputs: (string | null)[] = [
+          null,
+          '',
+          '   ',
+          'ABCDE1234F',
+          ' abcde1234f ',
+          'ABCDE12345',
+          'ABCDE1234',
+          'not a pan',
+          '27ABCDE1234F1Z5',
+          '27abcde1234f1z5',
+          ' 27ABCDE1234F1Z5 ',
+          '27ABCDE1234F1Y5',
+          '27ABCDE1234F1Z',
+          '2ABCDE1234F1Z5X',
+          'x',
+        ];
+        for (const input of inputs) {
+          const row = (
+            await tx`SELECT public.mask_pan(${input}::text) AS pan, public.mask_gstin(${input}::text) AS gstin`
+          )[0]!;
+          expect(row['pan']).toBe(maskPanForRoutineRead(input));
+          expect(row['gstin']).toBe(maskGstinForRoutineRead(input));
+        }
       });
     });
   });

@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { CompanyRole } from '@sn/domain';
-import type { ClientDto, CreateClientInput } from '@sn/contracts';
+import type {
+  ClientContactDto,
+  ClientDto,
+  CreateClientContactInput,
+  CreateClientInput,
+  UpdateClientContactInput,
+  UpdateClientInput,
+} from '@sn/contracts';
 import { ClientsCoordinator } from './clients-coordinator';
 import { HttpClientsAdapter } from './http-clients-adapter';
 import { useOptionalSessionActor } from '../shell/session-context';
@@ -35,6 +42,23 @@ export interface UseClientsResult {
   readonly clearSelection: () => void;
   readonly refresh: () => Promise<void>;
   readonly createClient: (input: CreateClientInput) => Promise<ClientDto | null>;
+  /** Each change rejects with a sanitized ClientOperationError; null means it was cancelled. */
+  readonly updateClient: (
+    clientId: string,
+    input: UpdateClientInput,
+    idempotencyKey: string,
+  ) => Promise<ClientDto | null>;
+  readonly createContact: (
+    clientId: string,
+    input: CreateClientContactInput,
+    idempotencyKey: string,
+  ) => Promise<ClientContactDto | null>;
+  readonly updateContact: (
+    contactId: string,
+    input: UpdateClientContactInput,
+    idempotencyKey: string,
+  ) => Promise<ClientContactDto | null>;
+  readonly deleteContact: (contactId: string) => Promise<boolean>;
 }
 
 interface CoordinatorSession {
@@ -186,6 +210,46 @@ export function useClients(
     [session],
   );
 
+  const updateClient = useCallback(
+    async (clientId: string, input: UpdateClientInput, idempotencyKey: string): Promise<ClientDto | null> => {
+      if (activeTokenRef.current !== session.token) return null;
+      return await session.coordinator.updateClient(clientId, input, idempotencyKey);
+    },
+    [session],
+  );
+
+  const createContact = useCallback(
+    async (
+      clientId: string,
+      input: CreateClientContactInput,
+      idempotencyKey: string,
+    ): Promise<ClientContactDto | null> => {
+      if (activeTokenRef.current !== session.token) return null;
+      return await session.coordinator.createContact(clientId, input, idempotencyKey);
+    },
+    [session],
+  );
+
+  const updateContact = useCallback(
+    async (
+      contactId: string,
+      input: UpdateClientContactInput,
+      idempotencyKey: string,
+    ): Promise<ClientContactDto | null> => {
+      if (activeTokenRef.current !== session.token) return null;
+      return await session.coordinator.updateContact(contactId, input, idempotencyKey);
+    },
+    [session],
+  );
+
+  const deleteContact = useCallback(
+    async (contactId: string): Promise<boolean> => {
+      if (activeTokenRef.current !== session.token) return false;
+      return await session.coordinator.deleteContact(contactId);
+    },
+    [session],
+  );
+
   return {
     items,
     loading,
@@ -200,5 +264,9 @@ export function useClients(
     clearSelection,
     refresh,
     createClient,
+    updateClient,
+    createContact,
+    updateContact,
+    deleteContact,
   };
 }

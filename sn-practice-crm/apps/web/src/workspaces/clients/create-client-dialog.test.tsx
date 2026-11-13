@@ -26,6 +26,22 @@ const SAMPLE_CREATED_CLIENT: ClientDto = {
   status: 'active',
   notes: 'Priority onboarding',
   activeAssignmentsCount: 0,
+  pan: null,
+  gstin: null,
+  entityType: null,
+  addressLine1: null,
+  addressLine2: null,
+  city: null,
+  state: null,
+  pincode: null,
+  tan: null,
+  cinLlpin: null,
+  udyamNumber: null,
+  iec: null,
+  incorporationDate: null,
+  contacts: [],
+  canEdit: false,
+  canChangeOwnerOrStatus: false,
   createdById: '00000000-0000-4000-a000-000000000001',
   createdAt: '2026-11-06T12:00:00.000Z',
   updatedAt: '2026-11-06T12:00:00.000Z',
@@ -61,6 +77,56 @@ describe('CreateClientDialog', () => {
     const displayNameInput = screen.getByLabelText(/Display name \*/);
     expect(displayNameInput).toBeTruthy();
     expect(document.activeElement).toBe(displayNameInput);
+  });
+
+  describe('entity type', () => {
+    it('offers an optional Entity type select after the legal name, with Not set first', () => {
+      render(<CreateClientDialog isOpen={true} onClose={vi.fn()} onSubmit={vi.fn()} />);
+
+      const select = screen.getByLabelText('Entity type') as HTMLSelectElement;
+      const options = Array.from(select.options).map((option) => option.textContent);
+      expect(options).toEqual([
+        'Not set',
+        'Individual',
+        'HUF',
+        'Proprietorship',
+        'Partnership firm',
+        'LLP',
+        'Private limited company',
+        'Public limited company',
+        'Trust',
+        'Society',
+        'Other',
+      ]);
+      expect(select.value).toBe('');
+
+      const legalName = screen.getByLabelText(/Legal registered name/);
+      expect(legalName.compareDocumentPosition(select) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      const pan = screen.getByLabelText(/Income tax PAN/);
+      expect(select.compareDocumentPosition(pan) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
+    it('sends the chosen entity type, and leaves it out when none is chosen', () => {
+      const onSubmit = vi.fn().mockResolvedValue(null);
+      render(<CreateClientDialog isOpen={true} onClose={vi.fn()} onSubmit={onSubmit} />);
+
+      fireEvent.change(screen.getByLabelText(/Display name \*/), { target: { value: 'Zenith Advisory' } });
+      fireEvent.submit(screen.getByTestId('create-client-submit-btn').closest('form')!);
+      expect(onSubmit).toHaveBeenCalledTimes(1);
+      expect(onSubmit.mock.calls[0]?.[0]).not.toHaveProperty('entityType');
+    });
+
+    it('includes entityType in the payload once one is picked', async () => {
+      const onSubmit = vi.fn().mockResolvedValue(null);
+      render(<CreateClientDialog isOpen={true} onClose={vi.fn()} onSubmit={onSubmit} />);
+
+      fireEvent.change(screen.getByLabelText(/Display name \*/), { target: { value: 'Zenith Advisory' } });
+      fireEvent.change(screen.getByLabelText('Entity type'), { target: { value: 'llp' } });
+      fireEvent.submit(screen.getByTestId('create-client-submit-btn').closest('form')!);
+
+      await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+      expect(onSubmit.mock.calls[0]?.[0]).toMatchObject({ displayName: 'Zenith Advisory', entityType: 'llp' });
+    });
   });
 
   it('calls onClose when close icon, cancel button, backdrop, or Escape key is pressed', () => {
@@ -181,7 +247,7 @@ describe('CreateClientDialog', () => {
     fireEvent.change(panInput, { target: { value: 'INVALIDPAN' } });
     fireEvent.click(submitBtn);
     expect(onSubmit).not.toHaveBeenCalled();
-    expect(screen.getByText(/Invalid Indian PAN format/)).toBeTruthy();
+    expect(screen.getByText(/Enter a valid 10-character PAN, like ABCDE1234F/)).toBeTruthy();
     expect(document.activeElement).toBe(panInput);
 
     // Valid PAN, but invalid GSTIN format
@@ -189,7 +255,7 @@ describe('CreateClientDialog', () => {
     fireEvent.change(gstinInput, { target: { value: 'INVALIDGSTIN' } });
     fireEvent.click(submitBtn);
     expect(onSubmit).not.toHaveBeenCalled();
-    expect(screen.getByText(/Invalid Indian GSTIN format/)).toBeTruthy();
+    expect(screen.getByText(/Enter a valid 15-character GSTIN/)).toBeTruthy();
     expect(document.activeElement).toBe(gstinInput);
 
     // Valid GSTIN format but mismatched PAN component (characters 3-12)
@@ -197,7 +263,7 @@ describe('CreateClientDialog', () => {
     fireEvent.change(gstinInput, { target: { value: '27XYZAB9999K1Z5' } });
     fireEvent.click(submitBtn);
     expect(onSubmit).not.toHaveBeenCalled();
-    expect(screen.getByText(/GSTIN characters 3–12 must match the provided PAN/)).toBeTruthy();
+    expect(screen.getByText(/The GSTIN does not match the PAN/)).toBeTruthy();
   });
 
   it('enforces exact server Zod email parity: rejects double-dots and leading dots', async () => {

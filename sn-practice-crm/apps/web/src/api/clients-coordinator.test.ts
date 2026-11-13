@@ -18,6 +18,22 @@ const SAMPLE_CLIENT_ASTER: ClientDto = {
   status: 'active',
   notes: 'Corporate client',
   activeAssignmentsCount: 1,
+  pan: null,
+  gstin: null,
+  entityType: null,
+  addressLine1: null,
+  addressLine2: null,
+  city: null,
+  state: null,
+  pincode: null,
+  tan: null,
+  cinLlpin: null,
+  udyamNumber: null,
+  iec: null,
+  incorporationDate: null,
+  contacts: [],
+  canEdit: false,
+  canChangeOwnerOrStatus: false,
   createdById: '00000000-0000-4000-a000-000000000001',
   createdAt: '2026-11-01T04:00:00.000Z',
   updatedAt: '2026-11-01T04:00:00.000Z',
@@ -37,6 +53,22 @@ const SAMPLE_CLIENT_BLUEPEAK: ClientDto = {
   status: 'active',
   notes: 'IT services LLP',
   activeAssignmentsCount: 1,
+  pan: null,
+  gstin: null,
+  entityType: null,
+  addressLine1: null,
+  addressLine2: null,
+  city: null,
+  state: null,
+  pincode: null,
+  tan: null,
+  cinLlpin: null,
+  udyamNumber: null,
+  iec: null,
+  incorporationDate: null,
+  contacts: [],
+  canEdit: false,
+  canChangeOwnerOrStatus: false,
   createdById: '00000000-0000-4000-a000-000000000001',
   createdAt: '2026-11-01T04:00:00.000Z',
   updatedAt: '2026-11-01T04:00:00.000Z',
@@ -375,6 +407,22 @@ describe('ClientsCoordinator', () => {
       status: 'active',
       notes: 'New client record',
       activeAssignmentsCount: 0,
+      pan: null,
+      gstin: null,
+      entityType: null,
+      addressLine1: null,
+      addressLine2: null,
+      city: null,
+      state: null,
+      pincode: null,
+      tan: null,
+      cinLlpin: null,
+      udyamNumber: null,
+      iec: null,
+      incorporationDate: null,
+      contacts: [],
+      canEdit: false,
+      canChangeOwnerOrStatus: false,
       createdById: '00000000-0000-4000-a000-000000000001',
       createdAt: '2026-11-07T12:00:00.000Z',
       updatedAt: '2026-11-07T12:00:00.000Z',
@@ -707,6 +755,158 @@ describe('ClientsCoordinator', () => {
 
       expect(result).toBeNull();
       expect(coordinator.getState().items).toEqual([]);
+    });
+  });
+
+  describe('client and contact changes', () => {
+    const CONTACT = {
+      id: '70000000-0000-4000-a000-000000000001',
+      name: 'Priya Nair',
+      designation: null,
+      email: 'priya@asterfoods.local',
+      phone: null,
+      whatsapp: null,
+      isPrimary: false,
+      notes: null,
+      updatedAt: '2026-11-13T10:00:00.000Z',
+    };
+    const EDITABLE: ClientDto = { ...SAMPLE_CLIENT_ASTER, canEdit: true, canChangeOwnerOrStatus: true };
+
+    async function openClient(role: 'founder' | 'staff' = 'founder') {
+      const port = new DeterministicTestClientsAdapter();
+      port.setListResponse(role, [EDITABLE, SAMPLE_CLIENT_BLUEPEAK]);
+      port.setGetResponse(EDITABLE.id, EDITABLE);
+      const onToast = vi.fn();
+      const coordinator = new ClientsCoordinator({ port, initialRole: role, onToast });
+      await coordinator.sync();
+      await coordinator.selectClient(EDITABLE.id);
+      port.calls.length = 0;
+      return { port, coordinator, onToast };
+    }
+
+    it('updates a client, then refreshes the open client and the list', async () => {
+      const { port, coordinator } = await openClient();
+
+      const updated = await coordinator.updateClient(
+        EDITABLE.id,
+        { city: 'Pune', expectedUpdatedAt: EDITABLE.updatedAt },
+        'key-1',
+      );
+
+      expect(updated?.city).toBe('Pune');
+      const actions = port.calls.map((call) => call.action);
+      expect(actions[0]).toBe('updateClient');
+      expect(actions).toContain('get');
+      expect(actions).toContain('list');
+      expect(port.calls[0]).toMatchObject({
+        id: EDITABLE.id,
+        idempotencyKey: 'key-1',
+        changes: { city: 'Pune', expectedUpdatedAt: EDITABLE.updatedAt },
+      });
+      const state = coordinator.getState();
+      expect(state.selectedDetail?.city).toBe('Pune');
+      expect(state.items.find((item) => item.id === EDITABLE.id)?.city).toBe('Pune');
+      expect(state.detailLoading).toBe(false);
+    });
+
+    it('never blanks the drawer while the open client reloads', async () => {
+      const { port, coordinator } = await openClient();
+      const seen: Array<ClientDto | null> = [];
+      coordinator.subscribe(() => seen.push(coordinator.getState().selectedDetail));
+
+      await coordinator.updateClient(EDITABLE.id, { city: 'Pune', expectedUpdatedAt: EDITABLE.updatedAt }, 'key-1');
+
+      expect(port.calls.some((call) => call.action === 'get')).toBe(true);
+      expect(seen.length).toBeGreaterThan(0);
+      expect(seen.every((detail) => detail !== null)).toBe(true);
+    });
+
+    it('creates, updates and removes a contact, refreshing the open client each time', async () => {
+      const { port, coordinator } = await openClient();
+      port.setContactResponse(CONTACT);
+
+      const created = await coordinator.createContact(EDITABLE.id, { name: 'Priya Nair' }, 'key-2');
+      expect(created).toEqual(CONTACT);
+      expect(port.calls.map((call) => call.action)).toEqual(
+        expect.arrayContaining(['createContact', 'get', 'list']),
+      );
+
+      port.calls.length = 0;
+      await coordinator.updateContact(
+        CONTACT.id,
+        { designation: 'Director', expectedUpdatedAt: CONTACT.updatedAt },
+        'key-3',
+      );
+      expect(port.calls[0]).toMatchObject({ action: 'updateContact', id: CONTACT.id, idempotencyKey: 'key-3' });
+      expect(port.calls.map((call) => call.action)).toEqual(expect.arrayContaining(['get', 'list']));
+
+      port.calls.length = 0;
+      await expect(coordinator.deleteContact(CONTACT.id)).resolves.toBe(true);
+      expect(port.calls[0]).toMatchObject({ action: 'deleteContact', id: CONTACT.id });
+      expect(port.calls.map((call) => call.action)).toEqual(expect.arrayContaining(['get', 'list']));
+    });
+
+    it.each([
+      ['stale_client', 'This client was changed by someone else. Reload and try again.'],
+      ['stale_contact', 'This contact was changed by someone else. Reload and try again.'],
+    ])('rethrows %s as safe copy and reloads the open client in the background', async (serverCode, message) => {
+      const { port, coordinator, onToast } = await openClient();
+      port.setUpdateClientError(
+        new ClientOperationError({ code: 'conflict', message: 'raw ABCDE1234F', status: 409, serverCode }),
+      );
+
+      const error = await coordinator
+        .updateClient(EDITABLE.id, { city: 'Pune', expectedUpdatedAt: EDITABLE.updatedAt }, 'key-1')
+        .then(
+          () => null,
+          (err: unknown) => err,
+        );
+
+      expect(error).toBeInstanceOf(ClientOperationError);
+      expect(error).toMatchObject({ code: 'conflict', serverCode, message });
+      await vi.waitFor(() => {
+        const actions = port.calls.map((call) => call.action);
+        expect(actions).toContain('get');
+        expect(actions).toContain('list');
+      });
+      expect(onToast).not.toHaveBeenCalled();
+    });
+
+    it('rethrows a 403 as the permission copy without refreshing', async () => {
+      const { port, coordinator } = await openClient('staff');
+      port.setContactError(new ClientOperationError({ code: 'forbidden', message: 'raw', status: 403 }));
+
+      await expect(coordinator.createContact(EDITABLE.id, { name: 'Priya Nair' }, 'key-2')).rejects.toMatchObject({
+        code: 'forbidden',
+        message: "You don't have permission to do this.",
+      });
+      expect(port.calls.map((call) => call.action)).toEqual(['createContact']);
+    });
+
+    it('rethrows a failed removal as safe copy', async () => {
+      const { port, coordinator } = await openClient();
+      port.setDeleteContactError(new ClientOperationError({ code: 'not_found', message: 'raw', status: 404 }));
+
+      await expect(coordinator.deleteContact(CONTACT.id)).rejects.toMatchObject({ code: 'not_found' });
+    });
+
+    it('returns null and does nothing once disposed, or when the role changes mid-flight', async () => {
+      const { port, coordinator } = await openClient();
+      coordinator.dispose();
+      await expect(
+        coordinator.updateClient(EDITABLE.id, { city: 'Pune', expectedUpdatedAt: EDITABLE.updatedAt }, 'key-1'),
+      ).resolves.toBeNull();
+      expect(port.calls).toEqual([]);
+
+      const second = await openClient();
+      const pending = second.coordinator.updateClient(
+        EDITABLE.id,
+        { city: 'Pune', expectedUpdatedAt: EDITABLE.updatedAt },
+        'key-1',
+      );
+      await second.coordinator.switchRole('manager');
+      await expect(pending).resolves.toBeNull();
+      expect(second.coordinator.getState().selectedDetail).toBeNull();
     });
   });
 });

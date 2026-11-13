@@ -182,6 +182,45 @@ describe('client creation authority', () => {
   );
 });
 
+describe('client editing authority', () => {
+  it.each(['founder', 'manager'] as const)('allows %s to edit any client', (role) => {
+    expect(authorize({ action: 'client.update', actor: actor(role), isRelationshipOwner: false })).toEqual({
+      allowed: true,
+    });
+  });
+
+  it.each(COMPANY_ROLES)('allows %s to edit a client they are the relationship owner of', (role) => {
+    expect(authorize({ action: 'client.update', actor: actor(role), isRelationshipOwner: true })).toEqual({
+      allowed: true,
+    });
+  });
+
+  it.each(['senior_staff', 'staff', 'trainee'] as const)(
+    'denies %s editing a client they do not own with role_not_permitted',
+    (role) => {
+      expect(authorize({ action: 'client.update', actor: actor(role), isRelationshipOwner: false })).toMatchObject({
+        allowed: false,
+        code: 'role_not_permitted',
+      });
+    },
+  );
+
+  it.each(['founder', 'manager'] as const)('allows %s to change the relationship owner or status', (role) => {
+    expect(authorize({ action: 'client.change_owner_or_status', actor: actor(role) })).toEqual({ allowed: true });
+  });
+
+  it.each(['senior_staff', 'staff', 'trainee'] as const)(
+    'denies %s changing the relationship owner or status',
+    (role) => {
+      expect(authorize({ action: 'client.change_owner_or_status', actor: actor(role) })).toEqual({
+        allowed: false,
+        code: 'role_not_permitted',
+        reason: 'Only the Founder or Manager may change the relationship owner or status.',
+      });
+    },
+  );
+});
+
 describe('ENG-01 engagement authority matrix across all five roles', () => {
   const actions = [
     'engagement.read',

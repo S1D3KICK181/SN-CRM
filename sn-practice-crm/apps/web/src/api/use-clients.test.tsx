@@ -28,6 +28,22 @@ const SAMPLE_ASTER: ClientDto = {
   status: 'active',
   notes: 'Corporate client',
   activeAssignmentsCount: 1,
+  pan: null,
+  gstin: null,
+  entityType: null,
+  addressLine1: null,
+  addressLine2: null,
+  city: null,
+  state: null,
+  pincode: null,
+  tan: null,
+  cinLlpin: null,
+  udyamNumber: null,
+  iec: null,
+  incorporationDate: null,
+  contacts: [],
+  canEdit: false,
+  canChangeOwnerOrStatus: false,
   createdById: '00000000-0000-4000-a000-000000000001',
   createdAt: '2026-11-01T04:00:00.000Z',
   updatedAt: '2026-11-01T04:00:00.000Z',
@@ -47,6 +63,22 @@ const SAMPLE_BLUEPEAK: ClientDto = {
   status: 'active',
   notes: 'IT services LLP',
   activeAssignmentsCount: 1,
+  pan: null,
+  gstin: null,
+  entityType: null,
+  addressLine1: null,
+  addressLine2: null,
+  city: null,
+  state: null,
+  pincode: null,
+  tan: null,
+  cinLlpin: null,
+  udyamNumber: null,
+  iec: null,
+  incorporationDate: null,
+  contacts: [],
+  canEdit: false,
+  canChangeOwnerOrStatus: false,
   createdById: '00000000-0000-4000-a000-000000000001',
   createdAt: '2026-11-01T04:00:00.000Z',
   updatedAt: '2026-11-01T04:00:00.000Z',
@@ -820,6 +852,22 @@ describe('useClients React hook', () => {
       status: 'active',
       notes: 'New client record',
       activeAssignmentsCount: 0,
+      pan: null,
+      gstin: null,
+      entityType: null,
+      addressLine1: null,
+      addressLine2: null,
+      city: null,
+      state: null,
+      pincode: null,
+      tan: null,
+      cinLlpin: null,
+      udyamNumber: null,
+      iec: null,
+      incorporationDate: null,
+      contacts: [],
+      canEdit: false,
+      canChangeOwnerOrStatus: false,
       createdById: '00000000-0000-4000-a000-000000000001',
       createdAt: '2026-11-07T12:00:00.000Z',
       updatedAt: '2026-11-07T12:00:00.000Z',
@@ -1010,6 +1058,101 @@ describe('useClients React hook', () => {
       expect(outcome).toBeNull();
       expect(onToast).not.toHaveBeenCalled();
       expect(result.current.items).toEqual([SAMPLE_BLUEPEAK]);
+    });
+  });
+
+  describe('client and contact changes', () => {
+    const EDITABLE: ClientDto = { ...SAMPLE_ASTER, canEdit: true, canChangeOwnerOrStatus: true };
+    const CONTACT = {
+      id: '70000000-0000-4000-a000-000000000001',
+      name: 'Priya Nair',
+      designation: null,
+      email: 'priya@asterfoods.local',
+      phone: null,
+      whatsapp: null,
+      isPrimary: false,
+      notes: null,
+      updatedAt: '2026-11-13T10:00:00.000Z',
+    };
+
+    async function openClient() {
+      const port = new DeterministicTestClientsAdapter();
+      port.setListResponse('founder', [EDITABLE, SAMPLE_BLUEPEAK]);
+      port.setGetResponse(EDITABLE.id, EDITABLE);
+      const hook = renderHook(() => useClients('founder', { port }));
+      await waitFor(() => expect(hook.result.current.hasLiveSnapshot).toBe(true));
+      await act(async () => {
+        await hook.result.current.selectClient(EDITABLE.id);
+      });
+      await waitFor(() => expect(hook.result.current.selectedDetail).toEqual(EDITABLE));
+      port.calls.length = 0;
+      return { port, ...hook };
+    }
+
+    it('updateClient sends the key, then shows the saved detail and list', async () => {
+      const { port, result } = await openClient();
+
+      let saved: ClientDto | null = null;
+      await act(async () => {
+        saved = await result.current.updateClient(
+          EDITABLE.id,
+          { city: 'Pune', expectedUpdatedAt: EDITABLE.updatedAt },
+          'key-1',
+        );
+      });
+
+      expect(saved).toMatchObject({ city: 'Pune' });
+      expect(port.calls[0]).toMatchObject({ action: 'updateClient', id: EDITABLE.id, idempotencyKey: 'key-1' });
+      await waitFor(() => {
+        expect(result.current.selectedDetail?.city).toBe('Pune');
+        expect(result.current.items.find((item) => item.id === EDITABLE.id)?.city).toBe('Pune');
+      });
+    });
+
+    it('contact actions reach the port and refresh the open client', async () => {
+      const { port, result } = await openClient();
+      port.setContactResponse(CONTACT);
+
+      await act(async () => {
+        await result.current.createContact(EDITABLE.id, { name: 'Priya Nair' }, 'key-2');
+        await result.current.updateContact(
+          CONTACT.id,
+          { designation: 'Director', expectedUpdatedAt: CONTACT.updatedAt },
+          'key-3',
+        );
+      });
+      let removed = false;
+      await act(async () => {
+        removed = await result.current.deleteContact(CONTACT.id);
+      });
+
+      expect(removed).toBe(true);
+      const actions = port.calls.map((call) => call.action);
+      expect(actions).toEqual(expect.arrayContaining(['createContact', 'updateContact', 'deleteContact', 'get', 'list']));
+      expect(port.calls.find((call) => call.action === 'createContact')?.idempotencyKey).toBe('key-2');
+      expect(port.calls.find((call) => call.action === 'updateContact')?.idempotencyKey).toBe('key-3');
+    });
+
+    it('rejects with safe copy and shows no toast when a change is refused', async () => {
+      const port = new DeterministicTestClientsAdapter();
+      port.setListResponse('founder', [EDITABLE]);
+      port.setGetResponse(EDITABLE.id, EDITABLE);
+      port.setUpdateClientError(
+        new ClientOperationError({ code: 'conflict', message: 'raw', status: 409, serverCode: 'stale_client' }),
+      );
+      const onToast = vi.fn();
+      const { result } = renderHook(() => useClients('founder', { port, onToast }));
+      await waitFor(() => expect(result.current.hasLiveSnapshot).toBe(true));
+
+      await act(async () => {
+        await expect(
+          result.current.updateClient(EDITABLE.id, { city: 'Pune', expectedUpdatedAt: EDITABLE.updatedAt }, 'key-1'),
+        ).rejects.toMatchObject({
+          serverCode: 'stale_client',
+          message: 'This client was changed by someone else. Reload and try again.',
+        });
+      });
+      expect(onToast).not.toHaveBeenCalled();
     });
   });
 });

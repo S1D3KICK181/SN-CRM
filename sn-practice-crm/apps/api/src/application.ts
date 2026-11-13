@@ -3,8 +3,10 @@ import type {
   AssignmentDto,
   AssignmentStatus,
   AssignmentTransition,
+  ClientContactDto,
   ClientDto,
   CreateAssignmentInput,
+  CreateClientContactInput,
   CreateClientInput,
   CreateLedgerEntryInput,
   CreateRecurringScheduleInput,
@@ -32,6 +34,8 @@ import type {
   ServiceDto,
   SessionActor,
   UpdateAssignmentInput,
+  UpdateClientContactInput,
+  UpdateClientInput,
   UpdateRecurringScheduleInput,
   UpdateServiceInput,
   VoidFeeRecordInput,
@@ -51,7 +55,15 @@ import type {
   UpdateAssignmentCommand,
 } from './repository';
 import { kolkataToday } from './repository';
-import { parseIsoInstant } from './schemas';
+import {
+  CONTACT_UNREACHABLE_MESSAGE,
+  createClientContactSchema,
+  createClientSchema,
+  parseIsoInstant,
+  updateClientContactSchema,
+  updateClientSchema,
+  validateInput,
+} from './schemas';
 
 export interface ApplicationOptions {
   now?: () => Date;
@@ -95,6 +107,11 @@ function normalizeServiceDescription(value: string | null | undefined): string |
   if (value === undefined || value === null) return value;
   const trimmed = value.trim();
   return trimmed === '' ? null : trimmed;
+}
+
+/** Drops undefined values so an omitted field means "leave unchanged" and the idempotency hash is stable. */
+function definedOnly<T extends object>(value: T): T {
+  return Object.fromEntries(Object.entries(value).filter(([, entry]) => entry !== undefined)) as T;
 }
 
 export type CreateWorkItemServiceInput = CreateWorkItemInput extends infer T
@@ -369,39 +386,165 @@ export class CrmApplication {
   async createClient(actor: SessionActor, input: CreateClientInput): Promise<ClientDto> {
     const ctx: RepositoryContext = { actorId: actor.id };
     this.assertClientCreateAuthority(actor);
+    const data = validateInput(createClientSchema, input);
 
     let relationshipOwnerId: string | null = null;
-    if (input.relationshipOwnerId) {
-      const owner = await this.repository.getEmployee(ctx, input.relationshipOwnerId);
-      if (!owner) {
-        throw notFound('Employee');
-      }
-      if (!owner.active || owner.role === 'trainee') {
-        throw new ApiError(
-          422,
-          'validation_failed',
-          'A Client relationship owner must be active and cannot be a Trainee.',
-        );
-      }
-      relationshipOwnerId = owner.id;
+    if (data.relationshipOwnerId) {
+      relationshipOwnerId = await this.requireValidRelationshipOwner(ctx, data.relationshipOwnerId);
     }
 
     const timestamp = this.now().toISOString();
     const record: CreateClientRecord = {
       id: this.createId('cli'),
-      displayName: input.displayName,
-      legalName: input.legalName ?? null,
-      pan: input.pan ?? null,
-      gstin: input.gstin ?? null,
-      email: input.email ?? null,
-      phone: input.phone ?? null,
+      displayName: data.displayName,
+      legalName: data.legalName ?? null,
+      pan: data.pan ?? null,
+      gstin: data.gstin ?? null,
+      email: data.email ?? null,
+      phone: data.phone ?? null,
       relationshipOwnerId,
-      notes: input.notes ?? null,
+      notes: data.notes ?? null,
+      entityType: data.entityType ?? null,
+      addressLine1: data.addressLine1 ?? null,
+      addressLine2: data.addressLine2 ?? null,
+      city: data.city ?? null,
+      state: data.state ?? null,
+      pincode: data.pincode ?? null,
+      tan: data.tan ?? null,
+      cinLlpin: data.cinLlpin ?? null,
+      udyamNumber: data.udyamNumber ?? null,
+      iec: data.iec ?? null,
+      incorporationDate: data.incorporationDate ?? null,
       createdAt: timestamp,
       updatedAt: timestamp,
     };
 
     return await this.repository.createClient(ctx, record);
+  }
+
+  private async requireValidRelationshipOwner(ctx: RepositoryContext, ownerId: string): Promise<string> {
+    const owner = await this.repository.getEmployee(ctx, ownerId);
+    if (!owner) {
+      throw notFound('Employee');
+    }
+    if (!owner.active || owner.role === 'trainee') {
+      throw new ApiError(
+        422,
+        'validation_failed',
+        'A Client relationship owner must be active and cannot be a Trainee.',
+      );
+    }
+    return owner.id;
+  }
+
+  // --- Client master (CLI-02a) ---
+
+  // The client must be visible to the actor (otherwise it does not exist for them), and the actor
+  // must be allowed to edit it: Founder, Manager, or its relationship owner.
+  private async requireEditableClient(actor: SessionActor, clientId: string): Promise<ClientDto> {
+    const client = await this.repository.getClient({ actorId: actor.id }, clientId);
+    if (!client) {
+      throw notFound('Client');
+    }
+    requireAuthority({
+      action: 'client.update',
+      actor: asActor(actor),
+      isRelationshipOwner: client.relationshipOwnerId === actor.id,
+    });
+    return client;
+  }
+
+  async updateClient(
+    actor: SessionActor,
+    clientId: string,
+    input: UpdateClientInput,
+    idempotencyKey: string,
+  ): Promise<ClientDto> {
+    const ctx: RepositoryContext = { actorId: actor.id };
+    const current = await this.requireEditableClient(actor, clientId);
+    const data = validateInput(updateClientSchema, input);
+
+    const changesOwner =
+      data.relationshipOwnerId !== undefined && data.relationshipOwnerId !== current.relationshipOwnerId;
+    const changesStatus = data.status !== undefined && data.status !== current.status;
+    if (changesOwner || changesStatus) {
+      requireAuthority({ action: 'client.change_owner_or_status', actor: asActor(actor) });
+    }
+    if (changesOwner && data.relationshipOwnerId) {
+      await this.requireValidRelationshipOwner(ctx, data.relationshipOwnerId);
+    }
+
+    // An editor always looks after the client, so the stored PAN and GSTIN are visible here.
+    if (data.pan !== undefined || data.gstin !== undefined) {
+      const pan = data.pan !== undefined ? data.pan : current.pan;
+      const gstin = data.gstin !== undefined ? data.gstin : current.gstin;
+      if (pan && gstin && gstin.slice(2, 12) !== pan) {
+        throw new ApiError(422, 'validation_failed', 'The GSTIN does not match the PAN.');
+      }
+    }
+
+    return this.repository.updateClient(ctx, {
+      ...definedOnly(data),
+      id: clientId,
+      idempotencyKey: normalizeIdempotencyKey(idempotencyKey),
+    });
+  }
+
+  async createClientContact(
+    actor: SessionActor,
+    clientId: string,
+    input: CreateClientContactInput,
+    idempotencyKey: string,
+  ): Promise<ClientContactDto> {
+    await this.requireEditableClient(actor, clientId);
+    const data = validateInput(createClientContactSchema, input);
+    return this.repository.createClientContact(
+      { actorId: actor.id },
+      { ...definedOnly(data), clientId, idempotencyKey: normalizeIdempotencyKey(idempotencyKey) },
+    );
+  }
+
+  private async requireEditableContact(
+    actor: SessionActor,
+    contactId: string,
+  ): Promise<{ client: ClientDto; contact: ClientContactDto }> {
+    const clientId = await this.repository.getClientIdForContact({ actorId: actor.id }, contactId);
+    if (!clientId) {
+      throw notFound('Contact');
+    }
+    const client = await this.requireEditableClient(actor, clientId);
+    const contact = client.contacts.find((candidate) => candidate.id === contactId);
+    if (!contact) {
+      throw notFound('Contact');
+    }
+    return { client, contact };
+  }
+
+  async updateClientContact(
+    actor: SessionActor,
+    contactId: string,
+    input: UpdateClientContactInput,
+    idempotencyKey: string,
+  ): Promise<ClientContactDto> {
+    const { contact } = await this.requireEditableContact(actor, contactId);
+    const data = validateInput(updateClientContactSchema, input);
+
+    const email = data.email !== undefined ? data.email : contact.email;
+    const phone = data.phone !== undefined ? data.phone : contact.phone;
+    const whatsapp = data.whatsapp !== undefined ? data.whatsapp : contact.whatsapp;
+    if (!email && !phone && !whatsapp) {
+      throw new ApiError(422, 'validation_failed', CONTACT_UNREACHABLE_MESSAGE);
+    }
+
+    return this.repository.updateClientContact(
+      { actorId: actor.id },
+      { ...definedOnly(data), id: contactId, idempotencyKey: normalizeIdempotencyKey(idempotencyKey) },
+    );
+  }
+
+  async deleteClientContact(actor: SessionActor, contactId: string): Promise<void> {
+    await this.requireEditableContact(actor, contactId);
+    await this.repository.deleteClientContact({ actorId: actor.id }, contactId);
   }
 
   async listServices(actor: SessionActor): Promise<readonly ServiceCatalogItemDto[]> {

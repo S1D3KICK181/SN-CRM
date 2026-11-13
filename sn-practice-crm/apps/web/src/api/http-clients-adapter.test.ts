@@ -25,6 +25,22 @@ describe('HttpClientsAdapter', () => {
     status: 'active',
     notes: 'Standing corporate client.',
     activeAssignmentsCount: 1,
+    pan: null,
+    gstin: null,
+    entityType: null,
+    addressLine1: null,
+    addressLine2: null,
+    city: null,
+    state: null,
+    pincode: null,
+    tan: null,
+    cinLlpin: null,
+    udyamNumber: null,
+    iec: null,
+    incorporationDate: null,
+    contacts: [],
+    canEdit: false,
+    canChangeOwnerOrStatus: false,
     createdById: '00000000-0000-4000-a000-000000000001',
     createdAt: '2026-11-01T04:00:00.000Z',
     updatedAt: '2026-11-01T04:00:00.000Z',
@@ -518,11 +534,11 @@ describe('HttpClientsAdapter', () => {
     }
   });
 
-  it('safely projects contract fields and never passes through hostile raw statutory properties', async () => {
+  it('safely projects contract fields, keeps the full PAN and GSTIN the server sends, and drops unknown properties', async () => {
     const hostileServerObject = {
       ...sampleClientDto,
-      pan: 'AABCA1234A', // Raw statutory PAN
-      gstin: '27AABCA1234A1Z5', // Raw statutory GSTIN
+      pan: 'AABCA1234A', // Full PAN, sent only to readers who look after the client
+      gstin: '27AABCA1234A1Z5', // Full GSTIN, same rule
       internalSuperSecret: 'do-not-leak',
     };
 
@@ -536,9 +552,9 @@ describe('HttpClientsAdapter', () => {
     const adapter = new HttpClientsAdapter({ fetchFn });
     const projected = await adapter.get('founder', sampleClientDto.id);
 
-    // Projected object strictly excludes raw statutory and unrecognized keys
-    expect('pan' in projected).toBe(false);
-    expect('gstin' in projected).toBe(false);
+    // The full values pass through as contract fields; unrecognized keys never do
+    expect(projected.pan).toBe('AABCA1234A');
+    expect(projected.gstin).toBe('27AABCA1234A1Z5');
     expect('internalSuperSecret' in (projected as unknown as Record<string, unknown>)).toBe(false);
     expect(projected.panMasked).toBe('******1234');
     expect(projected.gstinMasked).toBe('27**********1Z5');
@@ -995,6 +1011,22 @@ describe('HttpClientsAdapter', () => {
         status: 'active',
         notes: null,
         activeAssignmentsCount: 0,
+        pan: null,
+        gstin: null,
+        entityType: null,
+        addressLine1: null,
+        addressLine2: null,
+        city: null,
+        state: null,
+        pincode: null,
+        tan: null,
+        cinLlpin: null,
+        udyamNumber: null,
+        iec: null,
+        incorporationDate: null,
+        contacts: [],
+        canEdit: false,
+        canChangeOwnerOrStatus: false,
         createdById: '00000000-0000-4000-a000-000000000001',
         createdAt: '2026-11-06T12:00:00.000Z',
         updatedAt: '2026-11-06T12:00:00.000Z',
@@ -1282,6 +1314,255 @@ describe('HttpClientsAdapter', () => {
         code: 'aborted',
         message: 'Client creation was cancelled.',
       });
+    });
+  });
+
+  describe('client master fields (CLI-02a)', () => {
+    function respondWith(data: unknown) {
+      return vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ data }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      );
+    }
+
+    it('accepts entity type, address, registrations, contacts and the edit flags', async () => {
+      const contact = {
+        id: '70000000-0000-4000-a000-000000000001',
+        name: 'Priya Nair',
+        designation: 'Finance Head',
+        email: 'priya@asterfoods.local',
+        phone: null,
+        whatsapp: '98200 11111',
+        isPrimary: true,
+        notes: null,
+        updatedAt: '2026-11-13T10:00:00.000Z',
+      };
+      const adapter = new HttpClientsAdapter({
+        fetchFn: respondWith({
+          ...sampleClientDto,
+          entityType: 'llp',
+          addressLine1: '12 Marine Drive',
+          city: 'Mumbai',
+          state: 'Maharashtra',
+          pincode: '400021',
+          tan: 'MUMA12345B',
+          incorporationDate: '2015-04-01',
+          contacts: [contact],
+          canEdit: true,
+          canChangeOwnerOrStatus: false,
+        }),
+      });
+      const client = await adapter.get('founder', sampleClientDto.id);
+      expect(client).toMatchObject({
+        entityType: 'llp',
+        addressLine1: '12 Marine Drive',
+        addressLine2: null,
+        city: 'Mumbai',
+        pincode: '400021',
+        tan: 'MUMA12345B',
+        cinLlpin: null,
+        incorporationDate: '2015-04-01',
+        canEdit: true,
+        canChangeOwnerOrStatus: false,
+      });
+      expect(client.contacts).toEqual([contact]);
+    });
+
+    it('reads a response without the new fields as empty and not editable', async () => {
+      const adapter = new HttpClientsAdapter({ fetchFn: respondWith({ ...sampleClientDto }) });
+      const client = await adapter.get('founder', sampleClientDto.id);
+      expect(client).toMatchObject({ entityType: null, city: null, pan: null, gstin: null, contacts: [], canEdit: false });
+    });
+
+    it.each([
+      ['an unknown entity type', { entityType: 'company' }],
+      ['a non-array contacts value', { contacts: 'none' }],
+      ['a malformed contact', { contacts: [{ id: 'nope' }] }],
+      ['a non-string city', { city: 12 }],
+    ])('rejects %s as an unexpected response', async (_label, change) => {
+      const adapter = new HttpClientsAdapter({ fetchFn: respondWith({ ...sampleClientDto, ...change }) });
+      await expect(adapter.get('founder', sampleClientDto.id)).rejects.toMatchObject({ code: 'unexpected' });
+    });
+  });
+
+  describe('client and contact changes (CLI-02b)', () => {
+    const contactDto = {
+      id: '70000000-0000-4000-a000-000000000001',
+      name: 'Priya Nair',
+      designation: 'Finance Head',
+      email: 'priya@asterfoods.local',
+      phone: null,
+      whatsapp: null,
+      isPrimary: true,
+      notes: null,
+      updatedAt: '2026-11-13T10:00:00.000Z',
+    };
+
+    interface Captured {
+      url: string;
+      init: RequestInit;
+      headers: Headers;
+    }
+
+    function capture(status: number, body: unknown, captured: Captured[]) {
+      return vi.fn().mockImplementation(async (url: string, init: RequestInit) => {
+        captured.push({ url, init, headers: new Headers(init.headers) });
+        return new Response(body === null ? null : JSON.stringify(body), {
+          status,
+          headers: { 'content-type': 'application/json' },
+        });
+      });
+    }
+
+    it('PATCHes /clients/:id with the body, the idempotency key and a content type', async () => {
+      const calls: Captured[] = [];
+      const adapter = new HttpClientsAdapter({
+        fetchFn: capture(200, { data: { ...sampleClientDto, city: 'Pune' } }, calls),
+        baseUrl: 'http://api.local/',
+      });
+      const input = { city: 'Pune', expectedUpdatedAt: sampleClientDto.updatedAt };
+
+      const updated = await adapter.updateClient('manager', sampleClientDto.id, input, 'key-1');
+
+      expect(updated.city).toBe('Pune');
+      expect(calls).toHaveLength(1);
+      expect(calls[0]?.url).toBe(`http://api.local/api/v1/clients/${sampleClientDto.id}`);
+      expect(calls[0]?.init.method).toBe('PATCH');
+      expect(JSON.parse(String(calls[0]?.init.body))).toEqual(input);
+      expect(calls[0]?.headers.get('idempotency-key')).toBe('key-1');
+      expect(calls[0]?.headers.get('content-type')).toBe('application/json');
+      expect(calls[0]?.headers.get('x-demo-user-id')).toBe(ROLE_TO_DEMO_ACTOR_ID.manager);
+    });
+
+    it('POSTs /clients/:id/contacts and reads the created contact', async () => {
+      const calls: Captured[] = [];
+      const adapter = new HttpClientsAdapter({ fetchFn: capture(201, { data: contactDto }, calls) });
+
+      const created = await adapter.createContact(
+        'founder',
+        sampleClientDto.id,
+        { name: 'Priya Nair', email: 'priya@asterfoods.local', isPrimary: true },
+        'key-2',
+      );
+
+      expect(created).toEqual(contactDto);
+      expect(calls[0]?.url).toBe(`/api/v1/clients/${sampleClientDto.id}/contacts`);
+      expect(calls[0]?.init.method).toBe('POST');
+      expect(calls[0]?.headers.get('idempotency-key')).toBe('key-2');
+      expect(JSON.parse(String(calls[0]?.init.body))).toEqual({
+        name: 'Priya Nair',
+        email: 'priya@asterfoods.local',
+        isPrimary: true,
+      });
+    });
+
+    it('PATCHes /client-contacts/:id with the key and the concurrency token', async () => {
+      const calls: Captured[] = [];
+      const adapter = new HttpClientsAdapter({
+        fetchFn: capture(200, { data: { ...contactDto, designation: 'Director' } }, calls),
+      });
+
+      const updated = await adapter.updateContact(
+        'founder',
+        contactDto.id,
+        { designation: 'Director', expectedUpdatedAt: contactDto.updatedAt },
+        'key-3',
+      );
+
+      expect(updated.designation).toBe('Director');
+      expect(calls[0]?.url).toBe(`/api/v1/client-contacts/${contactDto.id}`);
+      expect(calls[0]?.init.method).toBe('PATCH');
+      expect(calls[0]?.headers.get('idempotency-key')).toBe('key-3');
+      expect(JSON.parse(String(calls[0]?.init.body))).toEqual({
+        designation: 'Director',
+        expectedUpdatedAt: contactDto.updatedAt,
+      });
+    });
+
+    it('DELETEs /client-contacts/:id, sends no key or body, and accepts the 204', async () => {
+      const calls: Captured[] = [];
+      const adapter = new HttpClientsAdapter({ fetchFn: capture(204, null, calls) });
+
+      await expect(adapter.deleteContact('founder', contactDto.id)).resolves.toBeUndefined();
+
+      expect(calls[0]?.url).toBe(`/api/v1/client-contacts/${contactDto.id}`);
+      expect(calls[0]?.init.method).toBe('DELETE');
+      expect(calls[0]?.init.body).toBeUndefined();
+      expect(calls[0]?.headers.get('idempotency-key')).toBeNull();
+    });
+
+    it('sends a Bearer token and never the demo header for a signed-in session', async () => {
+      const calls: Captured[] = [];
+      const adapter = new HttpClientsAdapter({
+        fetchFn: capture(200, { data: sampleClientDto }, calls),
+        getAccessToken: () => 'jwt-1',
+      });
+      await adapter.updateClient('founder', sampleClientDto.id, { expectedUpdatedAt: sampleClientDto.updatedAt }, 'key-4');
+      expect(calls[0]?.headers.get('authorization')).toBe('Bearer jwt-1');
+      expect(calls[0]?.headers.get('x-demo-user-id')).toBeNull();
+    });
+
+    it.each(['', '   ', 'k'.repeat(256)])('refuses to send without a usable idempotency key (%#)', async (key) => {
+      const fetchFn = vi.fn();
+      const adapter = new HttpClientsAdapter({ fetchFn });
+      await expect(
+        adapter.updateClient('founder', sampleClientDto.id, { expectedUpdatedAt: sampleClientDto.updatedAt }, key),
+      ).rejects.toMatchObject({ code: 'unexpected' });
+      await expect(
+        adapter.createContact('founder', sampleClientDto.id, { name: 'Priya Nair' }, key),
+      ).rejects.toBeInstanceOf(ClientOperationError);
+      expect(fetchFn).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['updateClient', 'stale_client', 409, 'conflict', 'This client was changed by someone else. Reload and try again.'],
+      ['updateContact', 'stale_contact', 409, 'conflict', 'This contact was changed by someone else. Reload and try again.'],
+      ['updateClient', 'role_not_permitted', 403, 'forbidden', "You don't have permission to do this."],
+      ['deleteContact', 'not_found', 404, 'not_found', 'This client or contact could not be found. It may have been removed.'],
+      ['createContact', 'validation_failed', 422, 'validation', 'The details could not be saved. Please check the entered fields.'],
+    ])('maps %s failing with %s to safe copy', async (method, serverCode, status, code, message) => {
+      const fetchFn = capture(
+        status,
+        { error: { code: serverCode, message: 'raw text with ABCDE1234F' }, requestId: 'req_x' },
+        [],
+      );
+      const adapter = new HttpClientsAdapter({ fetchFn });
+      const run = async () => {
+        const stamp = { expectedUpdatedAt: sampleClientDto.updatedAt };
+        if (method === 'updateClient') await adapter.updateClient('founder', sampleClientDto.id, stamp, 'key-5');
+        else if (method === 'updateContact') await adapter.updateContact('founder', contactDto.id, stamp, 'key-5');
+        else if (method === 'createContact') await adapter.createContact('founder', sampleClientDto.id, { name: 'Jo' }, 'key-5');
+        else await adapter.deleteContact('founder', contactDto.id);
+      };
+
+      const error = await run().then(
+        () => null,
+        (err: unknown) => err,
+      );
+      expect(error).toBeInstanceOf(ClientOperationError);
+      expect(error).toMatchObject({ code, status, serverCode, message });
+      expect(String((error as Error).message)).not.toContain('ABCDE1234F');
+    });
+
+    it('reports a network failure as safe copy', async () => {
+      const adapter = new HttpClientsAdapter({ fetchFn: vi.fn().mockRejectedValue(new Error('socket ABCDE1234F')) });
+      const error = await adapter.deleteContact('founder', contactDto.id).then(
+        () => null,
+        (err: unknown) => err,
+      );
+      expect(error).toMatchObject({
+        code: 'network',
+        message: 'Unable to reach the server. Please check your network connection and try again.',
+      });
+    });
+
+    it('rejects a malformed saved record as an unexpected response', async () => {
+      const adapter = new HttpClientsAdapter({ fetchFn: capture(200, { data: { id: 'nope' } }, []) });
+      await expect(
+        adapter.createContact('founder', sampleClientDto.id, { name: 'Jo' }, 'key-6'),
+      ).rejects.toMatchObject({ code: 'unexpected' });
     });
   });
 });

@@ -1552,8 +1552,8 @@ describe('HTTP API', () => {
         panMasked: '******1234',
         status: 'active',
       });
-      expect(founderBody.data[0]).not.toHaveProperty('pan');
-      expect(founderBody.data[0]).not.toHaveProperty('gstin');
+      // The Founder looks after every client, so the full values arrive beside the masked ones
+      expect(founderBody.data[0]).toMatchObject({ pan: 'AABCA1234A', gstin: '27AABCA1234A1Z5', canEdit: true });
 
       const ALL_DEMO_RAW_PANS = [
         'AABCA1234A',
@@ -1572,15 +1572,8 @@ describe('HTTP API', () => {
         '27AABCA6789F1Z0',
       ] as const;
 
-      const serializedFounderBody = JSON.stringify(founderBody);
-      for (const rawPan of ALL_DEMO_RAW_PANS) {
-        expect(serializedFounderBody).not.toContain(rawPan);
-      }
-      for (const rawGstin of ALL_DEMO_RAW_GSTINS) {
-        expect(serializedFounderBody).not.toContain(rawGstin);
-      }
-      expect(serializedFounderBody).not.toContain('"pan":');
-      expect(serializedFounderBody).not.toContain('"gstin":');
+      expect(founderBody.data.map((c: any) => c.pan)).toEqual([...ALL_DEMO_RAW_PANS]);
+      expect(founderBody.data.map((c: any) => c.gstin)).toEqual([...ALL_DEMO_RAW_GSTINS]);
 
       // Staff sees 2 clients
       const staffRes = await fetch(`${baseUrl}/api/v1/clients`, {
@@ -1597,6 +1590,23 @@ describe('HTTP API', () => {
       expect(traineeRes.status).toBe(200);
       const traineeBody = await traineeRes.json();
       expect(traineeBody.data.map((c: any) => c.code)).toEqual(['CL-001001']);
+
+      // A Trainee never receives full values, though the masked values are unchanged
+      expect(traineeBody.data[0]).toMatchObject({
+        pan: null,
+        gstin: null,
+        panMasked: '******1234',
+        gstinMasked: '27**********1Z5',
+        canEdit: false,
+        canChangeOwnerOrStatus: false,
+      });
+      const serializedTrainee = JSON.stringify(traineeBody);
+      for (const rawPan of ALL_DEMO_RAW_PANS) {
+        expect(serializedTrainee).not.toContain(rawPan);
+      }
+      for (const rawGstin of ALL_DEMO_RAW_GSTINS) {
+        expect(serializedTrainee).not.toContain(rawGstin);
+      }
     });
 
     it('returns visible client detail with 200 and expected DTO envelope', async () => {
@@ -1621,13 +1631,32 @@ describe('HTTP API', () => {
         status: 'active',
         activeAssignmentsCount: 1,
       });
-      expect(body.data).not.toHaveProperty('pan');
-      expect(body.data).not.toHaveProperty('gstin');
-      const serializedDetail = JSON.stringify(body);
-      expect(serializedDetail).not.toContain('AABCA1234A');
-      expect(serializedDetail).not.toContain('27AABCA1234A1Z5');
-      expect(serializedDetail).not.toContain('"pan":');
-      expect(serializedDetail).not.toContain('"gstin":');
+      expect(body.data).toMatchObject({
+        pan: 'AABCA1234A',
+        gstin: '27AABCA1234A1Z5',
+        entityType: null,
+        contacts: [],
+        canEdit: true,
+        canChangeOwnerOrStatus: true,
+      });
+    });
+
+    it('hides the full PAN and GSTIN from a Trainee on the detail endpoint', async () => {
+      const baseUrl = await startServer();
+      const res = await fetch(`${baseUrl}/api/v1/clients/${CANONICAL_CLIENT_1}`, {
+        headers: { 'x-demo-user-id': DEMO_ACTOR_IDS.trainee },
+      });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data).toMatchObject({
+        pan: null,
+        gstin: null,
+        panMasked: '******1234',
+        gstinMasked: '27**********1Z5',
+      });
+      const serialized = JSON.stringify(body);
+      expect(serialized).not.toContain('AABCA1234A');
+      expect(serialized).not.toContain('27AABCA1234A1Z5');
     });
 
     it('ensures hidden and nonexistent clients are externally indistinguishable (identical 404 shape)', async () => {
@@ -1842,7 +1871,7 @@ describe('HTTP API', () => {
       }
     });
 
-    it('preserves privacy invariant: normalizes uppercase, masks IDs, and serializes zero raw PAN/GSTIN in response', async () => {
+    it('normalizes identifiers to uppercase and returns masked and full values to the Founder who created the client', async () => {
       const baseUrl = await startServer();
       const rawPan = 'XYZAB5678M';
       const rawGstin = '29XYZAB5678M1Z8';
@@ -1868,14 +1897,13 @@ describe('HTTP API', () => {
       expect(body.data.panMasked).toBe('******5678');
       expect(body.data.gstinMasked).toBe('29**********1Z8');
 
-      // Verify serialized JSON payload does NOT contain raw secrets or raw keys
+      // The creator (Founder) looks after the client, so the normalized full values come back;
+      // the lowercase input form is never echoed
+      expect(body.data.pan).toBe(rawPan);
+      expect(body.data.gstin).toBe(rawGstin);
       const serialized = JSON.stringify(body);
-      expect(serialized).not.toContain(rawPan);
       expect(serialized).not.toContain(rawPan.toLowerCase());
-      expect(serialized).not.toContain(rawGstin);
       expect(serialized).not.toContain(rawGstin.toLowerCase());
-      expect(serialized).not.toContain('"pan":');
-      expect(serialized).not.toContain('"gstin":');
     });
 
     it('rejects unknown and server-owned field injection via strict schema', async () => {
@@ -1920,7 +1948,7 @@ describe('HTTP API', () => {
       const body = await res.json();
       expect(body.error.code).toBe('validation_failed');
       const errorText = JSON.stringify(body);
-      expect(errorText).toContain('Invalid Indian PAN format');
+      expect(errorText).toContain('Enter a valid 10-character PAN, like ABCDE1234F.');
       expect(errorText).not.toContain(badPan);
     });
 
@@ -1942,7 +1970,7 @@ describe('HTTP API', () => {
       const body = await res.json();
       expect(body.error.code).toBe('validation_failed');
       const errorText = JSON.stringify(body);
-      expect(errorText).toContain('Invalid Indian GSTIN format');
+      expect(errorText).toContain('Enter a valid 15-character GSTIN.');
       expect(errorText).not.toContain(badGstin);
     });
 
@@ -1967,7 +1995,7 @@ describe('HTTP API', () => {
       const body = await res.json();
       expect(body.error.code).toBe('validation_failed');
       const errorText = JSON.stringify(body);
-      expect(errorText).toContain('GSTIN characters 3–12 must match the provided PAN');
+      expect(errorText).toContain('The GSTIN does not match the PAN.');
       expect(errorText).not.toContain(panA);
       expect(errorText).not.toContain(gstinB);
     });
@@ -2431,5 +2459,222 @@ describe('SVC-01 service list routes', () => {
     const picker = await call(baseUrl, 'GET', '/api/v1/services', { actor });
     expect(picker.status).toBe(200);
     expect(picker.body.data.map((service: { id: string }) => service.id)).toContain(CANONICAL_SERVICE_1);
+  });
+});
+
+describe('HTTP API client master (CLI-02a)', () => {
+  const ASTER = CANONICAL_CLIENT_1;
+  const BLUEPEAK = '10000000-0000-4000-a000-000000000002';
+  const ASTER_UPDATED_AT = '2026-01-01T00:00:00.000Z';
+
+  function send(
+    baseUrl: string,
+    method: string,
+    path: string,
+    actorId: string,
+    options: { key?: string | null; body?: unknown } = {},
+  ): Promise<Response> {
+    const headers: Record<string, string> = { 'x-demo-user-id': actorId };
+    if (options.body !== undefined) headers['content-type'] = 'application/json';
+    if (options.key !== null && options.key !== undefined) headers['idempotency-key'] = options.key;
+    return fetch(`${baseUrl}${path}`, {
+      method,
+      headers,
+      ...(options.body !== undefined ? { body: JSON.stringify(options.body) } : {}),
+    });
+  }
+
+  it('edits a client with PATCH and returns the full client for the editor', async () => {
+    const baseUrl = await startServer();
+    const res = await send(baseUrl, 'PATCH', `/api/v1/clients/${ASTER}`, DEMO_ACTOR_IDS.founder, {
+      key: 'patch-1',
+      body: {
+        entityType: 'private_limited',
+        city: 'Mumbai',
+        state: 'Maharashtra',
+        pincode: '400021',
+        tan: 'muma12345b',
+        expectedUpdatedAt: ASTER_UPDATED_AT,
+      },
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data).toMatchObject({
+      id: ASTER,
+      entityType: 'private_limited',
+      city: 'Mumbai',
+      tan: 'MUMA12345B',
+      pan: 'AABCA1234A',
+      canEdit: true,
+    });
+  });
+
+  it('requires an Idempotency-Key and an expectedUpdatedAt on PATCH', async () => {
+    const baseUrl = await startServer();
+    const noKey = await send(baseUrl, 'PATCH', `/api/v1/clients/${ASTER}`, DEMO_ACTOR_IDS.founder, {
+      body: { notes: 'x', expectedUpdatedAt: ASTER_UPDATED_AT },
+    });
+    expect(noKey.status).toBe(400);
+    expect((await noKey.json()).error.code).toBe('idempotency_key_required');
+
+    const noToken = await send(baseUrl, 'PATCH', `/api/v1/clients/${ASTER}`, DEMO_ACTOR_IDS.founder, {
+      key: 'patch-2',
+      body: { notes: 'x' },
+    });
+    expect(noToken.status).toBe(422);
+    expect((await noToken.json()).error.code).toBe('validation_failed');
+  });
+
+  it('answers 409 stale_client for an out-of-date edit', async () => {
+    const baseUrl = await startServer();
+    const res = await send(baseUrl, 'PATCH', `/api/v1/clients/${ASTER}`, DEMO_ACTOR_IDS.founder, {
+      key: 'patch-3',
+      body: { notes: 'late', expectedUpdatedAt: '2025-01-01T00:00:00.000Z' },
+    });
+    expect(res.status).toBe(409);
+    expect((await res.json()).error).toEqual({
+      code: 'stale_client',
+      message: 'This client was changed by someone else. Reload and try again.',
+    });
+  });
+
+  it('lets the relationship owner edit details but answers 403 role_not_permitted for owner or status changes', async () => {
+    const baseUrl = await startServer();
+    const edited = await send(baseUrl, 'PATCH', `/api/v1/clients/${BLUEPEAK}`, DEMO_ACTOR_IDS.staff, {
+      key: 'owner-1',
+      body: { email: 'ops@bluepeak.local', expectedUpdatedAt: ASTER_UPDATED_AT },
+    });
+    expect(edited.status).toBe(200);
+    const updatedAt = (await edited.json()).data.updatedAt;
+
+    for (const [key, change] of [
+      ['owner-2', { relationshipOwnerId: DEMO_ACTOR_IDS.senior }],
+      ['owner-3', { status: 'archived' }],
+    ] as const) {
+      const denied = await send(baseUrl, 'PATCH', `/api/v1/clients/${BLUEPEAK}`, DEMO_ACTOR_IDS.staff, {
+        key,
+        body: { ...change, expectedUpdatedAt: updatedAt },
+      });
+      expect(denied.status).toBe(403);
+      expect((await denied.json()).error.code).toBe('role_not_permitted');
+    }
+  });
+
+  it('answers 403 for staff who can see a client but do not own it, and 404 when they cannot see it', async () => {
+    const baseUrl = await startServer();
+    const body = { notes: 'x', expectedUpdatedAt: ASTER_UPDATED_AT };
+    const senior = await send(baseUrl, 'PATCH', `/api/v1/clients/${ASTER}`, DEMO_ACTOR_IDS.senior, { key: 'na-1', body });
+    expect(senior.status).toBe(403);
+    expect((await senior.json()).error.code).toBe('role_not_permitted');
+
+    const staff = await send(baseUrl, 'PATCH', `/api/v1/clients/${ASTER}`, DEMO_ACTOR_IDS.staff, { key: 'na-2', body });
+    expect(staff.status).toBe(404);
+  });
+
+  it('answers 422 with the plain identifier messages and never echoes the value', async () => {
+    const baseUrl = await startServer();
+    const res = await send(baseUrl, 'PATCH', `/api/v1/clients/${ASTER}`, DEMO_ACTOR_IDS.founder, {
+      key: 'bad-1',
+      body: { iec: 'NOT-VALID-IEC', pincode: '12', expectedUpdatedAt: ASTER_UPDATED_AT },
+    });
+    expect(res.status).toBe(422);
+    const text = JSON.stringify(await res.json());
+    expect(text).toContain('Enter a valid 10-character IEC.');
+    expect(text).toContain('Enter a valid 6-digit PIN code.');
+    expect(text).not.toContain('NOT-VALID-IEC');
+  });
+
+  it('creates a client with the new details through POST', async () => {
+    const baseUrl = await startServer();
+    const res = await send(baseUrl, 'POST', '/api/v1/clients', DEMO_ACTOR_IDS.founder, {
+      body: { displayName: 'Horizon Traders', entityType: 'llp', cinLlpin: 'aab-1234', incorporationDate: '2012-03-31' },
+    });
+    expect(res.status).toBe(201);
+    expect((await res.json()).data).toMatchObject({ entityType: 'llp', cinLlpin: 'AAB-1234', incorporationDate: '2012-03-31' });
+  });
+
+  it('adds, edits and deletes contacts over HTTP', async () => {
+    const baseUrl = await startServer();
+    const created = await send(baseUrl, 'POST', `/api/v1/clients/${ASTER}/contacts`, DEMO_ACTOR_IDS.founder, {
+      key: 'ct-1',
+      body: { name: 'Priya Nair', designation: 'Finance Head', email: 'priya@asterfoods.local', isPrimary: true },
+    });
+    expect(created.status).toBe(201);
+    const contact = (await created.json()).data;
+    expect(contact).toMatchObject({ name: 'Priya Nair', isPrimary: true, phone: null });
+
+    const replay = await send(baseUrl, 'POST', `/api/v1/clients/${ASTER}/contacts`, DEMO_ACTOR_IDS.founder, {
+      key: 'ct-1',
+      body: { name: 'Priya Nair', designation: 'Finance Head', email: 'priya@asterfoods.local', isPrimary: true },
+    });
+    expect(replay.status).toBe(201);
+    expect((await replay.json()).data.id).toBe(contact.id);
+
+    const edited = await send(baseUrl, 'PATCH', `/api/v1/client-contacts/${contact.id}`, DEMO_ACTOR_IDS.founder, {
+      key: 'ct-2',
+      body: { phone: '98200 44444', expectedUpdatedAt: contact.updatedAt },
+    });
+    expect(edited.status).toBe(200);
+    expect((await edited.json()).data).toMatchObject({ phone: '98200 44444', email: 'priya@asterfoods.local' });
+
+    const detail = await send(baseUrl, 'GET', `/api/v1/clients/${ASTER}`, DEMO_ACTOR_IDS.founder);
+    expect((await detail.json()).data.contacts).toHaveLength(1);
+
+    const removed = await send(baseUrl, 'DELETE', `/api/v1/client-contacts/${contact.id}`, DEMO_ACTOR_IDS.founder);
+    expect(removed.status).toBe(204);
+    expect(await removed.text()).toBe('');
+    const gone = await send(baseUrl, 'DELETE', `/api/v1/client-contacts/${contact.id}`, DEMO_ACTOR_IDS.founder);
+    expect(gone.status).toBe(404);
+  });
+
+  it('answers 422 for a contact with no way to reach it and 409 stale_contact for an old edit', async () => {
+    const baseUrl = await startServer();
+    const unreachable = await send(baseUrl, 'POST', `/api/v1/clients/${ASTER}/contacts`, DEMO_ACTOR_IDS.founder, {
+      key: 'ct-3',
+      body: { name: 'Priya Nair' },
+    });
+    expect(unreachable.status).toBe(422);
+    expect(JSON.stringify(await unreachable.json())).toContain('Add at least one way to reach this contact.');
+
+    const created = await send(baseUrl, 'POST', `/api/v1/clients/${ASTER}/contacts`, DEMO_ACTOR_IDS.founder, {
+      key: 'ct-4',
+      body: { name: 'Priya Nair', phone: '98200 44444' },
+    });
+    const contact = (await created.json()).data;
+    const stale = await send(baseUrl, 'PATCH', `/api/v1/client-contacts/${contact.id}`, DEMO_ACTOR_IDS.founder, {
+      key: 'ct-5',
+      body: { notes: 'late', expectedUpdatedAt: '2020-01-01T00:00:00.000Z' },
+    });
+    expect(stale.status).toBe(409);
+    expect((await stale.json()).error.code).toBe('stale_contact');
+  });
+
+  it('refuses contact changes by staff who do not own the client', async () => {
+    const baseUrl = await startServer();
+    const created = await send(baseUrl, 'POST', `/api/v1/clients/${ASTER}/contacts`, DEMO_ACTOR_IDS.founder, {
+      key: 'ct-6',
+      body: { name: 'Priya Nair', phone: '98200 44444' },
+    });
+    const contact = (await created.json()).data;
+
+    const addByReviewer = await send(baseUrl, 'POST', `/api/v1/clients/${ASTER}/contacts`, DEMO_ACTOR_IDS.senior, {
+      key: 'ct-7',
+      body: { name: 'Amit Shah', phone: '98200 55555' },
+    });
+    expect(addByReviewer.status).toBe(403);
+    const deleteByReviewer = await send(baseUrl, 'DELETE', `/api/v1/client-contacts/${contact.id}`, DEMO_ACTOR_IDS.senior);
+    expect(deleteByReviewer.status).toBe(403);
+    const deleteByUnrelatedStaff = await send(baseUrl, 'DELETE', `/api/v1/client-contacts/${contact.id}`, DEMO_ACTOR_IDS.staff);
+    expect(deleteByUnrelatedStaff.status).toBe(404);
+  });
+
+  it('allows DELETE in the CORS preflight', async () => {
+    const baseUrl = await startServer();
+    const res = await fetch(`${baseUrl}/api/v1/client-contacts/${ASTER}`, {
+      method: 'OPTIONS',
+      headers: { origin: 'http://localhost:4310', 'access-control-request-method': 'DELETE' },
+    });
+    expect(res.status).toBe(204);
+    expect(res.headers.get('access-control-allow-methods')).toContain('DELETE');
   });
 });

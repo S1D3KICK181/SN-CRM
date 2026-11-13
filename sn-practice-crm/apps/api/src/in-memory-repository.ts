@@ -1,5 +1,6 @@
 import type {
   AssignmentDto,
+  ClientContactDto,
   ClientDto,
   CreateLedgerEntryInput,
   CreateRecurringScheduleInput,
@@ -30,6 +31,7 @@ import type {
   ApplyCreditCommand,
   ClientReference,
   CreateAssignmentRecord,
+  CreateClientContactCommand,
   CreateClientRecord,
   CreateServiceCommand,
   CreateWorkItemRecord,
@@ -45,6 +47,8 @@ import type {
   UpdateAssignmentCommand,
   UpdateAssignmentReviewersCommand,
   UpdateAssignmentStatusCommand,
+  UpdateClientCommand,
+  UpdateClientContactCommand,
   UpdateServiceCommand,
   UpdateWorkItemStatusCommand,
   VoidFeeRecordCommand,
@@ -59,6 +63,8 @@ import {
   kolkataToday,
   noCreditAvailable,
   notCreditAllocation,
+  staleClient,
+  staleContact,
   staleService,
 } from './repository';
 
@@ -84,14 +90,39 @@ export interface StoredOperationReceipt {
   readonly createdAt: string;
 }
 
+type ClientDetailKey =
+  | 'entityType'
+  | 'addressLine1'
+  | 'addressLine2'
+  | 'city'
+  | 'state'
+  | 'pincode'
+  | 'tan'
+  | 'cinLlpin'
+  | 'udyamNumber'
+  | 'iec'
+  | 'incorporationDate';
+
+type ContactRecord = { -readonly [K in keyof ClientContactDto]: ClientContactDto[K] };
+
+/** A client row. The CLI-02a detail fields and contacts are optional so older seeds stay valid. */
 export type ClientSeedRecord = Omit<
   ClientDto,
-  'relationshipOwnerName' | 'activeAssignmentsCount' | 'panMasked' | 'gstinMasked'
-> & {
-  pan: string | null;
-  gstin: string | null;
-  isDemo?: boolean;
-};
+  | 'relationshipOwnerName'
+  | 'activeAssignmentsCount'
+  | 'panMasked'
+  | 'gstinMasked'
+  | 'canEdit'
+  | 'canChangeOwnerOrStatus'
+  | 'contacts'
+  | ClientDetailKey
+> &
+  Partial<Pick<ClientDto, ClientDetailKey>> & {
+    pan: string | null;
+    gstin: string | null;
+    contacts?: ContactRecord[];
+    isDemo?: boolean;
+  };
 
 export interface InvoiceSeedRecord {
   id: string;
@@ -208,6 +239,14 @@ function calculateRecurrenceDates(
   const dueAt = `${dueDateStr}T18:29:00.000Z`;
 
   return { nextOccurrence, periodEnd, dueAt };
+}
+
+/** Primary contact first, then by name. */
+function compareContacts(a: ClientContactDto, b: ClientContactDto): number {
+  if (a.isPrimary !== b.isPrimary) return a.isPrimary ? -1 : 1;
+  return (
+    a.name.toLowerCase().localeCompare(b.name.toLowerCase()) || a.name.localeCompare(b.name) || a.id.localeCompare(b.id)
+  );
 }
 
 export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
@@ -394,6 +433,7 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
       relationshipOwnerName = owner ? owner.name : null;
     }
 
+    const looksAfter = this.isFeeVisible(actor, client.id);
     let activeAssignmentsCount = 0;
     for (const assignment of this.assignments.values()) {
       if (
@@ -413,12 +453,29 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
       legalName: client.legalName,
       gstinMasked: maskGstinForRoutineRead(client.gstin),
       panMasked: maskPanForRoutineRead(client.pan),
+      // Full values only for readers who look after the client; null for everyone else
+      pan: looksAfter ? client.pan : null,
+      gstin: looksAfter ? client.gstin : null,
       email: client.email,
       phone: client.phone,
       relationshipOwnerId: client.relationshipOwnerId,
       relationshipOwnerName,
       status: client.status,
       notes: client.notes,
+      entityType: client.entityType ?? null,
+      addressLine1: client.addressLine1 ?? null,
+      addressLine2: client.addressLine2 ?? null,
+      city: client.city ?? null,
+      state: client.state ?? null,
+      pincode: client.pincode ?? null,
+      tan: client.tan ?? null,
+      cinLlpin: client.cinLlpin ?? null,
+      udyamNumber: client.udyamNumber ?? null,
+      iec: client.iec ?? null,
+      incorporationDate: client.incorporationDate ?? null,
+      contacts: [...(client.contacts ?? [])].sort(compareContacts),
+      canEdit: this.canEditClient(actor, client),
+      canChangeOwnerOrStatus: this.isManagement(actor),
       activeAssignmentsCount,
       createdById: client.createdById,
       createdAt: client.createdAt,
@@ -520,6 +577,18 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
       relationshipOwnerId: record.relationshipOwnerId ?? null,
       status: 'active',
       notes: record.notes ?? null,
+      entityType: record.entityType ?? null,
+      addressLine1: record.addressLine1 ?? null,
+      addressLine2: record.addressLine2 ?? null,
+      city: record.city ?? null,
+      state: record.state ?? null,
+      pincode: record.pincode ?? null,
+      tan: record.tan ?? null,
+      cinLlpin: record.cinLlpin ?? null,
+      udyamNumber: record.udyamNumber ?? null,
+      iec: record.iec ?? null,
+      incorporationDate: record.incorporationDate ?? null,
+      contacts: [],
       createdById: actor.id,
       createdAt: record.createdAt,
       updatedAt: record.updatedAt,
@@ -528,6 +597,154 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
 
     this.clients.set(seedRecord.id, copy(seedRecord));
     return copy(this.toClientDto(actor, seedRecord));
+  }
+
+  // --- Client master (CLI-02a) ---
+
+  // Mirrors can_edit_client: management, or the client's relationship owner.
+  private canEditClient(actor: EmployeeRecord, client: ClientSeedRecord): boolean {
+    return this.isManagement(actor) || client.relationshipOwnerId === actor.id;
+  }
+
+  // Finds a contact the actor can see, with its client. A contact on a client the actor cannot see does not exist.
+  private findVisibleContact(
+    ctx: RepositoryContext,
+    contactId: string,
+  ): { actor: EmployeeRecord; client: ClientSeedRecord; contact: ContactRecord } | null {
+    for (const client of this.clients.values()) {
+      const contact = (client.contacts ?? []).find((candidate) => candidate.id === contactId);
+      if (!contact) continue;
+      const match = this.getVisibleClientRecord(ctx, client.id);
+      return match ? { actor: match.actor, client: match.client, contact } : null;
+    }
+    return null;
+  }
+
+  async updateClient(ctx: RepositoryContext, command: UpdateClientCommand): Promise<ClientDto> {
+    const { idempotencyKey, ...payload } = command;
+    const { id } = this.runIdempotent<{ id: string }>(ctx, idempotencyKey, 'updateClient', payload, () => {
+      const match = this.getVisibleClientRecord(ctx, command.id);
+      if (!match) throw notFound('Client');
+      const { actor, client } = match;
+      if (!this.canEditClient(actor, client)) throw this.forbiddenOperation();
+      if (Date.parse(client.updatedAt) !== Date.parse(command.expectedUpdatedAt)) throw staleClient();
+      if (
+        !this.isManagement(actor) &&
+        ((command.relationshipOwnerId !== undefined && command.relationshipOwnerId !== client.relationshipOwnerId) ||
+          (command.status !== undefined && command.status !== client.status))
+      ) {
+        throw this.forbiddenOperation();
+      }
+      if (command.relationshipOwnerId) {
+        const owner = this.employees.get(command.relationshipOwnerId);
+        if (!owner) {
+          throw new ApiError(422, 'referenced_entity_not_found', 'The referenced entity does not exist.');
+        }
+        if (!owner.active || owner.role === 'trainee') {
+          throw new ApiError(
+            422,
+            'validation_failed',
+            'A Client relationship owner must be active and cannot be a Trainee.',
+          );
+        }
+      }
+
+      const updated: ClientSeedRecord = {
+        ...client,
+        displayName: command.displayName ?? client.displayName,
+        legalName: command.legalName !== undefined ? command.legalName : client.legalName,
+        pan: command.pan !== undefined ? command.pan : client.pan,
+        gstin: command.gstin !== undefined ? command.gstin : client.gstin,
+        email: command.email !== undefined ? command.email : client.email,
+        phone: command.phone !== undefined ? command.phone : client.phone,
+        relationshipOwnerId:
+          command.relationshipOwnerId !== undefined ? command.relationshipOwnerId : client.relationshipOwnerId,
+        status: command.status ?? client.status,
+        notes: command.notes !== undefined ? command.notes : client.notes,
+        entityType: command.entityType !== undefined ? command.entityType : (client.entityType ?? null),
+        addressLine1: command.addressLine1 !== undefined ? command.addressLine1 : (client.addressLine1 ?? null),
+        addressLine2: command.addressLine2 !== undefined ? command.addressLine2 : (client.addressLine2 ?? null),
+        city: command.city !== undefined ? command.city : (client.city ?? null),
+        state: command.state !== undefined ? command.state : (client.state ?? null),
+        pincode: command.pincode !== undefined ? command.pincode : (client.pincode ?? null),
+        tan: command.tan !== undefined ? command.tan : (client.tan ?? null),
+        cinLlpin: command.cinLlpin !== undefined ? command.cinLlpin : (client.cinLlpin ?? null),
+        udyamNumber: command.udyamNumber !== undefined ? command.udyamNumber : (client.udyamNumber ?? null),
+        iec: command.iec !== undefined ? command.iec : (client.iec ?? null),
+        incorporationDate:
+          command.incorporationDate !== undefined ? command.incorporationDate : (client.incorporationDate ?? null),
+        updatedAt: this.now().toISOString(),
+      };
+      this.clients.set(updated.id, updated);
+      return { result: { id: updated.id }, isDemo: client.isDemo === true };
+    });
+    const actor = this.getActor(ctx);
+    const stored = this.clients.get(id);
+    if (!actor || !stored) throw notFound('Client');
+    return copy(this.toClientDto(actor, stored));
+  }
+
+  async getClientIdForContact(ctx: RepositoryContext, contactId: string): Promise<string | null> {
+    return this.findVisibleContact(ctx, contactId)?.client.id ?? null;
+  }
+
+  async createClientContact(ctx: RepositoryContext, command: CreateClientContactCommand): Promise<ClientContactDto> {
+    const { idempotencyKey, ...payload } = command;
+    return this.runIdempotent<ClientContactDto>(ctx, idempotencyKey, 'createClientContact', payload, () => {
+      const match = this.getVisibleClientRecord(ctx, command.clientId);
+      if (!match) throw notFound('Client');
+      if (!this.canEditClient(match.actor, match.client)) throw this.forbiddenOperation();
+      const contacts = match.client.contacts ?? [];
+      if (command.isPrimary === true) {
+        for (const existing of contacts) existing.isPrimary = false;
+      }
+      const contact: ContactRecord = {
+        id: crypto.randomUUID(),
+        name: command.name,
+        designation: command.designation ?? null,
+        email: command.email ?? null,
+        phone: command.phone ?? null,
+        whatsapp: command.whatsapp ?? null,
+        isPrimary: command.isPrimary === true,
+        notes: command.notes ?? null,
+        updatedAt: this.now().toISOString(),
+      };
+      contacts.push(contact);
+      match.client.contacts = contacts;
+      return { result: contact, isDemo: match.client.isDemo === true };
+    });
+  }
+
+  async updateClientContact(ctx: RepositoryContext, command: UpdateClientContactCommand): Promise<ClientContactDto> {
+    const { idempotencyKey, ...payload } = command;
+    return this.runIdempotent<ClientContactDto>(ctx, idempotencyKey, 'updateClientContact', payload, () => {
+      const match = this.findVisibleContact(ctx, command.id);
+      if (!match) throw notFound('Contact');
+      if (!this.canEditClient(match.actor, match.client)) throw this.forbiddenOperation();
+      if (Date.parse(match.contact.updatedAt) !== Date.parse(command.expectedUpdatedAt)) throw staleContact();
+      if (command.isPrimary === true) {
+        for (const other of match.client.contacts ?? []) {
+          if (other.id !== match.contact.id) other.isPrimary = false;
+        }
+      }
+      const contact = match.contact;
+      if (command.name !== undefined) contact.name = command.name;
+      if (command.designation !== undefined) contact.designation = command.designation;
+      if (command.email !== undefined) contact.email = command.email;
+      if (command.phone !== undefined) contact.phone = command.phone;
+      if (command.whatsapp !== undefined) contact.whatsapp = command.whatsapp;
+      if (command.isPrimary !== undefined) contact.isPrimary = command.isPrimary;
+      if (command.notes !== undefined) contact.notes = command.notes;
+      contact.updatedAt = this.now().toISOString();
+      return { result: copy(contact), isDemo: match.client.isDemo === true };
+    });
+  }
+
+  async deleteClientContact(ctx: RepositoryContext, contactId: string): Promise<void> {
+    const match = this.findVisibleContact(ctx, contactId);
+    if (!match) throw notFound('Contact');
+    if (!this.canEditClient(match.actor, match.client)) throw this.forbiddenOperation();
+    match.client.contacts = (match.client.contacts ?? []).filter((candidate) => candidate.id !== contactId);
   }
 
   // --- Reference Lookups ---

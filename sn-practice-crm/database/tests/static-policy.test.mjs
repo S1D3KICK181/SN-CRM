@@ -846,3 +846,153 @@ test('migration 0011 makes service names unique ignoring case and spaces without
   assert.doesNotMatch(sql0011, /\b(create|drop|alter) policy\b/i, 'no policy changes');
   assert.doesNotMatch(sql0011, /\b(create|drop|alter) (table|function|trigger)\b/i, 'no table, function or trigger changes');
 });
+
+test('migration 0012 adds client master details, the looks-after and can-edit helpers, owner-editable clients, and contact people', () => {
+  const migration0012Path = new URL('../../supabase/migrations/20261113180000_cli02_client_master.sql', import.meta.url);
+  const sql0012 = readMigration(migration0012Path, 'Migration 0012');
+
+  // 1. New nullable client columns with format checks
+  for (const column of [
+    'entity_type text',
+    'address_line1 text',
+    'address_line2 text',
+    'city text',
+    'state text',
+    'pincode text',
+    'tan text',
+    'cin_llpin text',
+    'udyam_number text',
+    'iec text',
+    'incorporation_date date',
+  ]) {
+    assert.ok(sql0012.includes(`add column ${column}`), `clients gains ${column}`);
+  }
+  expectSql(sql0012, /entity_type in \(\s*'individual', 'huf', 'proprietorship', 'partnership', 'llp',\s*'private_limited', 'public_limited', 'trust', 'society', 'other'\s*\)/i, 'entity type list');
+  expectSql(sql0012, /pincode ~ '\^\[1-9\]\[0-9\]\{5\}\$'/i, 'pincode check');
+  expectSql(sql0012, /tan ~ '\^\[A-Z\]\{4\}\[0-9\]\{5\}\[A-Z\]\$'/i, 'TAN check');
+  expectSql(sql0012, /'\^\[LU\]\[0-9\]\{5\}\[A-Z\]\{2\}\[0-9\]\{4\}\[A-Z\]\{3\}\[0-9\]\{6\}\$'/i, 'CIN check');
+  expectSql(sql0012, /'\^\[A-Z\]\{3\}-\[0-9\]\{4\}\$'/i, 'LLPIN check');
+  expectSql(sql0012, /udyam_number ~ '\^UDYAM-\[A-Z\]\{2\}-\[0-9\]\{2\}-\[0-9\]\{7\}\$'/i, 'Udyam check');
+  expectSql(sql0012, /iec ~ '\^\[A-Z0-9\]\{10\}\$'/i, 'IEC check');
+
+  // 2. looks_after_client: same test as fee visibility, which now delegates to it
+  const looksAfter = functionBlock(sql0012, 'user_looks_after_client');
+  assert.match(looksAfter, /security definer/i);
+  assert.match(looksAfter, /set search_path = public, pg_temp/i);
+  assert.match(looksAfter, /public\.is_management\(p_user_id\)/i);
+  assert.match(looksAfter, /public\.role_of\(p_user_id\) in \('senior_staff', 'staff'\)/i);
+  assert.match(looksAfter, /c\.relationship_owner_id = p_user_id/i);
+  assert.match(looksAfter, /a\.owner_id = p_user_id/i);
+  assert.match(looksAfter, /ar\.reviewer_id = p_user_id/i);
+  assert.match(functionBlock(sql0012, 'looks_after_client'), /public\.user_looks_after_client\(auth\.uid\(\), p_client_id\)/i);
+  assert.match(functionBlock(sql0012, 'user_fee_visible'), /select public\.user_looks_after_client\(p_user_id, p_client_id\);/i);
+
+  // 3. can_edit_client: management or the relationship owner
+  const canEdit = functionBlock(sql0012, 'user_can_edit_client');
+  assert.match(canEdit, /security definer/i);
+  assert.match(canEdit, /public\.is_management\(p_user_id\)/i);
+  assert.match(canEdit, /c\.relationship_owner_id = p_user_id/i);
+  assert.match(functionBlock(sql0012, 'can_edit_client'), /public\.user_can_edit_client\(auth\.uid\(\), p_client_id\)/i);
+  for (const signature of ['user_looks_after_client(uuid, uuid)', 'looks_after_client(uuid)', 'user_can_edit_client(uuid, uuid)', 'can_edit_client(uuid)']) {
+    const escaped = signature.replace(/[()]/g, '\\$&');
+    assert.match(sql0012, new RegExp(`revoke all on function public\\.${escaped} from public, anon;`, 'i'), `${signature} is revoked from public`);
+    assert.match(sql0012, new RegExp(`grant execute on function public\\.${escaped} to authenticated;`, 'i'), `${signature} is granted to authenticated`);
+  }
+
+  // 4. Clients update policy and write guard
+  expectSql(
+    sql0012,
+    /drop policy clients_update on public\.clients;\s+create policy clients_update on public\.clients\s+for update to authenticated\s+using \(public\.can_edit_client\(id\)\)\s+with check \(public\.can_edit_client\(id\)\);/i,
+    'clients update policy',
+  );
+  assert.doesNotMatch(sql0012, /create policy clients_(insert|select)\b/i, 'insert and select policies are untouched');
+  const clientGuard = functionBlock(sql0012, 'guard_client_write');
+  assert.match(clientGuard, /security definer/i);
+  assert.match(clientGuard, /set search_path = public, pg_temp/i);
+  assert.match(clientGuard, /if tg_op = 'INSERT' then\s+if v_actor is not null and not public\.is_management\(v_actor\) then\s+raise exception 'Only the Founder or Manager may change this record\.' using errcode = '42501';/i);
+  assert.match(clientGuard, /new\.created_by := v_actor;/i);
+  assert.match(clientGuard, /Creator provenance is immutable\./i);
+  assert.match(clientGuard, /Client codes are database-generated and immutable\./i);
+  assert.match(clientGuard, /new\.relationship_owner_id is distinct from old\.relationship_owner_id\s+or new\.status is distinct from old\.status/i);
+  assert.match(clientGuard, /Only the Founder or Manager may change the relationship owner or status\.'\s+using errcode = '42501'/i);
+  expectSql(sql0012, /drop trigger guard_client_write on public\.clients;\s+create trigger guard_client_write\s+before insert or update on public\.clients\s+for each row execute function public\.guard_client_write\(\);/i, 'clients guard trigger');
+  assert.doesNotMatch(sql0012, /validate_client_relationship_owner/i, 'owner validation trigger is kept as it was');
+
+  // 5. client_contacts: columns, checks, one primary per client, RLS, audit
+  const contactsTable = sql0012.match(/create table public\.client_contacts \(([\s\S]*?)\n\);/i)?.[1] ?? '';
+  assert.match(contactsTable, /client_id uuid not null references public\.clients\(id\) on delete cascade/i);
+  assert.match(contactsTable, /name text not null check \(char_length\(btrim\(name\)\) between 2 and 120\)/i);
+  assert.match(contactsTable, /designation text check \(designation is null or char_length\(designation\) <= 80\)/i);
+  assert.match(contactsTable, /email text check \(email is null or char_length\(email\) <= 254\)/i);
+  assert.match(contactsTable, /phone text check \(phone is null or \(char_length\(phone\) <= 20 and phone ~ '\^\[0-9 \+-\]\+\$'\)\)/i);
+  assert.match(contactsTable, /whatsapp text check \(whatsapp is null or \(char_length\(whatsapp\) <= 20 and whatsapp ~ '\^\[0-9 \+-\]\+\$'\)\)/i);
+  assert.match(contactsTable, /is_primary boolean not null default false/i);
+  assert.match(contactsTable, /notes text check \(notes is null or char_length\(notes\) <= 300\)/i);
+  assert.match(contactsTable, /created_by uuid not null references public\.profiles\(user_id\) on delete restrict/i);
+  assert.match(contactsTable, /is_demo boolean not null default false/i);
+  assert.match(contactsTable, /email is not null or phone is not null or whatsapp is not null/i);
+  expectSql(sql0012, /create index client_contacts_client_idx on public\.client_contacts \(client_id\);/i, 'client index');
+  expectSql(sql0012, /create unique index client_contacts_one_primary_idx\s+on public\.client_contacts \(client_id\)\s+where is_primary;/i, 'one primary contact per client');
+
+  const contactGuard = functionBlock(sql0012, 'guard_client_contact_write');
+  assert.match(contactGuard, /security definer/i);
+  assert.match(contactGuard, /new\.is_demo := coalesce\(v_client_is_demo, false\);/i);
+  assert.match(contactGuard, /A contact cannot move to another client\./i);
+  assert.match(contactGuard, /Creator provenance is immutable\./i);
+  expectSql(sql0012, /create trigger prevent_demo_flag_tampering before update on public\.client_contacts/i, 'demo flag is immutable');
+  expectSql(sql0012, /create trigger set_client_contacts_updated_at before update on public\.client_contacts\s+for each row execute function public\.set_updated_at\(\);/i, 'updated_at trigger');
+  expectSql(sql0012, /create trigger audit_client_contacts after insert or update or delete on public\.client_contacts\s+for each row execute function public\.audit_row_change\(\);/i, 'audit trigger');
+  expectSql(sql0012, /alter table public\.client_contacts enable row level security;/i, 'RLS enabled');
+  expectSql(sql0012, /create policy client_contacts_select on public\.client_contacts\s+for select to authenticated\s+using \(public\.client_visible\(client_id\)\);/i, 'contacts select');
+  expectSql(sql0012, /create policy client_contacts_insert on public\.client_contacts\s+for insert to authenticated\s+with check \(public\.can_edit_client\(client_id\) and created_by = auth\.uid\(\)\);/i, 'contacts insert');
+  expectSql(sql0012, /create policy client_contacts_update on public\.client_contacts\s+for update to authenticated\s+using \(public\.can_edit_client\(client_id\)\)\s+with check \(public\.can_edit_client\(client_id\)\);/i, 'contacts update');
+  expectSql(sql0012, /create policy client_contacts_delete on public\.client_contacts\s+for delete to authenticated\s+using \(public\.can_edit_client\(client_id\)\);/i, 'contacts delete');
+  expectSql(sql0012, /revoke all on table public\.client_contacts from public, anon;\s+grant select, insert, update, delete on public\.client_contacts to authenticated;/i, 'contacts grants');
+
+  // 6. Demo removal needs no change: contacts follow their client through the cascade
+  assert.doesNotMatch(sql0012, /remove_demo_data/i, 'remove_demo_data is not redefined');
+});
+
+test('migration 0013 hides the raw PAN and GSTIN from the authenticated role and serves them only through client_identifiers', () => {
+  const migration0013Path = new URL('../../supabase/migrations/20261113183000_cli02_identifier_privileges.sql', import.meta.url);
+  const sql0013 = readMigration(migration0013Path, 'Migration 0013');
+
+  // 1. Masking functions are immutable and pin their search path
+  for (const name of ['mask_pan', 'mask_gstin']) {
+    const block = functionBlock(sql0013, name);
+    assert.match(block, /immutable/i, `${name} is immutable`);
+    assert.match(block, /set search_path = public, pg_temp/i);
+  }
+  assert.match(functionBlock(sql0013, 'mask_pan'), /'\^\[A-Za-z\]\{5\}\[0-9\]\{4\}\[A-Za-z\]\$'/);
+  assert.match(functionBlock(sql0013, 'mask_pan'), /'\*\*\*\*\*\*' \|\| substr\(t, 6, 4\)/);
+  assert.match(functionBlock(sql0013, 'mask_pan'), /repeat\('\*', 10\)/);
+  assert.match(functionBlock(sql0013, 'mask_gstin'), /'\^\[0-9\]\{2\}\[A-Za-z\]\{5\}\[0-9\]\{4\}\[A-Za-z\]\[0-9A-Za-z\]\[Zz\]\[0-9A-Za-z\]\$'/);
+  assert.match(functionBlock(sql0013, 'mask_gstin'), /upper\(substr\(t, 13\)\)/);
+  assert.match(functionBlock(sql0013, 'mask_gstin'), /repeat\('\*', 15\)/);
+
+  // 2. client_identifiers: security definer, visible clients only, full values only when looking after
+  const identifiers = functionBlock(sql0013, 'client_identifiers');
+  assert.match(identifiers, /returns table \(pan_masked text, gstin_masked text, pan text, gstin text\)/i);
+  assert.match(identifiers, /security definer/i);
+  assert.match(identifiers, /set search_path = public, pg_temp/i);
+  assert.match(identifiers, /and public\.client_visible\(p_client_id\)/i);
+  assert.match(identifiers, /case when public\.looks_after_client\(c\.id\) then nullif\(c\.pan, ''\) end/i);
+  assert.match(identifiers, /case when public\.looks_after_client\(c\.id\) then nullif\(c\.gstin, ''\) end/i);
+  for (const signature of ['mask_pan(text)', 'mask_gstin(text)', 'client_identifiers(uuid)']) {
+    const escaped = signature.replace(/[()]/g, '\\$&');
+    assert.match(sql0013, new RegExp(`revoke all on function public\\.${escaped} from public, anon;`, 'i'));
+    assert.match(sql0013, new RegExp(`grant execute on function public\\.${escaped} to authenticated;`, 'i'));
+  }
+
+  // 3. Column privileges: table-level select is revoked, every column but pan and gstin is granted back
+  expectSql(sql0013, /revoke select on public\.clients from authenticated;/i, 'table-level select revoked');
+  const grant = sql0013.match(/grant select \(([\s\S]*?)\) on public\.clients to authenticated;/i)?.[1] ?? '';
+  const granted = grant.split(',').map((column) => column.trim()).filter(Boolean);
+  assert.ok(granted.length > 0, 'columns are granted back');
+  assert.ok(!granted.includes('pan') && !granted.includes('gstin'), 'pan and gstin are not granted');
+  for (const column of ['id', 'code', 'display_name', 'relationship_owner_id', 'status', 'created_by', 'updated_at', 'is_demo', 'entity_type', 'incorporation_date']) {
+    assert.ok(granted.includes(column), `${column} stays readable`);
+  }
+  assert.doesNotMatch(sql0013, /revoke (insert|update)/i, 'insert and update grants are untouched');
+  assert.doesNotMatch(sql0013, /\b(create|drop|alter) policy\b/i, 'no policy changes');
+});

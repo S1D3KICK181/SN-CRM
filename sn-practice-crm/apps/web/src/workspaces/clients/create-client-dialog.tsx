@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
 import { AlertCircle, X } from 'lucide-react';
-import type { ClientDto, CreateClientInput, ReportingLineDto } from '@sn/contracts';
+import { CLIENT_ENTITY_TYPES, type ClientDto, type CreateClientInput, type ReportingLineDto } from '@sn/contracts';
+import { CLIENT_ENTITY_TYPE_LABELS } from './clients-view-model';
 import type { CompanyRole } from '@sn/domain';
 import { ROLE_LABELS } from '../../data';
 import {
@@ -28,6 +29,7 @@ export interface CreateClientDialogProps {
 export type ClientField =
   | 'displayName'
   | 'legalName'
+  | 'entityType'
   | 'pan'
   | 'gstin'
   | 'email'
@@ -38,6 +40,8 @@ export type ClientField =
 export interface ClientDraft {
   readonly displayName: string;
   readonly legalName: string;
+  /** A ClientEntityType value, or '' when not chosen. */
+  readonly entityType: string;
   readonly pan: string;
   readonly gstin: string;
   readonly email: string;
@@ -55,7 +59,7 @@ const GSTIN_REGEX = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/;
  * Exact email validator matching the server's installed Zod 3.25.76 email regex.
  * Specifically rejects double-dots (a..b@domain) and leading dots (.user@domain).
  */
-const ZOD_EMAIL_REGEX =
+export const ZOD_EMAIL_REGEX =
   /^(?!\.)(?!.*\.\.)([A-Z0-9_'+\-\.]*)[A-Z0-9_+-]@([A-Z0-9][A-Z0-9\-]*\.)+[A-Z]{2,}$/i;
 
 interface ValidationResult {
@@ -89,18 +93,18 @@ function validateClientInput(draft: ClientDraft): ValidationResult {
 
   const cleanPan = draft.pan.trim().toUpperCase();
   if (cleanPan && !PAN_REGEX.test(cleanPan)) {
-    setFieldError('pan', 'Invalid Indian PAN format (e.g. ABCDE1234F).');
+    setFieldError('pan', 'Enter a valid 10-character PAN, like ABCDE1234F.');
   }
 
   const cleanGstin = draft.gstin.trim().toUpperCase();
   if (cleanGstin && !GSTIN_REGEX.test(cleanGstin)) {
-    setFieldError('gstin', 'Invalid Indian GSTIN format (e.g. 27ABCDE1234F1Z5).');
+    setFieldError('gstin', 'Enter a valid 15-character GSTIN.');
   }
 
   if (cleanPan && cleanGstin && !errors.pan && !errors.gstin) {
     const gstinPan = cleanGstin.slice(2, 12);
     if (gstinPan !== cleanPan) {
-      setFieldError('gstin', 'GSTIN characters 3–12 must match the provided PAN.');
+      setFieldError('gstin', 'The GSTIN does not match the PAN.');
     }
   }
 
@@ -140,6 +144,7 @@ export function CreateClientDialog({
   const [draft, setDraft] = useState<ClientDraft>({
     displayName: '',
     legalName: '',
+    entityType: '',
     pan: '',
     gstin: '',
     email: '',
@@ -180,6 +185,7 @@ export function CreateClientDialog({
 
   const displayNameRef = useRef<HTMLInputElement>(null);
   const legalNameRef = useRef<HTMLInputElement>(null);
+  const entityTypeRef = useRef<HTMLSelectElement>(null);
   const panRef = useRef<HTMLInputElement>(null);
   const gstinRef = useRef<HTMLInputElement>(null);
   const emailRef = useRef<HTMLInputElement>(null);
@@ -269,6 +275,7 @@ export function CreateClientDialog({
   const focusField = (field: ClientField | null) => {
     if (field === 'displayName') displayNameRef.current?.focus();
     else if (field === 'legalName') legalNameRef.current?.focus();
+    else if (field === 'entityType') entityTypeRef.current?.focus();
     else if (field === 'pan') panRef.current?.focus();
     else if (field === 'gstin') gstinRef.current?.focus();
     else if (field === 'email') emailRef.current?.focus();
@@ -295,9 +302,11 @@ export function CreateClientDialog({
     isSubmittingRef.current = true;
     setIsSubmitting(true);
 
+    const entityType = CLIENT_ENTITY_TYPES.find((candidate) => candidate === draft.entityType);
     const payload: CreateClientInput = {
       displayName: draft.displayName.trim(),
       legalName: draft.legalName.trim() || null,
+      ...(entityType ? { entityType } : {}),
       pan: draft.pan.trim().toUpperCase() || null,
       gstin: draft.gstin.trim().toUpperCase() || null,
       email: draft.email.trim() || null,
@@ -450,6 +459,27 @@ export function CreateClientDialog({
                 </span>
               ) : null}
             </label>
+
+            <div className="field is-full">
+              <label className="field-label-text" htmlFor="create-client-entity-type">
+                Entity type
+              </label>
+              <select
+                ref={entityTypeRef}
+                id="create-client-entity-type"
+                name="entityType"
+                value={draft.entityType}
+                onChange={(e) => updateDraft('entityType', e.target.value)}
+                disabled={isSubmitting}
+              >
+                <option value="">Not set</option>
+                {CLIENT_ENTITY_TYPES.map((type) => (
+                  <option key={type} value={type}>
+                    {CLIENT_ENTITY_TYPE_LABELS[type]}
+                  </option>
+                ))}
+              </select>
+            </div>
 
             <label className="field" htmlFor="create-client-pan">
               <span className="field-label-text">Income tax PAN</span>

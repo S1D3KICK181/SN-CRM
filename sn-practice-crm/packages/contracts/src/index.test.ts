@@ -5,6 +5,8 @@ import {
   ASSIGNMENT_TRANSITIONS,
   WORK_ITEM_TRANSITIONS,
   CLIENT_STATUSES,
+  CLIENT_ENTITY_TYPES,
+  INDIAN_STATES,
   ENGAGEMENT_STATUSES,
   ENGAGEMENT_FEE_MODELS,
   ENGAGEMENT_END_OUTCOMES,
@@ -18,6 +20,12 @@ import {
   type RecurringScheduleDto,
   type ClientDto,
   type ClientStatus,
+  type ClientContactDto,
+  type ClientEntityType,
+  type CreateClientInput,
+  type UpdateClientInput,
+  type CreateClientContactInput,
+  type UpdateClientContactInput,
   type WorkItemDto,
   type CreateAssignmentInput,
   type CreateRecurringScheduleInput,
@@ -112,9 +120,9 @@ describe('Contracts Single Status Truth & Runtime Tuples', () => {
     expectTypeOf<ClientDto>().toHaveProperty('relationshipOwnerName').toBeNullable();
     expectTypeOf<ClientDto>().toHaveProperty('activeAssignmentsCount').toBeNumber();
     expectTypeOf<ClientDto>().toHaveProperty('panMasked').toBeNullable();
-    expectTypeOf<ClientDto>().not.toHaveProperty('pan');
+    expectTypeOf<ClientDto>().toHaveProperty('pan').toEqualTypeOf<string | null>();
     expectTypeOf<ClientDto>().toHaveProperty('gstinMasked').toBeNullable();
-    expectTypeOf<ClientDto>().not.toHaveProperty('gstin');
+    expectTypeOf<ClientDto>().toHaveProperty('gstin').toEqualTypeOf<string | null>();
     expectTypeOf<CreateAssignmentInput>().not.toHaveProperty('clientName');
     expectTypeOf<AssignmentDto>().toHaveProperty('engagementId').toEqualTypeOf<string | null>();
     expectTypeOf<AssignmentDto>().toHaveProperty('engagementCode').toEqualTypeOf<string | null>();
@@ -524,5 +532,44 @@ describe('Service list contracts (SVC-01)', () => {
     expectTypeOf<UpdateServiceInput['name']>().toEqualTypeOf<string | undefined>();
     expectTypeOf<UpdateServiceInput['isActive']>().toEqualTypeOf<boolean | undefined>();
     expectTypeOf<UpdateServiceInput['expectedUpdatedAt']>().toEqualTypeOf<string>();
+  });
+});
+
+describe('Client master contracts (CLI-02a)', () => {
+  it('exports the entity types and the Indian states and union territories', () => {
+    expect(CLIENT_ENTITY_TYPES).toEqual([
+      'individual',
+      'huf',
+      'proprietorship',
+      'partnership',
+      'llp',
+      'private_limited',
+      'public_limited',
+      'trust',
+      'society',
+      'other',
+    ]);
+    expect(INDIAN_STATES).toHaveLength(36);
+    expect(new Set(INDIAN_STATES).size).toBe(36);
+    expect(INDIAN_STATES).toContain('Maharashtra');
+    expect(INDIAN_STATES).toContain('Delhi');
+  });
+
+  it('verifies the client master type shapes at compile time', () => {
+    expectTypeOf<ClientDto>().toHaveProperty('entityType').toEqualTypeOf<ClientEntityType | null>();
+    expectTypeOf<ClientDto>().toHaveProperty('addressLine1').toEqualTypeOf<string | null>();
+    expectTypeOf<ClientDto>().toHaveProperty('incorporationDate').toEqualTypeOf<string | null>();
+    expectTypeOf<ClientDto>().toHaveProperty('contacts').toEqualTypeOf<readonly ClientContactDto[]>();
+    expectTypeOf<ClientDto>().toHaveProperty('canEdit').toBeBoolean();
+    expectTypeOf<ClientDto>().toHaveProperty('canChangeOwnerOrStatus').toBeBoolean();
+    expectTypeOf<ClientContactDto>().toHaveProperty('isPrimary').toBeBoolean();
+    expectTypeOf<ClientContactDto>().toHaveProperty('whatsapp').toEqualTypeOf<string | null>();
+    expectTypeOf<CreateClientInput>().not.toHaveProperty('contacts');
+    expectTypeOf<CreateClientInput>().toHaveProperty('entityType').toEqualTypeOf<ClientEntityType | null | undefined>();
+    expectTypeOf<UpdateClientInput>().toHaveProperty('expectedUpdatedAt').toEqualTypeOf<string>();
+    expectTypeOf<UpdateClientInput>().toHaveProperty('pan').toEqualTypeOf<string | null | undefined>();
+    expectTypeOf<UpdateClientInput>().toHaveProperty('status').toEqualTypeOf<ClientStatus | undefined>();
+    expectTypeOf<CreateClientContactInput>().toHaveProperty('name').toBeString();
+    expectTypeOf<UpdateClientContactInput>().toHaveProperty('expectedUpdatedAt').toEqualTypeOf<string>();
   });
 });

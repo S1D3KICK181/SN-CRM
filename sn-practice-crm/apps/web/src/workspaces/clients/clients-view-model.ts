@@ -1,4 +1,4 @@
-import type { ClientDto, ClientStatus } from '@sn/contracts';
+import type { ClientDto, ClientEntityType, ClientStatus } from '@sn/contracts';
 
 export type ClientStatusTone = 'default' | 'success' | 'warning' | 'muted';
 
@@ -23,8 +23,66 @@ export interface ClientListItemViewModel {
   readonly updatedAtLabel: string;
 }
 
+export interface ClientContactViewModel {
+  readonly id: string;
+  readonly name: string;
+  readonly designation: string | null;
+  readonly email: string | null;
+  readonly phone: string | null;
+  readonly whatsapp: string | null;
+  readonly isPrimary: boolean;
+}
+
 export interface ClientDetailViewModel extends ClientListItemViewModel {
   readonly notesLabel: string;
+  readonly entityTypeLabel: string;
+  /** The full PAN when the reader looks after the client, otherwise the masked one. */
+  readonly panLabel: string;
+  readonly gstinLabel: string;
+  readonly tanLabel: string;
+  readonly cinLlpinLabel: string;
+  readonly udyamLabel: string;
+  readonly iecLabel: string;
+  readonly incorporationDateLabel: string;
+  /** Address lines, then `City, State PIN`; empty when no address is on file. */
+  readonly addressLines: readonly string[];
+  readonly contacts: readonly ClientContactViewModel[];
+  readonly canEdit: boolean;
+  readonly canChangeOwnerOrStatus: boolean;
+}
+
+export const CLIENT_ENTITY_TYPE_LABELS: Readonly<Record<ClientEntityType, string>> = {
+  individual: 'Individual',
+  huf: 'HUF',
+  proprietorship: 'Proprietorship',
+  partnership: 'Partnership firm',
+  llp: 'LLP',
+  private_limited: 'Private limited company',
+  public_limited: 'Public limited company',
+  trust: 'Trust',
+  society: 'Society',
+  other: 'Other',
+};
+
+export const NOT_ADDED_LABEL = 'Not added';
+
+/** Formats a YYYY-MM-DD calendar date as DD/MM/YYYY without any timezone shift. */
+export function formatCalendarDate(value: string | null): string {
+  if (!value) return NOT_ADDED_LABEL;
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(value);
+  return match ? `${match[3]}/${match[2]}/${match[1]}` : NOT_ADDED_LABEL;
+}
+
+function addressLinesOf(dto: ClientDto): string[] {
+  const lines = [normalizeText(dto.addressLine1), normalizeText(dto.addressLine2)].filter(
+    (line): line is string => line !== null,
+  );
+  const place = [normalizeText(dto.city), normalizeText(dto.state)]
+    .filter((part): part is string => part !== null)
+    .join(', ');
+  const pincode = normalizeText(dto.pincode);
+  const cityLine = [place, pincode].filter((part) => part && part.length > 0).join(' ');
+  return cityLine ? [...lines, cityLine] : lines;
 }
 
 export interface ClientDirectoryStats {
@@ -149,6 +207,26 @@ export function toClientDetailViewModel(dto: ClientDto): ClientDetailViewModel {
   return {
     ...base,
     notesLabel: notes ?? 'Not provided',
+    entityTypeLabel: dto.entityType ? CLIENT_ENTITY_TYPE_LABELS[dto.entityType] : NOT_ADDED_LABEL,
+    panLabel: normalizeText(dto.pan) ?? normalizeText(dto.panMasked) ?? NOT_ADDED_LABEL,
+    gstinLabel: normalizeText(dto.gstin) ?? normalizeText(dto.gstinMasked) ?? NOT_ADDED_LABEL,
+    tanLabel: normalizeText(dto.tan) ?? NOT_ADDED_LABEL,
+    cinLlpinLabel: normalizeText(dto.cinLlpin) ?? NOT_ADDED_LABEL,
+    udyamLabel: normalizeText(dto.udyamNumber) ?? NOT_ADDED_LABEL,
+    iecLabel: normalizeText(dto.iec) ?? NOT_ADDED_LABEL,
+    incorporationDateLabel: formatCalendarDate(dto.incorporationDate),
+    addressLines: addressLinesOf(dto),
+    contacts: dto.contacts.map((contact) => ({
+      id: contact.id,
+      name: contact.name,
+      designation: normalizeText(contact.designation),
+      email: normalizeText(contact.email),
+      phone: normalizeText(contact.phone),
+      whatsapp: normalizeText(contact.whatsapp),
+      isPrimary: contact.isPrimary,
+    })),
+    canEdit: dto.canEdit,
+    canChangeOwnerOrStatus: dto.canChangeOwnerOrStatus,
   };
 }
 

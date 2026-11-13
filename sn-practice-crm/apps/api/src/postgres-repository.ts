@@ -1,7 +1,9 @@
 import type postgres from 'postgres';
 import type {
   AssignmentDto,
+  ClientContactDto,
   ClientDto,
+  ClientEntityType,
   ClientStatus,
   CreateLedgerEntryInput,
   CreateRecurringScheduleInput,
@@ -24,13 +26,13 @@ import type {
 import { DEV_ACTOR_ALIASES } from './auth';
 import { PostgresTransactionRunner, type SqlClient } from './db';
 import { ApiError, notFound } from './errors';
-import { maskGstinForRoutineRead, maskPanForRoutineRead } from './client-privacy';
 import { isProductionEnvironment } from './http';
 import { computeRequestHash } from './idempotency';
 import type {
   ApplyCreditCommand,
   ClientReference,
   CreateAssignmentRecord,
+  CreateClientContactCommand,
   CreateClientRecord,
   CreateServiceCommand,
   CreateWorkItemRecord,
@@ -46,6 +48,8 @@ import type {
   UpdateAssignmentCommand,
   UpdateAssignmentReviewersCommand,
   UpdateAssignmentStatusCommand,
+  UpdateClientCommand,
+  UpdateClientContactCommand,
   UpdateServiceCommand,
   UpdateWorkItemStatusCommand,
   VoidFeeRecordCommand,
@@ -59,6 +63,8 @@ import {
   financialYearStart,
   noCreditAvailable,
   notCreditAllocation,
+  staleClient,
+  staleContact,
   staleService,
 } from './repository';
 
@@ -119,20 +125,52 @@ function nullableText(val: unknown): string | null {
   return val !== null && val !== undefined ? String(val) : null;
 }
 
-function mapClientRow(row: Record<string, unknown>): ClientDto {
+function mapContactRow(row: Record<string, unknown>): ClientContactDto {
+  return {
+    id: String(row['id']),
+    name: String(row['name']),
+    designation: nullableText(row['designation']),
+    email: nullableText(row['email']),
+    phone: nullableText(row['phone']),
+    whatsapp: nullableText(row['whatsapp']),
+    isPrimary: Boolean(row['is_primary']),
+    notes: nullableText(row['notes']),
+    updatedAt: toIsoString(row['updated_at']),
+  };
+}
+
+// The raw pan and gstin columns are not readable by the authenticated role. The masked values and,
+// for readers who look after the client, the full values come from client_identifiers().
+function mapClientRow(row: Record<string, unknown>, contacts: readonly ClientContactDto[]): ClientDto {
   return {
     id: String(row['id']),
     code: String(row['code']),
     displayName: String(row['display_name']),
     legalName: row['legal_name'] ? String(row['legal_name']) : null,
-    gstinMasked: maskGstinForRoutineRead(row['gstin'] ? String(row['gstin']) : null),
-    panMasked: maskPanForRoutineRead(row['pan'] ? String(row['pan']) : null),
+    gstinMasked: nullableText(row['gstin_masked']),
+    panMasked: nullableText(row['pan_masked']),
+    pan: nullableText(row['pan_full']),
+    gstin: nullableText(row['gstin_full']),
     email: row['email'] ? String(row['email']) : null,
     phone: row['phone'] ? String(row['phone']) : null,
     relationshipOwnerId: row['relationship_owner_id'] ? String(row['relationship_owner_id']) : null,
     relationshipOwnerName: row['relationship_owner_name'] ? String(row['relationship_owner_name']) : null,
     status: String(row['status']) as ClientStatus,
     notes: row['notes'] ? String(row['notes']) : null,
+    entityType: nullableText(row['entity_type']) as ClientEntityType | null,
+    addressLine1: nullableText(row['address_line1']),
+    addressLine2: nullableText(row['address_line2']),
+    city: nullableText(row['city']),
+    state: nullableText(row['state']),
+    pincode: nullableText(row['pincode']),
+    tan: nullableText(row['tan']),
+    cinLlpin: nullableText(row['cin_llpin']),
+    udyamNumber: nullableText(row['udyam_number']),
+    iec: nullableText(row['iec']),
+    incorporationDate: nullableText(row['incorporation_date']),
+    contacts,
+    canEdit: row['can_edit'] === true,
+    canChangeOwnerOrStatus: row['can_change_owner_or_status'] === true,
     activeAssignmentsCount: Number(row['active_assignments_count'] ?? 0),
     createdById: String(row['created_by']),
     createdAt: toIsoString(row['created_at']),
@@ -153,7 +191,25 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
     }
   }
 
-  // --- Clients (Read-Only) ---
+  // --- Clients ---
+
+  private async queryContactDtos(tx: SqlClient, clientIds: readonly string[]): Promise<Map<string, ClientContactDto[]>> {
+    const byClient = new Map<string, ClientContactDto[]>();
+    if (clientIds.length === 0) return byClient;
+    const rows = await tx`
+      SELECT id, client_id, name, designation, email, phone, whatsapp, is_primary, notes, updated_at
+      FROM public.client_contacts
+      WHERE client_id = ANY(${clientIds as string[]}::uuid[])
+      ORDER BY is_primary DESC, lower(name) ASC, name ASC, id ASC;
+    `;
+    for (const row of rows) {
+      const clientId = String(row['client_id']);
+      const list = byClient.get(clientId) ?? [];
+      list.push(mapContactRow(row));
+      byClient.set(clientId, list);
+    }
+    return byClient;
+  }
 
   private async queryClientDtos(tx: SqlClient, clientId?: string): Promise<ClientDto[]> {
     const whereClause = clientId ? tx`WHERE c.id = ${clientId}::uuid` : tx``;
@@ -163,17 +219,32 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
         c.code,
         c.display_name,
         c.legal_name,
-        c.gstin,
-        c.pan,
+        ci.gstin_masked,
+        ci.pan_masked,
+        ci.gstin AS gstin_full,
+        ci.pan AS pan_full,
         c.email,
         c.phone,
         c.relationship_owner_id,
         p.full_name AS relationship_owner_name,
         c.status,
         c.notes,
+        c.entity_type,
+        c.address_line1,
+        c.address_line2,
+        c.city,
+        c.state,
+        c.pincode,
+        c.tan,
+        c.cin_llpin,
+        c.udyam_number,
+        c.iec,
+        c.incorporation_date::text AS incorporation_date,
         c.created_by,
         c.created_at,
         c.updated_at,
+        public.can_edit_client(c.id) AS can_edit,
+        public.is_management() AS can_change_owner_or_status,
         coalesce(
           (
             SELECT count(*)::int
@@ -185,10 +256,15 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
         ) AS active_assignments_count
       FROM public.clients c
       LEFT JOIN public.profiles p ON p.user_id = c.relationship_owner_id
+      LEFT JOIN LATERAL public.client_identifiers(c.id) ci ON true
       ${whereClause}
       ORDER BY c.code ASC;
     `;
-    return rows.map(mapClientRow);
+    const contacts = await this.queryContactDtos(
+      tx,
+      rows.map((row) => String(row['id'])),
+    );
+    return rows.map((row) => mapClientRow(row, contacts.get(String(row['id'])) ?? []));
   }
 
   async getClient(ctx: RepositoryContext, clientId: string): Promise<ClientDto | null> {
@@ -219,7 +295,9 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
         await tx`
           INSERT INTO public.clients (
             id, display_name, legal_name, gstin, pan, email, phone,
-            relationship_owner_id, notes, status, created_by
+            relationship_owner_id, notes, status, created_by,
+            entity_type, address_line1, address_line2, city, state, pincode,
+            tan, cin_llpin, udyam_number, iec, incorporation_date
           ) VALUES (
             ${record.id}::uuid,
             ${record.displayName},
@@ -231,7 +309,18 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
             ${record.relationshipOwnerId ? record.relationshipOwnerId : null}::uuid,
             ${record.notes ?? null},
             'active'::public.client_status,
-            ${ctx.actorId}::uuid
+            ${ctx.actorId}::uuid,
+            ${record.entityType ?? null}::text,
+            ${record.addressLine1 ?? null}::text,
+            ${record.addressLine2 ?? null}::text,
+            ${record.city ?? null}::text,
+            ${record.state ?? null}::text,
+            ${record.pincode ?? null}::text,
+            ${record.tan ?? null}::text,
+            ${record.cinLlpin ?? null}::text,
+            ${record.udyamNumber ?? null}::text,
+            ${record.iec ?? null}::text,
+            ${record.incorporationDate ?? null}::date
           );
         `;
 
@@ -241,6 +330,245 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
           throw new ApiError(500, 'internal_error', 'Created client could not be retrieved.');
         }
         return created;
+      });
+    } catch (error) {
+      sanitizeDatabaseError(error);
+    }
+  }
+
+  // --- Client master (CLI-02a) ---
+
+  private forbiddenOperation(): ApiError {
+    return new ApiError(403, 'forbidden', 'You do not have permission to perform this operation.');
+  }
+
+  // The receipt keeps only the client id: a replay re-reads the client for the reader, so a stored
+  // result never carries a full PAN or GSTIN.
+  async updateClient(ctx: RepositoryContext, command: UpdateClientCommand): Promise<ClientDto> {
+    const { idempotencyKey, ...payload } = command;
+    try {
+      return await this.runner.withUserContext(ctx, async (tx) => {
+        const { id } = await this.runIdempotent<{ id: string }>(
+          tx,
+          ctx,
+          idempotencyKey,
+          'updateClient',
+          payload,
+          async () => {
+            const visibleRows = await tx`
+              SELECT public.can_edit_client(c.id) AS can_edit
+              FROM public.clients c
+              WHERE c.id = ${command.id}::uuid;
+            `;
+            const visible = visibleRows[0];
+            if (!visible) throw notFound('Client');
+            if (visible['can_edit'] !== true) throw this.forbiddenOperation();
+
+            const currentRows = await tx`
+              SELECT
+                is_demo,
+                date_trunc('milliseconds', updated_at) = date_trunc('milliseconds', ${command.expectedUpdatedAt}::timestamptz) AS fresh
+              FROM public.clients
+              WHERE id = ${command.id}::uuid
+              FOR UPDATE;
+            `;
+            const current = currentRows[0];
+            if (!current) throw notFound('Client');
+            if (current['fresh'] !== true) throw staleClient();
+
+            const has = (value: unknown): boolean => value !== undefined;
+            await tx`
+              UPDATE public.clients
+              SET ${has(command.pan) ? tx`pan = ${command.pan ?? null}::text,` : tx``}
+                  ${has(command.gstin) ? tx`gstin = ${command.gstin ?? null}::text,` : tx``}
+                  display_name = CASE WHEN ${has(command.displayName)}::boolean THEN ${command.displayName ?? ''}::text ELSE display_name END,
+                  legal_name = CASE WHEN ${has(command.legalName)}::boolean THEN ${command.legalName ?? null}::text ELSE legal_name END,
+                  email = CASE WHEN ${has(command.email)}::boolean THEN ${command.email ?? null}::text ELSE email END,
+                  phone = CASE WHEN ${has(command.phone)}::boolean THEN ${command.phone ?? null}::text ELSE phone END,
+                  relationship_owner_id = CASE WHEN ${has(command.relationshipOwnerId)}::boolean THEN ${command.relationshipOwnerId ?? null}::uuid ELSE relationship_owner_id END,
+                  status = CASE WHEN ${has(command.status)}::boolean THEN ${command.status ?? 'active'}::public.client_status ELSE status END,
+                  notes = CASE WHEN ${has(command.notes)}::boolean THEN ${command.notes ?? null}::text ELSE notes END,
+                  entity_type = CASE WHEN ${has(command.entityType)}::boolean THEN ${command.entityType ?? null}::text ELSE entity_type END,
+                  address_line1 = CASE WHEN ${has(command.addressLine1)}::boolean THEN ${command.addressLine1 ?? null}::text ELSE address_line1 END,
+                  address_line2 = CASE WHEN ${has(command.addressLine2)}::boolean THEN ${command.addressLine2 ?? null}::text ELSE address_line2 END,
+                  city = CASE WHEN ${has(command.city)}::boolean THEN ${command.city ?? null}::text ELSE city END,
+                  state = CASE WHEN ${has(command.state)}::boolean THEN ${command.state ?? null}::text ELSE state END,
+                  pincode = CASE WHEN ${has(command.pincode)}::boolean THEN ${command.pincode ?? null}::text ELSE pincode END,
+                  tan = CASE WHEN ${has(command.tan)}::boolean THEN ${command.tan ?? null}::text ELSE tan END,
+                  cin_llpin = CASE WHEN ${has(command.cinLlpin)}::boolean THEN ${command.cinLlpin ?? null}::text ELSE cin_llpin END,
+                  udyam_number = CASE WHEN ${has(command.udyamNumber)}::boolean THEN ${command.udyamNumber ?? null}::text ELSE udyam_number END,
+                  iec = CASE WHEN ${has(command.iec)}::boolean THEN ${command.iec ?? null}::text ELSE iec END,
+                  incorporation_date = CASE WHEN ${has(command.incorporationDate)}::boolean THEN ${command.incorporationDate ?? null}::date ELSE incorporation_date END
+              WHERE id = ${command.id}::uuid;
+            `;
+            return { result: { id: command.id }, isDemo: Boolean(current['is_demo']) };
+          },
+        );
+        const updated = (await this.queryClientDtos(tx, id))[0];
+        if (!updated) {
+          throw new ApiError(500, 'internal_error', 'Updated client could not be retrieved.');
+        }
+        return updated;
+      });
+    } catch (error) {
+      sanitizeDatabaseError(error);
+    }
+  }
+
+  async getClientIdForContact(ctx: RepositoryContext, contactId: string): Promise<string | null> {
+    try {
+      return await this.runner.withUserContext(ctx, async (tx) => {
+        const rows = await tx`
+          SELECT client_id FROM public.client_contacts WHERE id = ${contactId}::uuid;
+        `;
+        const row = rows[0];
+        return row ? String(row['client_id']) : null;
+      });
+    } catch (error) {
+      sanitizeDatabaseError(error);
+    }
+  }
+
+  private async fetchContactDto(tx: SqlClient, contactId: string): Promise<ClientContactDto> {
+    const rows = await tx`
+      SELECT id, name, designation, email, phone, whatsapp, is_primary, notes, updated_at
+      FROM public.client_contacts
+      WHERE id = ${contactId}::uuid;
+    `;
+    const row = rows[0];
+    if (!row) throw new ApiError(500, 'internal_error', 'The contact could not be retrieved.');
+    return mapContactRow(row);
+  }
+
+  // Checks the client is visible and editable by the actor, then takes its row lock so that
+  // changing which contact is primary cannot race with another change to the same client.
+  private async lockEditableClient(tx: SqlClient, clientId: string): Promise<boolean> {
+    const rows = await tx`
+      SELECT is_demo, public.can_edit_client(id) AS can_edit
+      FROM public.clients
+      WHERE id = ${clientId}::uuid;
+    `;
+    const client = rows[0];
+    if (!client) throw notFound('Client');
+    if (client['can_edit'] !== true) throw this.forbiddenOperation();
+    await tx`SELECT 1 FROM public.clients WHERE id = ${clientId}::uuid FOR UPDATE;`;
+    return Boolean(client['is_demo']);
+  }
+
+  async createClientContact(ctx: RepositoryContext, command: CreateClientContactCommand): Promise<ClientContactDto> {
+    const { idempotencyKey, ...payload } = command;
+    try {
+      return await this.runner.withUserContext(ctx, async (tx) => {
+        const { id } = await this.runIdempotent<{ id: string }>(
+          tx,
+          ctx,
+          idempotencyKey,
+          'createClientContact',
+          payload,
+          async () => {
+            const isDemo = await this.lockEditableClient(tx, command.clientId);
+            if (command.isPrimary === true) {
+              await tx`
+                UPDATE public.client_contacts SET is_primary = false
+                WHERE client_id = ${command.clientId}::uuid AND is_primary;
+              `;
+            }
+            const contactId = crypto.randomUUID();
+            // is_demo is inherited from the client by the contact's insert trigger
+            await tx`
+              INSERT INTO public.client_contacts (
+                id, client_id, name, designation, email, phone, whatsapp, is_primary, notes, created_by
+              ) VALUES (
+                ${contactId}::uuid,
+                ${command.clientId}::uuid,
+                ${command.name},
+                ${command.designation ?? null}::text,
+                ${command.email ?? null}::text,
+                ${command.phone ?? null}::text,
+                ${command.whatsapp ?? null}::text,
+                ${command.isPrimary === true},
+                ${command.notes ?? null}::text,
+                ${ctx.actorId}::uuid
+              );
+            `;
+            return { result: { id: contactId }, isDemo };
+          },
+        );
+        return await this.fetchContactDto(tx, id);
+      });
+    } catch (error) {
+      sanitizeDatabaseError(error);
+    }
+  }
+
+  async updateClientContact(ctx: RepositoryContext, command: UpdateClientContactCommand): Promise<ClientContactDto> {
+    const { idempotencyKey, ...payload } = command;
+    try {
+      return await this.runner.withUserContext(ctx, async (tx) => {
+        const { id } = await this.runIdempotent<{ id: string }>(
+          tx,
+          ctx,
+          idempotencyKey,
+          'updateClientContact',
+          payload,
+          async () => {
+            const ownerRows = await tx`
+              SELECT client_id FROM public.client_contacts WHERE id = ${command.id}::uuid;
+            `;
+            const owner = ownerRows[0];
+            if (!owner) throw notFound('Contact');
+            const clientId = String(owner['client_id']);
+            const isDemo = await this.lockEditableClient(tx, clientId);
+
+            const currentRows = await tx`
+              SELECT
+                date_trunc('milliseconds', updated_at) = date_trunc('milliseconds', ${command.expectedUpdatedAt}::timestamptz) AS fresh
+              FROM public.client_contacts
+              WHERE id = ${command.id}::uuid
+              FOR UPDATE;
+            `;
+            const current = currentRows[0];
+            if (!current) throw notFound('Contact');
+            if (current['fresh'] !== true) throw staleContact();
+
+            if (command.isPrimary === true) {
+              await tx`
+                UPDATE public.client_contacts SET is_primary = false
+                WHERE client_id = ${clientId}::uuid AND is_primary AND id <> ${command.id}::uuid;
+              `;
+            }
+            const has = (value: unknown): boolean => value !== undefined;
+            await tx`
+              UPDATE public.client_contacts
+              SET name = CASE WHEN ${has(command.name)}::boolean THEN ${command.name ?? ''}::text ELSE name END,
+                  designation = CASE WHEN ${has(command.designation)}::boolean THEN ${command.designation ?? null}::text ELSE designation END,
+                  email = CASE WHEN ${has(command.email)}::boolean THEN ${command.email ?? null}::text ELSE email END,
+                  phone = CASE WHEN ${has(command.phone)}::boolean THEN ${command.phone ?? null}::text ELSE phone END,
+                  whatsapp = CASE WHEN ${has(command.whatsapp)}::boolean THEN ${command.whatsapp ?? null}::text ELSE whatsapp END,
+                  is_primary = CASE WHEN ${has(command.isPrimary)}::boolean THEN ${command.isPrimary ?? false}::boolean ELSE is_primary END,
+                  notes = CASE WHEN ${has(command.notes)}::boolean THEN ${command.notes ?? null}::text ELSE notes END
+              WHERE id = ${command.id}::uuid;
+            `;
+            return { result: { id: command.id }, isDemo };
+          },
+        );
+        return await this.fetchContactDto(tx, id);
+      });
+    } catch (error) {
+      sanitizeDatabaseError(error);
+    }
+  }
+
+  async deleteClientContact(ctx: RepositoryContext, contactId: string): Promise<void> {
+    try {
+      await this.runner.withUserContext(ctx, async (tx) => {
+        const ownerRows = await tx`
+          SELECT client_id FROM public.client_contacts WHERE id = ${contactId}::uuid;
+        `;
+        const owner = ownerRows[0];
+        if (!owner) throw notFound('Contact');
+        await this.lockEditableClient(tx, String(owner['client_id']));
+        await tx`DELETE FROM public.client_contacts WHERE id = ${contactId}::uuid;`;
       });
     } catch (error) {
       sanitizeDatabaseError(error);

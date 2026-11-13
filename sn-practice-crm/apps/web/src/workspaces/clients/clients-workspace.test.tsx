@@ -26,6 +26,22 @@ function createClientDto(overrides: Partial<ClientDto> = {}): ClientDto {
     status: 'active',
     notes: 'Key FMCG client with monthly GST filings.',
     activeAssignmentsCount: 3,
+    pan: null,
+    gstin: null,
+    entityType: null,
+    addressLine1: null,
+    addressLine2: null,
+    city: null,
+    state: null,
+    pincode: null,
+    tan: null,
+    cinLlpin: null,
+    udyamNumber: null,
+    iec: null,
+    incorporationDate: null,
+    contacts: [],
+    canEdit: false,
+    canChangeOwnerOrStatus: false,
     createdById: 'u1111111-1111-4111-8111-111111111111',
     createdAt: '2026-04-01T09:30:00.000Z',
     updatedAt: '2026-04-15T14:20:00.000Z',
@@ -488,6 +504,22 @@ describe('ClientsWorkspace', () => {
         status: 'active',
         notes: 'Priority onboarding',
         activeAssignmentsCount: 0,
+        pan: null,
+        gstin: null,
+        entityType: null,
+        addressLine1: null,
+        addressLine2: null,
+        city: null,
+        state: null,
+        pincode: null,
+        tan: null,
+        cinLlpin: null,
+        udyamNumber: null,
+        iec: null,
+        incorporationDate: null,
+        contacts: [],
+        canEdit: false,
+        canChangeOwnerOrStatus: false,
         createdById: '00000000-0000-4000-a000-000000000001',
         createdAt: '2026-11-06T12:00:00.000Z',
         updatedAt: '2026-11-06T12:00:00.000Z',
@@ -800,6 +832,187 @@ describe('ClientsWorkspace', () => {
       // Dialog still open, input preserved
       expect(screen.getByRole('dialog')).toBeTruthy();
       expect((displayNameInput as HTMLInputElement).value).toBe('Duplicate Client');
+    });
+  });
+
+  describe('client master editing', () => {
+    const CLIENT_ID = 'c2222222-2222-4222-8222-222222222222';
+    const CONTACT_ID = 'd2222222-2222-4222-8222-222222222222';
+    const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+    const CONTACT = {
+      id: CONTACT_ID,
+      name: 'Asha Rao',
+      designation: 'Finance head',
+      email: 'asha@asterfoods.in',
+      phone: '+91 98200 11111',
+      whatsapp: null,
+      isPrimary: true,
+      notes: null,
+      updatedAt: '2026-04-15T14:20:00.000Z',
+    };
+
+    function editable(overrides: Partial<ClientDto> = {}): ClientDto {
+      return createClientDto({
+        id: CLIENT_ID,
+        canEdit: true,
+        canChangeOwnerOrStatus: true,
+        contacts: [CONTACT],
+        ...overrides,
+      });
+    }
+
+    async function openDrawer(client: ClientDto, role: 'founder' | 'staff' = 'founder') {
+      const port = new DeterministicTestClientsAdapter();
+      port.setListResponse(role, [client]);
+      port.setGetResponse(client.id, client);
+      const teamPort = new DeterministicTestTeamDirectoryAdapter();
+      teamPort.setReportingLinesResponse(role, []);
+      const onToast = vi.fn();
+      render(<ClientsWorkspace role={role} port={port} teamPort={teamPort} onToast={onToast} />);
+      await waitFor(() => expect(screen.getByText('Aster Foods')).toBeTruthy());
+      fireEvent.click(screen.getByRole('button', { name: /view/i }));
+      await waitFor(() => expect(screen.getByRole('heading', { name: 'Aster Foods', level: 2 })).toBeTruthy());
+      port.calls.length = 0;
+      return { port, onToast };
+    }
+
+    it('hides every edit action when the reader may not edit the client', async () => {
+      await openDrawer(editable({ canEdit: false, canChangeOwnerOrStatus: false }), 'staff');
+      expect(screen.getByText('Asha Rao')).toBeTruthy();
+      expect(screen.queryByRole('button', { name: 'Edit details' })).toBeNull();
+      expect(screen.queryByRole('button', { name: 'Add contact' })).toBeNull();
+      expect(screen.queryByRole('button', { name: 'Edit Asha Rao' })).toBeNull();
+      expect(screen.queryByRole('button', { name: 'Remove Asha Rao' })).toBeNull();
+    });
+
+    it('edits the client: sends only the change, toasts, closes and shows the new value', async () => {
+      const { port, onToast } = await openDrawer(editable());
+
+      fireEvent.click(screen.getByRole('button', { name: 'Edit details' }));
+      const dialog = screen.getByRole('dialog', { name: 'Edit Aster Foods' });
+      fireEvent.change(screen.getByLabelText('City'), { target: { value: 'Pune' } });
+      expect(UUID.test(dialog.textContent ?? '')).toBe(false);
+      fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+
+      await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Edit Aster Foods' })).toBeNull());
+      const call = port.calls.find((entry) => entry.action === 'updateClient');
+      expect(call).toMatchObject({
+        id: CLIENT_ID,
+        changes: { city: 'Pune', expectedUpdatedAt: '2026-04-15T14:20:00.000Z' },
+      });
+      expect(call?.idempotencyKey).toEqual(expect.any(String));
+      expect(onToast).toHaveBeenCalledWith('Client Aster Foods updated.');
+      await waitFor(() => expect(screen.getByText('Pune')).toBeTruthy());
+      // The drawer stays open behind the closed dialog.
+      expect(screen.getByRole('heading', { name: 'Aster Foods', level: 2 })).toBeTruthy();
+    });
+
+    it('keeps the dialog open on a stale save, shows the message and reloads the client in the background', async () => {
+      const { port, onToast } = await openDrawer(editable());
+      port.setUpdateClientError(
+        new ClientOperationError({ code: 'conflict', message: 'raw', status: 409, serverCode: 'stale_client' }),
+      );
+
+      fireEvent.click(screen.getByRole('button', { name: 'Edit details' }));
+      fireEvent.change(screen.getByLabelText('City'), { target: { value: 'Pune' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+
+      await waitFor(() =>
+        expect(screen.getByRole('alert').textContent).toBe(
+          'This client was changed by someone else. Reload and try again.',
+        ),
+      );
+      expect(screen.getByRole('dialog', { name: 'Edit Aster Foods' })).toBeTruthy();
+      await waitFor(() => expect(port.calls.some((call) => call.action === 'get')).toBe(true));
+      expect(onToast).not.toHaveBeenCalled();
+    });
+
+    it('Escape closes only the dialog on top, not the drawer behind it', async () => {
+      await openDrawer(editable());
+      fireEvent.click(screen.getByRole('button', { name: 'Edit details' }));
+      fireEvent.keyDown(document, { key: 'Escape' });
+
+      await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Edit Aster Foods' })).toBeNull());
+      expect(screen.getByRole('dialog', { name: 'Aster Foods' })).toBeTruthy();
+    });
+
+    it('adds a contact with a key and a toast', async () => {
+      const { port, onToast } = await openDrawer(editable({ contacts: [] }));
+
+      fireEvent.click(screen.getByRole('button', { name: 'Add contact' }));
+      expect(screen.getByRole('dialog', { name: 'Add contact' })).toBeTruthy();
+      fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Jo Mehta' } });
+      fireEvent.change(screen.getByLabelText('Phone'), { target: { value: '+91 98200 44444' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Save contact' }));
+
+      await waitFor(() => expect(onToast).toHaveBeenCalledWith('Contact Jo Mehta added.'));
+      const call = port.calls.find((entry) => entry.action === 'createContact');
+      expect(call).toMatchObject({
+        id: CLIENT_ID,
+        changes: { name: 'Jo Mehta', phone: '+91 98200 44444', isPrimary: false },
+      });
+      expect(call?.idempotencyKey).toEqual(expect.any(String));
+      await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Add contact' })).toBeNull());
+    });
+
+    it('edits a contact, sending only what changed with its concurrency token', async () => {
+      const { port, onToast } = await openDrawer(editable());
+
+      fireEvent.click(screen.getByRole('button', { name: 'Edit Asha Rao' }));
+      expect(screen.getByRole('dialog', { name: 'Edit Asha Rao' })).toBeTruthy();
+      fireEvent.change(screen.getByLabelText('Designation'), { target: { value: 'Director' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Save contact' }));
+
+      await waitFor(() => expect(onToast).toHaveBeenCalledWith('Contact Asha Rao updated.'));
+      const call = port.calls.find((entry) => entry.action === 'updateContact');
+      expect(call).toMatchObject({
+        id: CONTACT_ID,
+        changes: { designation: 'Director', expectedUpdatedAt: CONTACT.updatedAt },
+      });
+      expect(Object.keys(call?.changes ?? {}).sort()).toEqual(['designation', 'expectedUpdatedAt']);
+    });
+
+    it('asks before removing a contact, and Keep sends nothing', async () => {
+      const { port, onToast } = await openDrawer(editable());
+
+      fireEvent.click(screen.getByRole('button', { name: 'Remove Asha Rao' }));
+      const dialog = screen.getByRole('dialog', { name: 'Remove Asha Rao?' });
+      expect(dialog.textContent).toContain("They will be removed from Aster Foods's contact people.");
+      fireEvent.click(screen.getByRole('button', { name: 'Keep' }));
+
+      await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Remove Asha Rao?' })).toBeNull());
+      expect(port.calls.some((call) => call.action === 'deleteContact')).toBe(false);
+      expect(onToast).not.toHaveBeenCalled();
+    });
+
+    it('removes the contact once confirmed, with a toast', async () => {
+      const { port, onToast } = await openDrawer(editable());
+
+      fireEvent.click(screen.getByRole('button', { name: 'Remove Asha Rao' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Remove contact' }));
+
+      await waitFor(() => expect(onToast).toHaveBeenCalledWith('Contact Asha Rao removed.'));
+      expect(port.calls.find((call) => call.action === 'deleteContact')).toMatchObject({ id: CONTACT_ID });
+      await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Remove Asha Rao?' })).toBeNull());
+    });
+
+    it('keeps the removal dialog open with an alert when removing is refused', async () => {
+      const { port } = await openDrawer(editable());
+      port.setDeleteContactError(new ClientOperationError({ code: 'forbidden', message: 'raw', status: 403 }));
+
+      fireEvent.click(screen.getByRole('button', { name: 'Remove Asha Rao' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Remove contact' }));
+
+      await waitFor(() =>
+        expect(screen.getByRole('alert').textContent).toBe("You don't have permission to do this."),
+      );
+      expect(screen.getByRole('dialog', { name: 'Remove Asha Rao?' })).toBeTruthy();
+    });
+
+    it('never shows a raw UUID with the drawer and a dialog open', async () => {
+      await openDrawer(editable());
+      fireEvent.click(screen.getByRole('button', { name: 'Edit details' }));
+      expect(UUID.test(document.body.textContent ?? '')).toBe(false);
     });
   });
 });

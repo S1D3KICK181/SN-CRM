@@ -333,8 +333,6 @@ describe('Client visibility and read operations (CL-02A parity)', () => {
 
     const aster = await repository.getClient(traineeCtx, '10000000-0000-4000-a000-000000000001');
     expect(aster).not.toBeNull();
-    expect(aster).not.toHaveProperty('pan');
-    expect(aster).not.toHaveProperty('gstin');
     expect(aster).toEqual({
       id: '10000000-0000-4000-a000-000000000001',
       code: 'CL-001001',
@@ -342,12 +340,29 @@ describe('Client visibility and read operations (CL-02A parity)', () => {
       legalName: 'Aster Foods Private Limited',
       gstinMasked: '27**********1Z5',
       panMasked: '******1234',
+      // A Trainee never looks after a client, so the full values stay hidden
+      pan: null,
+      gstin: null,
       email: 'accounts@asterfoods.local',
       phone: '+91 98200 11001',
       relationshipOwnerId: DEMO_ACTOR_IDS.manager,
       relationshipOwnerName: 'Priya Desai',
       status: 'active',
       notes: null,
+      entityType: null,
+      addressLine1: null,
+      addressLine2: null,
+      city: null,
+      state: null,
+      pincode: null,
+      tan: null,
+      cinLlpin: null,
+      udyamNumber: null,
+      iec: null,
+      incorporationDate: null,
+      contacts: [],
+      canEdit: false,
+      canChangeOwnerOrStatus: false,
       activeAssignmentsCount: 1, // Only AS-001001, which trainee is involved in
       createdById: DEMO_ACTOR_IDS.founder,
       createdAt: '2026-01-01T00:00:00.000Z',
@@ -1719,5 +1734,126 @@ describe('InMemoryCrmRepository service list management (SVC-01)', () => {
     await expect(
       repository.createService(ctx, { ...command, turnaroundDays: 31 }),
     ).rejects.toMatchObject({ status: 409, code: 'conflict' });
+  });
+});
+
+describe('InMemoryCrmRepository client master (CLI-02a)', () => {
+  const ASTER = '10000000-0000-4000-a000-000000000001';
+  const BLUEPEAK = '10000000-0000-4000-a000-000000000002';
+  const UPDATED_AT = '2026-01-01T00:00:00.000Z';
+  const founderCtx: RepositoryContext = { actorId: DEMO_ACTOR_IDS.founder };
+  const seniorCtx: RepositoryContext = { actorId: DEMO_ACTOR_IDS.senior };
+  const staffCtx: RepositoryContext = { actorId: DEMO_ACTOR_IDS.staff };
+  const traineeCtx: RepositoryContext = { actorId: DEMO_ACTOR_IDS.trainee };
+
+  it('mirrors looks_after_client: full PAN and GSTIN only for management and the staff who look after the client', async () => {
+    const repository = new InMemoryCrmRepository(createDemoSeed());
+
+    // Senior owns or reviews an assignment of Aster; Staff is the relationship owner of BluePeak
+    expect(await repository.getClient(seniorCtx, ASTER)).toMatchObject({ pan: 'AABCA1234A', gstin: '27AABCA1234A1Z5' });
+    expect(await repository.getClient(staffCtx, BLUEPEAK)).toMatchObject({ pan: 'AABCB2345B', gstin: '27AABCB2345B1Z4' });
+    expect(await repository.getClient(founderCtx, BLUEPEAK)).toMatchObject({ pan: 'AABCB2345B' });
+
+    const trainee = await repository.getClient(traineeCtx, ASTER);
+    expect(trainee).toMatchObject({ pan: null, gstin: null, panMasked: '******1234', gstinMasked: '27**********1Z5' });
+
+    // The masked values are the same for everyone who can see the client
+    const founder = await repository.getClient(founderCtx, ASTER);
+    expect(founder).toMatchObject({ panMasked: trainee?.panMasked, gstinMasked: trainee?.gstinMasked });
+
+    const traineeList = await repository.listClients(traineeCtx);
+    expect(traineeList.every((client) => client.pan === null && client.gstin === null)).toBe(true);
+  });
+
+  it('mirrors can_edit_client: management and the relationship owner may edit, nobody else', async () => {
+    const repository = new InMemoryCrmRepository(createDemoSeed());
+    const edit = { notes: 'Note', expectedUpdatedAt: UPDATED_AT };
+
+    expect((await repository.getClient(staffCtx, BLUEPEAK))?.canEdit).toBe(true);
+    expect((await repository.getClient(seniorCtx, ASTER))?.canEdit).toBe(false);
+
+    await expect(repository.updateClient(seniorCtx, { id: ASTER, ...edit, idempotencyKey: 'k1' })).rejects.toMatchObject({ status: 403 });
+    await expect(repository.updateClient(staffCtx, { id: ASTER, ...edit, idempotencyKey: 'k2' })).rejects.toMatchObject({ status: 404 });
+    await expect(repository.updateClient(staffCtx, { id: BLUEPEAK, ...edit, idempotencyKey: 'k3' })).resolves.toMatchObject({ notes: 'Note' });
+  });
+
+  it('lets only management change the relationship owner or status, as the database trigger does', async () => {
+    const repository = new InMemoryCrmRepository(createDemoSeed());
+    await expect(
+      repository.updateClient(staffCtx, { id: BLUEPEAK, status: 'archived', expectedUpdatedAt: UPDATED_AT, idempotencyKey: 'k1' }),
+    ).rejects.toMatchObject({ status: 403 });
+    await expect(
+      repository.updateClient(staffCtx, {
+        id: BLUEPEAK,
+        relationshipOwnerId: DEMO_ACTOR_IDS.senior,
+        expectedUpdatedAt: UPDATED_AT,
+        idempotencyKey: 'k2',
+      }),
+    ).rejects.toMatchObject({ status: 403 });
+    await expect(
+      repository.updateClient(founderCtx, {
+        id: BLUEPEAK,
+        status: 'archived',
+        relationshipOwnerId: DEMO_ACTOR_IDS.senior,
+        expectedUpdatedAt: UPDATED_AT,
+        idempotencyKey: 'k3',
+      }),
+    ).resolves.toMatchObject({ status: 'archived', relationshipOwnerId: DEMO_ACTOR_IDS.senior });
+  });
+
+  it('refuses a stale edit and replays an idempotent one without a second change', async () => {
+    const repository = new InMemoryCrmRepository(createDemoSeed());
+    await expect(
+      repository.updateClient(founderCtx, { id: ASTER, notes: 'x', expectedUpdatedAt: '2020-01-01T00:00:00.000Z', idempotencyKey: 'k1' }),
+    ).rejects.toMatchObject({ status: 409, code: 'stale_client' });
+
+    const command = { id: ASTER, notes: 'Once', expectedUpdatedAt: UPDATED_AT, idempotencyKey: 'k2' };
+    const first = await repository.updateClient(founderCtx, command);
+    expect(await repository.updateClient(founderCtx, command)).toEqual(first);
+    await expect(repository.updateClient(founderCtx, { ...command, notes: 'Other' })).rejects.toMatchObject({
+      status: 409,
+      code: 'conflict',
+    });
+  });
+
+  it('keeps one primary contact per client and lists the primary first', async () => {
+    const repository = new InMemoryCrmRepository(createDemoSeed());
+    const a = await repository.createClientContact(founderCtx, { clientId: ASTER, name: 'Zed Khan', phone: '98200 11111', isPrimary: true, idempotencyKey: 'c1' });
+    const b = await repository.createClientContact(founderCtx, { clientId: ASTER, name: 'Amit Shah', phone: '98200 22222', isPrimary: true, idempotencyKey: 'c2' });
+    let client = await repository.getClient(founderCtx, ASTER);
+    expect(client?.contacts.map((contact) => [contact.name, contact.isPrimary])).toEqual([
+      ['Amit Shah', true],
+      ['Zed Khan', false],
+    ]);
+
+    await repository.updateClientContact(founderCtx, { id: a.id, isPrimary: true, expectedUpdatedAt: a.updatedAt, idempotencyKey: 'c3' });
+    client = await repository.getClient(founderCtx, ASTER);
+    expect(client?.contacts.filter((contact) => contact.isPrimary).map((contact) => contact.id)).toEqual([a.id]);
+    expect(client?.contacts.find((contact) => contact.id === b.id)?.isPrimary).toBe(false);
+  });
+
+  it('applies the same edit rules to contacts: owner may, reviewer may not, unrelated staff cannot see them', async () => {
+    const repository = new InMemoryCrmRepository(createDemoSeed());
+    const own = await repository.createClientContact(staffCtx, { clientId: BLUEPEAK, name: 'Owner Contact', phone: '98200 33333', idempotencyKey: 'c1' });
+    const other = await repository.createClientContact(founderCtx, { clientId: ASTER, name: 'Aster Contact', phone: '98200 44444', idempotencyKey: 'c2' });
+
+    await expect(repository.getClientIdForContact(staffCtx, own.id)).resolves.toBe(BLUEPEAK);
+    await expect(repository.getClientIdForContact(staffCtx, other.id)).resolves.toBeNull();
+    await expect(repository.getClientIdForContact(seniorCtx, other.id)).resolves.toBe(ASTER);
+
+    await expect(
+      repository.createClientContact(seniorCtx, { clientId: ASTER, name: 'Nope Nope', phone: '98200 55555', idempotencyKey: 'c3' }),
+    ).rejects.toMatchObject({ status: 403 });
+    await expect(
+      repository.updateClientContact(seniorCtx, { id: other.id, notes: 'x', expectedUpdatedAt: other.updatedAt, idempotencyKey: 'c4' }),
+    ).rejects.toMatchObject({ status: 403 });
+    await expect(repository.deleteClientContact(seniorCtx, other.id)).rejects.toMatchObject({ status: 403 });
+    await expect(repository.deleteClientContact(staffCtx, other.id)).rejects.toMatchObject({ status: 404 });
+    await expect(
+      repository.updateClientContact(founderCtx, { id: other.id, notes: 'x', expectedUpdatedAt: '2020-01-01T00:00:00.000Z', idempotencyKey: 'c5' }),
+    ).rejects.toMatchObject({ status: 409, code: 'stale_contact' });
+
+    await repository.deleteClientContact(staffCtx, own.id);
+    expect((await repository.getClient(staffCtx, BLUEPEAK))?.contacts).toEqual([]);
   });
 });

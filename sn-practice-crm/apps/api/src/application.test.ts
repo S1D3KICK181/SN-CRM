@@ -994,6 +994,21 @@ describe("CrmApplication authority and workflow rules", () => {
         async updateService(ctx: RepositoryContext) {
           throw new Error(`Unexpected service repository call: updateService(${ctx.actorId})`);
         },
+        async updateClient(ctx: RepositoryContext) {
+          throw new Error(`Unexpected client repository call: updateClient(${ctx.actorId})`);
+        },
+        async getClientIdForContact(ctx: RepositoryContext) {
+          throw new Error(`Unexpected client repository call: getClientIdForContact(${ctx.actorId})`);
+        },
+        async createClientContact(ctx: RepositoryContext) {
+          throw new Error(`Unexpected client repository call: createClientContact(${ctx.actorId})`);
+        },
+        async updateClientContact(ctx: RepositoryContext) {
+          throw new Error(`Unexpected client repository call: updateClientContact(${ctx.actorId})`);
+        },
+        async deleteClientContact(ctx: RepositoryContext) {
+          throw new Error(`Unexpected client repository call: deleteClientContact(${ctx.actorId})`);
+        },
       };
 
       const application = new CrmApplication(trackingRepo, {
@@ -2585,5 +2600,422 @@ describe("SVC-01 service list management", () => {
     const picker = await application.listServices(trainee);
     expect(picker.map((service) => service.name)).not.toContain("Project Reports");
     expect(picker.map((service) => service.name)).toContain("GST Compliance");
+  });
+});
+
+describe("CLI-02a client master", () => {
+  const ASTER = CANONICAL_CLIENT_1; // owner: Manager; Senior and Trainee are involved through assignments
+  const BLUEPEAK = "10000000-0000-4000-a000-000000000002"; // owner: Staff
+  const ASTER_PAN = "AABCA1234A";
+  const ASTER_GSTIN = "27AABCA1234A1Z5";
+  const ASTER_UPDATED_AT = "2026-01-01T00:00:00.000Z";
+
+  async function actors() {
+    const { application, repository } = createFixture();
+    return {
+      application,
+      repository,
+      founder: await application.requireActor(DEMO_ACTOR_IDS.founder),
+      manager: await application.requireActor(DEMO_ACTOR_IDS.manager),
+      senior: await application.requireActor(DEMO_ACTOR_IDS.senior),
+      staff: await application.requireActor(DEMO_ACTOR_IDS.staff),
+      trainee: await application.requireActor(DEMO_ACTOR_IDS.trainee),
+    };
+  }
+
+  describe("who sees the full PAN and GSTIN", () => {
+    it.each([
+      ["founder", DEMO_ACTOR_IDS.founder, ASTER],
+      ["manager", DEMO_ACTOR_IDS.manager, ASTER],
+      ["senior_staff who owns or reviews an assignment of the client", DEMO_ACTOR_IDS.senior, ASTER],
+      ["staff who is the relationship owner", DEMO_ACTOR_IDS.staff, BLUEPEAK],
+    ])("shows both full values to %s", async (_label, actorId, clientId) => {
+      const { application } = createFixture();
+      const reader = await application.requireActor(actorId);
+      const client = await application.getClient(reader, clientId);
+      expect(client.pan).not.toBeNull();
+      expect(client.gstin).not.toBeNull();
+      expect(client.panMasked).toMatch(/^\*{6}\d{4}$/);
+      expect(client.gstinMasked).toMatch(/^27\*{10}/);
+    });
+
+    it("hides both full values from a trainee but keeps the masked values", async () => {
+      const { application, trainee } = await actors();
+      const client = await application.getClient(trainee, ASTER);
+      expect(client.pan).toBeNull();
+      expect(client.gstin).toBeNull();
+      expect(client.panMasked).toBe("******1234");
+      expect(client.gstinMasked).toBe("27**********1Z5");
+      expect(JSON.stringify(client)).not.toContain(ASTER_PAN);
+      expect(JSON.stringify(client)).not.toContain(ASTER_GSTIN);
+    });
+
+    it("hides the full values from staff who can see the client only through a personal task", async () => {
+      const seed = createDemoSeed();
+      seed.workItems = seed.workItems.map((item) =>
+        item.id === "40000000-0000-4000-a000-000000000006" ? { ...item, relatedClientId: ASTER } : item,
+      );
+      const application = new CrmApplication(new InMemoryCrmRepository(seed));
+      const staff = await application.requireActor(DEMO_ACTOR_IDS.staff);
+      const client = await application.getClient(staff, ASTER);
+      expect(client.pan).toBeNull();
+      expect(client.gstin).toBeNull();
+      expect(client.panMasked).toBe("******1234");
+      expect(client.canEdit).toBe(false);
+    });
+
+    it("tells each reader whether they may edit and whether they may change owner or status", async () => {
+      const { application, founder, senior, staff } = await actors();
+      expect(await application.getClient(founder, ASTER)).toMatchObject({ canEdit: true, canChangeOwnerOrStatus: true });
+      expect(await application.getClient(senior, ASTER)).toMatchObject({ canEdit: false, canChangeOwnerOrStatus: false });
+      expect(await application.getClient(staff, BLUEPEAK)).toMatchObject({ canEdit: true, canChangeOwnerOrStatus: false });
+    });
+  });
+
+  describe("updateClient", () => {
+    it("lets the Founder edit every field", async () => {
+      const { application, founder } = await actors();
+      const updated = await application.updateClient(
+        founder,
+        ASTER,
+        {
+          displayName: "Aster Foods Limited",
+          legalName: "Aster Foods Limited",
+          pan: "AABCA9999Z",
+          gstin: "27AABCA9999Z1Z5",
+          email: "tax@asterfoods.local",
+          phone: "+91 98200 99999",
+          relationshipOwnerId: DEMO_ACTOR_IDS.staff,
+          status: "on_hold",
+          notes: "Moved to quarterly review",
+          entityType: "private_limited",
+          addressLine1: "12 Marine Drive",
+          addressLine2: "Nariman Point",
+          city: "Mumbai",
+          state: "Maharashtra",
+          pincode: "400021",
+          tan: "MUMA12345B",
+          cinLlpin: "U12345MH2020PTC123456",
+          udyamNumber: "UDYAM-MH-01-0000001",
+          iec: "ABCDE12345",
+          incorporationDate: "2015-04-01",
+          expectedUpdatedAt: ASTER_UPDATED_AT,
+        },
+        "edit-all",
+      );
+
+      expect(updated).toMatchObject({
+        displayName: "Aster Foods Limited",
+        legalName: "Aster Foods Limited",
+        pan: "AABCA9999Z",
+        gstin: "27AABCA9999Z1Z5",
+        panMasked: "******9999",
+        email: "tax@asterfoods.local",
+        phone: "+91 98200 99999",
+        relationshipOwnerId: DEMO_ACTOR_IDS.staff,
+        relationshipOwnerName: "Rohan Mehta",
+        status: "on_hold",
+        notes: "Moved to quarterly review",
+        entityType: "private_limited",
+        addressLine1: "12 Marine Drive",
+        addressLine2: "Nariman Point",
+        city: "Mumbai",
+        state: "Maharashtra",
+        pincode: "400021",
+        tan: "MUMA12345B",
+        cinLlpin: "U12345MH2020PTC123456",
+        udyamNumber: "UDYAM-MH-01-0000001",
+        iec: "ABCDE12345",
+        incorporationDate: "2015-04-01",
+      });
+      expect(updated.updatedAt).not.toBe(ASTER_UPDATED_AT);
+    });
+
+    it("normalizes identifiers to upper case, turns blanks into null, and leaves omitted fields alone", async () => {
+      const { application, founder } = await actors();
+      const updated = await application.updateClient(
+        founder,
+        ASTER,
+        { tan: " muma12345b ", notes: "   ", expectedUpdatedAt: ASTER_UPDATED_AT },
+        "normalize",
+      );
+      expect(updated.tan).toBe("MUMA12345B");
+      expect(updated.notes).toBeNull();
+      expect(updated.pan).toBe(ASTER_PAN);
+      expect(updated.displayName).toBe("Aster Foods");
+    });
+
+    it("lets the relationship owner edit details but not the owner or status", async () => {
+      const { application, staff } = await actors();
+      const edited = await application.updateClient(
+        staff,
+        BLUEPEAK,
+        { email: "ops@bluepeak.local", city: "Pune", state: "Maharashtra", expectedUpdatedAt: ASTER_UPDATED_AT },
+        "owner-edit",
+      );
+      expect(edited).toMatchObject({ email: "ops@bluepeak.local", city: "Pune", canEdit: true, canChangeOwnerOrStatus: false });
+
+      const denied = { status: 403, code: "role_not_permitted" };
+      await expect(
+        application.updateClient(staff, BLUEPEAK, { relationshipOwnerId: DEMO_ACTOR_IDS.senior, expectedUpdatedAt: edited.updatedAt }, "owner-change"),
+      ).rejects.toMatchObject(denied);
+      await expect(
+        application.updateClient(staff, BLUEPEAK, { status: "archived", expectedUpdatedAt: edited.updatedAt }, "status-change"),
+      ).rejects.toMatchObject(denied);
+
+      // Sending the current owner and status back unchanged is not a change
+      await expect(
+        application.updateClient(
+          staff,
+          BLUEPEAK,
+          { relationshipOwnerId: edited.relationshipOwnerId, status: edited.status, notes: "Same", expectedUpdatedAt: edited.updatedAt },
+          "unchanged",
+        ),
+      ).resolves.toMatchObject({ notes: "Same" });
+    });
+
+    it("refuses staff who can see the client but do not own it, and hides it from those who cannot see it", async () => {
+      const { application, senior, trainee, staff } = await actors();
+      const edit = { notes: "Not mine", expectedUpdatedAt: ASTER_UPDATED_AT };
+      await expect(application.updateClient(senior, ASTER, edit, "k1")).rejects.toMatchObject({ status: 403, code: "role_not_permitted" });
+      await expect(application.updateClient(trainee, ASTER, edit, "k2")).rejects.toMatchObject({ status: 403, code: "role_not_permitted" });
+      // Staff cannot see Aster at all
+      await expect(application.updateClient(staff, ASTER, edit, "k3")).rejects.toMatchObject({ status: 404, code: "not_found" });
+    });
+
+    it("refuses a stale edit with the plain stale_client message", async () => {
+      const { application, founder } = await actors();
+      await expect(
+        application.updateClient(founder, ASTER, { notes: "Late", expectedUpdatedAt: "2025-12-31T00:00:00.000Z" }, "stale"),
+      ).rejects.toMatchObject({
+        status: 409,
+        code: "stale_client",
+        message: "This client was changed by someone else. Reload and try again.",
+      });
+    });
+
+    it("refuses a relationship owner who is a trainee or inactive", async () => {
+      const { application, founder } = await actors();
+      await expect(
+        application.updateClient(founder, ASTER, { relationshipOwnerId: DEMO_ACTOR_IDS.trainee, expectedUpdatedAt: ASTER_UPDATED_AT }, "trainee-owner"),
+      ).rejects.toMatchObject({ status: 422, message: "A Client relationship owner must be active and cannot be a Trainee." });
+    });
+
+    it.each([
+      ["PAN", { pan: "ABCDE12345" }, "Enter a valid 10-character PAN, like ABCDE1234F."],
+      ["GSTIN", { gstin: "27ABCDE1234F1Y5" }, "Enter a valid 15-character GSTIN."],
+      ["TAN", { tan: "ABC12345DE" }, "Enter a valid TAN, like ABCD12345E."],
+      ["CIN or LLPIN", { cinLlpin: "X12345" }, "Enter a valid CIN or LLPIN."],
+      ["Udyam number", { udyamNumber: "UDYAM-1-2-3" }, "Enter a valid Udyam number, like UDYAM-MH-01-0000001."],
+      ["IEC", { iec: "SHORT" }, "Enter a valid 10-character IEC."],
+      ["PIN code", { pincode: "012345" }, "Enter a valid 6-digit PIN code."],
+    ])("refuses an invalid %s with a plain message", async (_label, change, message) => {
+      const { application, founder } = await actors();
+      await expect(
+        application.updateClient(founder, ASTER, { ...change, expectedUpdatedAt: ASTER_UPDATED_AT }, "invalid"),
+      ).rejects.toMatchObject({ status: 422, code: "validation_failed", message });
+    });
+
+    it("accepts a CIN, an LLPIN, and clearing an identifier", async () => {
+      const { application, founder } = await actors();
+      const withLlpin = await application.updateClient(
+        founder,
+        ASTER,
+        { cinLlpin: "aab-1234", expectedUpdatedAt: ASTER_UPDATED_AT },
+        "llpin",
+      );
+      expect(withLlpin.cinLlpin).toBe("AAB-1234");
+      const cleared = await application.updateClient(
+        founder,
+        ASTER,
+        { cinLlpin: null, expectedUpdatedAt: withLlpin.updatedAt },
+        "clear",
+      );
+      expect(cleared.cinLlpin).toBeNull();
+    });
+
+    it("refuses a state outside the list of Indian states and union territories", async () => {
+      const { application, founder } = await actors();
+      await expect(
+        application.updateClient(founder, ASTER, { state: "Atlantis" as "Goa", expectedUpdatedAt: ASTER_UPDATED_AT }, "state"),
+      ).rejects.toMatchObject({ status: 422, code: "validation_failed" });
+    });
+
+    it("refuses a GSTIN whose embedded PAN differs, without echoing either value", async () => {
+      const { application, founder } = await actors();
+      const error = await application
+        .updateClient(founder, ASTER, { gstin: "27ZZZZZ9999Z1Z5", expectedUpdatedAt: ASTER_UPDATED_AT }, "mismatch")
+        .catch((caught: unknown) => caught);
+      expect(error).toMatchObject({ status: 422, code: "validation_failed", message: "The GSTIN does not match the PAN." });
+      expect(JSON.stringify({ message: (error as Error).message, details: (error as { details?: unknown }).details })).not.toMatch(
+        /ZZZZZ9999Z|AABCA1234A/,
+      );
+
+      // A new PAN against the stored GSTIN is refused the same way
+      await expect(
+        application.updateClient(founder, ASTER, { pan: "ABCDE1234F", expectedUpdatedAt: ASTER_UPDATED_AT }, "mismatch-2"),
+      ).rejects.toMatchObject({ status: 422, message: "The GSTIN does not match the PAN." });
+
+      // Changing both together to a matching pair works
+      await expect(
+        application.updateClient(
+          founder,
+          ASTER,
+          { pan: "ABCDE1234F", gstin: "27ABCDE1234F1Z5", expectedUpdatedAt: ASTER_UPDATED_AT },
+          "match",
+        ),
+      ).resolves.toMatchObject({ pan: "ABCDE1234F", gstin: "27ABCDE1234F1Z5" });
+    });
+
+    it("replays an idempotent edit without a second change, and refuses a reused key with another payload", async () => {
+      const { application, founder } = await actors();
+      const first = await application.updateClient(founder, ASTER, { notes: "Once", expectedUpdatedAt: ASTER_UPDATED_AT }, "same-key");
+      const replay = await application.updateClient(founder, ASTER, { notes: "Once", expectedUpdatedAt: ASTER_UPDATED_AT }, "same-key");
+      expect(replay).toEqual(first);
+      await expect(
+        application.updateClient(founder, ASTER, { notes: "Twice", expectedUpdatedAt: ASTER_UPDATED_AT }, "same-key"),
+      ).rejects.toMatchObject({ status: 409, code: "conflict" });
+    });
+  });
+
+  describe("createClient with the new details", () => {
+    it("stores entity type, address, registrations, and date of incorporation", async () => {
+      const { application, founder } = await actors();
+      const created = await application.createClient(founder, {
+        displayName: "Horizon Traders",
+        entityType: "partnership",
+        addressLine1: "4 Station Road",
+        city: "Nagpur",
+        state: "Maharashtra",
+        pincode: "440001",
+        tan: "NAGH12345C",
+        udyamNumber: "UDYAM-MH-20-0001234",
+        iec: "0123456789",
+        incorporationDate: "2010-06-15",
+      });
+      expect(created).toMatchObject({
+        entityType: "partnership",
+        city: "Nagpur",
+        pincode: "440001",
+        iec: "0123456789",
+        incorporationDate: "2010-06-15",
+        contacts: [],
+        canEdit: true,
+      });
+    });
+
+    it("refuses an invalid PIN code", async () => {
+      const { application, founder } = await actors();
+      await expect(application.createClient(founder, { displayName: "Bad Pin", pincode: "12" })).rejects.toMatchObject({
+        status: 422,
+        message: "Enter a valid 6-digit PIN code.",
+      });
+    });
+  });
+
+  describe("contacts", () => {
+    const priya = { name: "Priya Nair", designation: "Finance Head", email: "priya@asterfoods.local", phone: "+91 98200 55555" };
+
+    it("adds, edits and deletes contacts, listing the primary first and then by name", async () => {
+      const { application, founder } = await actors();
+      const zed = await application.createClientContact(founder, ASTER, { name: "Zed Khan", whatsapp: "98200 11111" }, "c1");
+      const amit = await application.createClientContact(founder, ASTER, { name: "Amit Shah", email: "amit@asterfoods.local" }, "c2");
+      const main = await application.createClientContact(founder, ASTER, { ...priya, isPrimary: true }, "c3");
+
+      let client = await application.getClient(founder, ASTER);
+      expect(client.contacts.map((contact) => contact.name)).toEqual(["Priya Nair", "Amit Shah", "Zed Khan"]);
+      expect(main).toMatchObject({ isPrimary: true, designation: "Finance Head", notes: null });
+
+      const edited = await application.updateClientContact(
+        founder,
+        zed.id,
+        { designation: "Auditor", notes: "Call after 4 pm", expectedUpdatedAt: zed.updatedAt },
+        "c4",
+      );
+      expect(edited).toMatchObject({ designation: "Auditor", notes: "Call after 4 pm", whatsapp: "98200 11111" });
+
+      await application.deleteClientContact(founder, amit.id);
+      client = await application.getClient(founder, ASTER);
+      expect(client.contacts.map((contact) => contact.name)).toEqual(["Priya Nair", "Zed Khan"]);
+      await expect(application.deleteClientContact(founder, amit.id)).rejects.toMatchObject({ status: 404 });
+    });
+
+    it("keeps one primary contact per client", async () => {
+      const { application, founder } = await actors();
+      const first = await application.createClientContact(founder, ASTER, { ...priya, isPrimary: true }, "p1");
+      const second = await application.createClientContact(founder, ASTER, { name: "Amit Shah", phone: "98200 22222", isPrimary: true }, "p2");
+      let client = await application.getClient(founder, ASTER);
+      expect(client.contacts.filter((contact) => contact.isPrimary).map((contact) => contact.name)).toEqual(["Amit Shah"]);
+
+      await application.updateClientContact(founder, first.id, { isPrimary: true, expectedUpdatedAt: first.updatedAt }, "p3");
+      client = await application.getClient(founder, ASTER);
+      expect(client.contacts.filter((contact) => contact.isPrimary).map((contact) => contact.name)).toEqual(["Priya Nair"]);
+      expect(client.contacts.find((contact) => contact.id === second.id)?.isPrimary).toBe(false);
+    });
+
+    it("needs a name of 2 to 120 characters and at least one way to reach the contact", async () => {
+      const { application, founder } = await actors();
+      await expect(application.createClientContact(founder, ASTER, { name: "P", email: "p@asterfoods.local" }, "v1")).rejects.toMatchObject({
+        status: 422,
+        message: "Contact name must be between 2 and 120 characters.",
+      });
+      await expect(application.createClientContact(founder, ASTER, { name: "Priya Nair" }, "v2")).rejects.toMatchObject({
+        status: 422,
+        message: "Add at least one way to reach this contact.",
+      });
+      const contact = await application.createClientContact(founder, ASTER, { name: "Priya Nair", phone: "98200 33333" }, "v3");
+      // Removing the only way to reach the contact is refused too
+      await expect(
+        application.updateClientContact(founder, contact.id, { phone: null, expectedUpdatedAt: contact.updatedAt }, "v4"),
+      ).rejects.toMatchObject({ status: 422, message: "Add at least one way to reach this contact." });
+      await expect(
+        application.createClientContact(founder, ASTER, { name: "Priya Nair", phone: "call me" }, "v5"),
+      ).rejects.toMatchObject({ status: 422, code: "validation_failed" });
+    });
+
+    it("refuses a stale contact edit with the plain stale_contact message", async () => {
+      const { application, founder } = await actors();
+      const contact = await application.createClientContact(founder, ASTER, priya, "s1");
+      await application.updateClientContact(founder, contact.id, { notes: "First", expectedUpdatedAt: contact.updatedAt }, "s2");
+      await expect(
+        application.updateClientContact(founder, contact.id, { notes: "Second", expectedUpdatedAt: "2020-01-01T00:00:00.000Z" }, "s3"),
+      ).rejects.toMatchObject({
+        status: 409,
+        code: "stale_contact",
+        message: "This contact was changed by someone else. Reload and try again.",
+      });
+    });
+
+    it("replays an idempotent add as one contact", async () => {
+      const { application, founder } = await actors();
+      const first = await application.createClientContact(founder, ASTER, priya, "r1");
+      const replay = await application.createClientContact(founder, ASTER, priya, "r1");
+      expect(replay).toEqual(first);
+      expect((await application.getClient(founder, ASTER)).contacts).toHaveLength(1);
+      await expect(
+        application.createClientContact(founder, ASTER, { ...priya, name: "Someone Else" }, "r1"),
+      ).rejects.toMatchObject({ status: 409, code: "conflict" });
+    });
+
+    it("lets the relationship owner manage contacts and refuses everyone else who can see the client", async () => {
+      const { application, founder, staff, senior, trainee } = await actors();
+      const ownerContact = await application.createClientContact(staff, BLUEPEAK, priya, "o1");
+      await application.updateClientContact(staff, ownerContact.id, { designation: "CFO", expectedUpdatedAt: ownerContact.updatedAt }, "o2");
+
+      const asterContact = await application.createClientContact(founder, ASTER, priya, "o3");
+      const denied = { status: 403, code: "role_not_permitted" };
+      await expect(application.createClientContact(senior, ASTER, priya, "o4")).rejects.toMatchObject(denied);
+      await expect(
+        application.updateClientContact(senior, asterContact.id, { designation: "X", expectedUpdatedAt: asterContact.updatedAt }, "o5"),
+      ).rejects.toMatchObject(denied);
+      await expect(application.deleteClientContact(trainee, asterContact.id)).rejects.toMatchObject(denied);
+
+      // Staff cannot see Aster, so its contacts do not exist for them
+      await expect(application.createClientContact(staff, ASTER, priya, "o6")).rejects.toMatchObject({ status: 404 });
+      await expect(application.deleteClientContact(staff, asterContact.id)).rejects.toMatchObject({ status: 404 });
+
+      await application.deleteClientContact(staff, ownerContact.id);
+      expect((await application.getClient(staff, BLUEPEAK)).contacts).toEqual([]);
+    });
   });
 });

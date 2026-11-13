@@ -11,13 +11,20 @@ import {
   UserCheck,
 } from 'lucide-react';
 import type { CompanyRole } from '@sn/domain';
-import type { ClientStatus } from '@sn/contracts';
+import type { ClientContactDto, ClientDto, ClientStatus, UpdateClientInput } from '@sn/contracts';
 import { useClients } from '../../api/use-clients';
 import type { ClientsPort } from '../../api/clients-types';
 import type { TeamDirectoryPort } from '../../api/team-directory-types';
 import { Card } from '../../ui/workspace-primitives';
 import { ClientProfileDrawer } from './client-profile-drawer';
 import { CreateClientDialog } from './create-client-dialog';
+import {
+  ClientContactDialog,
+  RemoveContactDialog,
+  buildContactChanges,
+  type ContactFormInput,
+} from './client-contact-dialog';
+import { EditClientDialog } from './edit-client-dialog';
 import {
   computeClientDirectoryStats,
   matchesClientSearch,
@@ -51,11 +58,54 @@ export function ClientsWorkspace({
     clearSelection,
     refresh,
     createClient,
+    updateClient,
+    createContact,
+    updateContact,
+    deleteContact,
   } = useClients(role, { port, onToast });
 
   const canCreateClient = role === 'founder' || role === 'manager';
   const [isCreateOpen, setIsCreateOpen] = useState(false);
   const addClientBtnRef = useRef<HTMLButtonElement>(null);
+
+  // The dialogs keep the record as it was when they opened, so their concurrency token stays put
+  // while the drawer reloads behind them.
+  const [editing, setEditing] = useState<{ client: ClientDto; opener: HTMLElement | null } | null>(null);
+  const [contactDialog, setContactDialog] = useState<{
+    contact: ClientContactDto | null;
+    opener: HTMLElement | null;
+  } | null>(null);
+  const [removing, setRemoving] = useState<{ contact: ClientContactDto; opener: HTMLElement | null } | null>(null);
+
+  const activeElement = (): HTMLElement | null =>
+    document.activeElement instanceof HTMLElement ? document.activeElement : null;
+
+  const findContact = (contactId: string): ClientContactDto | null =>
+    selectedDetail?.contacts.find((contact) => contact.id === contactId) ?? null;
+
+  const saveClient = async (input: UpdateClientInput, key: string) => {
+    if (!editing) return;
+    const updated = await updateClient(editing.client.id, input, key);
+    if (updated) onToast?.(`Client ${updated.displayName} updated.`);
+  };
+
+  const saveContact = async (input: ContactFormInput, key: string) => {
+    if (!selectedDetail || !contactDialog) return;
+    const { contact } = contactDialog;
+    if (contact) {
+      const updated = await updateContact(contact.id, buildContactChanges(contact, input), key);
+      if (updated) onToast?.(`Contact ${updated.name} updated.`);
+    } else {
+      const created = await createContact(selectedDetail.id, input, key);
+      if (created) onToast?.(`Contact ${created.name} added.`);
+    }
+  };
+
+  const removeContact = async () => {
+    if (!removing) return;
+    const removed = await deleteContact(removing.contact.id);
+    if (removed) onToast?.(`Contact ${removing.contact.name} removed.`);
+  };
 
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | ClientStatus>('all');
@@ -67,6 +117,9 @@ export function ClientsWorkspace({
     setSearch('');
     setStatusFilter('all');
     setIsCreateOpen(false);
+    setEditing(null);
+    setContactDialog(null);
+    setRemoving(null);
   }
 
   const stats = useMemo(() => computeClientDirectoryStats(items), [items]);
@@ -419,6 +472,48 @@ export function ClientsWorkspace({
           error={detailError}
           onClose={clearSelection}
           onRetry={() => void selectClient(selectedClientId)}
+          onEditClient={() => {
+            if (selectedDetail) setEditing({ client: selectedDetail, opener: activeElement() });
+          }}
+          onAddContact={() => setContactDialog({ contact: null, opener: activeElement() })}
+          onEditContact={(contactId) => {
+            const contact = findContact(contactId);
+            if (contact) setContactDialog({ contact, opener: activeElement() });
+          }}
+          onRemoveContact={(contactId) => {
+            const contact = findContact(contactId);
+            if (contact) setRemoving({ contact, opener: activeElement() });
+          }}
+        />
+      ) : null}
+
+      {selectedDetail && editing ? (
+        <EditClientDialog
+          client={editing.client}
+          role={role}
+          teamPort={teamPort}
+          opener={editing.opener}
+          onClose={() => setEditing(null)}
+          onSubmit={saveClient}
+        />
+      ) : null}
+
+      {selectedDetail && contactDialog ? (
+        <ClientContactDialog
+          contact={contactDialog.contact}
+          opener={contactDialog.opener}
+          onClose={() => setContactDialog(null)}
+          onSubmit={saveContact}
+        />
+      ) : null}
+
+      {selectedDetail && removing ? (
+        <RemoveContactDialog
+          contactName={removing.contact.name}
+          clientName={selectedDetail.displayName}
+          opener={removing.opener}
+          onClose={() => setRemoving(null)}
+          onSubmit={removeContact}
         />
       ) : null}
 

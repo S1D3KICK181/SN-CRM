@@ -25,6 +25,22 @@ function createMockClientDto(overrides: Partial<ClientDto> = {}): ClientDto {
     status: 'active',
     notes: 'Key FMCG account with monthly GST filings.',
     activeAssignmentsCount: 3,
+    pan: null,
+    gstin: null,
+    entityType: null,
+    addressLine1: null,
+    addressLine2: null,
+    city: null,
+    state: null,
+    pincode: null,
+    tan: null,
+    cinLlpin: null,
+    udyamNumber: null,
+    iec: null,
+    incorporationDate: null,
+    contacts: [],
+    canEdit: false,
+    canChangeOwnerOrStatus: false,
     createdById: 'u1111111-1111-4111-8111-111111111111',
     createdAt: '2026-04-01T09:30:00.000Z',
     updatedAt: '2026-04-15T14:20:00.000Z',
@@ -217,6 +233,80 @@ describe('clients-view-model', () => {
     });
   });
 
+  describe('client master detail', () => {
+    it('shows the full PAN and GSTIN only when the DTO carries them, otherwise the masked values', () => {
+      const full = toClientDetailViewModel(createMockClientDto({ pan: 'ABCDE1234F', gstin: '27ABCDE1234F1Z5' }));
+      expect(full.panLabel).toBe('ABCDE1234F');
+      expect(full.gstinLabel).toBe('27ABCDE1234F1Z5');
+
+      const masked = toClientDetailViewModel(createMockClientDto());
+      expect(masked.panLabel).toBe('******1234');
+      expect(masked.gstinLabel).toBe('27**********1Z5');
+      expect(JSON.stringify(masked)).not.toContain('ABCDE1234F');
+    });
+
+    it('labels missing registrations Not added and formats the incorporation date as DD/MM/YYYY', () => {
+      const empty = toClientDetailViewModel(createMockClientDto({ panMasked: null, gstinMasked: null }));
+      expect(empty.entityTypeLabel).toBe('Not added');
+      expect(empty.panLabel).toBe('Not added');
+      expect(empty.gstinLabel).toBe('Not added');
+      expect(empty.tanLabel).toBe('Not added');
+      expect(empty.cinLlpinLabel).toBe('Not added');
+      expect(empty.udyamLabel).toBe('Not added');
+      expect(empty.iecLabel).toBe('Not added');
+      expect(empty.incorporationDateLabel).toBe('Not added');
+
+      const filled = toClientDetailViewModel(
+        createMockClientDto({ entityType: 'private_limited', incorporationDate: '2015-03-09', tan: 'ABCD12345E' }),
+      );
+      expect(filled.entityTypeLabel).toBe('Private limited company');
+      expect(filled.incorporationDateLabel).toBe('09/03/2015');
+      expect(filled.tanLabel).toBe('ABCD12345E');
+    });
+
+    it('puts City, State PIN on one line after the address lines', () => {
+      const vm = toClientDetailViewModel(
+        createMockClientDto({
+          addressLine1: '12 Park Street',
+          addressLine2: 'Second floor',
+          city: 'Kolkata',
+          state: 'West Bengal',
+          pincode: '700016',
+        }),
+      );
+      expect(vm.addressLines).toEqual(['12 Park Street', 'Second floor', 'Kolkata, West Bengal 700016']);
+      expect(toClientDetailViewModel(createMockClientDto()).addressLines).toEqual([]);
+      expect(toClientDetailViewModel(createMockClientDto({ state: 'Goa' })).addressLines).toEqual(['Goa']);
+    });
+
+    it('carries the permission flags and contacts', () => {
+      const vm = toClientDetailViewModel(
+        createMockClientDto({
+          canEdit: true,
+          canChangeOwnerOrStatus: true,
+          contacts: [
+            {
+              id: 'd1111111-1111-4111-8111-111111111111',
+              name: 'Asha Rao',
+              designation: ' ',
+              email: 'asha@asterfoods.in',
+              phone: null,
+              whatsapp: null,
+              isPrimary: true,
+              notes: null,
+              updatedAt: '2026-04-15T14:20:00.000Z',
+            },
+          ],
+        }),
+      );
+      expect(vm.canEdit).toBe(true);
+      expect(vm.canChangeOwnerOrStatus).toBe(true);
+      expect(vm.contacts).toHaveLength(1);
+      expect(vm.contacts[0]?.designation).toBeNull();
+      expect(vm.contacts[0]?.isPrimary).toBe(true);
+    });
+  });
+
   describe('Privacy Proof against hostile runtime extras', () => {
     it('excludes arbitrary runtime secrets, raw PAN, and raw GSTIN from projections and serialization', () => {
       // Simulate hostile backend / rogue payload injecting raw secrets and identifiers
@@ -225,9 +315,8 @@ describe('clients-view-model', () => {
           panMasked: '******1234',
           gstinMasked: '27**********1Z5',
         }),
-        pan: 'ABCDE1234F',
         rawPan: 'ABCDE1234F',
-        gstin: '27ABCDE1234F1Z5',
+        rawGstin: '27ABCDE1234F1Z5',
         apiKey: 'sk_live_secret_token_xyz',
         internalRiskScore: 99,
         internalNotesSecret: 'DO_NOT_DISCLOSE_INVESTIGATION',
@@ -237,7 +326,7 @@ describe('clients-view-model', () => {
       const detailItem = toClientDetailViewModel(hostilePayload);
 
       // Verify keys do not exist on projected models
-      const forbiddenKeys = ['pan', 'rawPan', 'gstin', 'apiKey', 'internalRiskScore', 'internalNotesSecret'];
+      const forbiddenKeys = ['pan', 'rawPan', 'gstin', 'rawGstin', 'apiKey', 'internalRiskScore', 'internalNotesSecret'];
       for (const key of forbiddenKeys) {
         expect(key in listItem).toBe(false);
         expect(key in detailItem).toBe(false);

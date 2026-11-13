@@ -3,7 +3,10 @@ import type {
   AmendActiveEngagementInput,
   AssignmentDto,
   AssignmentStatus,
+  ClientContactDto,
   ClientDto,
+  ClientEntityType,
+  CreateClientContactInput,
   CreateEngagementDraftInput,
   CreateLedgerEntryInput,
   CreateRecurringScheduleInput,
@@ -23,6 +26,8 @@ import type {
   ReviseEngagementDraftInput,
   ServiceDto,
   SessionActor,
+  UpdateClientContactInput,
+  UpdateClientInput,
   UpdateRecurringScheduleInput,
   UpdateServiceInput,
   WorkItemDto,
@@ -70,8 +75,44 @@ export interface CreateClientRecord {
   readonly phone?: string | null;
   readonly relationshipOwnerId?: string | null; // RFC 4122 UUID
   readonly notes?: string | null;
+  readonly entityType?: ClientEntityType | null;
+  readonly addressLine1?: string | null;
+  readonly addressLine2?: string | null;
+  readonly city?: string | null;
+  readonly state?: string | null;
+  readonly pincode?: string | null;
+  readonly tan?: string | null;
+  readonly cinLlpin?: string | null;
+  readonly udyamNumber?: string | null;
+  readonly iec?: string | null;
+  readonly incorporationDate?: string | null; // YYYY-MM-DD
   readonly createdAt: string; // ISO-8601 UTC
   readonly updatedAt: string; // ISO-8601 UTC
+}
+
+// --- Client master commands (CLI-02a) ---
+
+export type UpdateClientCommand = UpdateClientInput & {
+  readonly id: string; // RFC 4122 UUID of the client
+  readonly idempotencyKey: string;
+};
+
+export type CreateClientContactCommand = CreateClientContactInput & {
+  readonly clientId: string; // RFC 4122 UUID of the client
+  readonly idempotencyKey: string;
+};
+
+export type UpdateClientContactCommand = UpdateClientContactInput & {
+  readonly id: string; // RFC 4122 UUID of the contact
+  readonly idempotencyKey: string;
+};
+
+export function staleClient(): ApiError {
+  return new ApiError(409, 'stale_client', 'This client was changed by someone else. Reload and try again.');
+}
+
+export function staleContact(): ApiError {
+  return new ApiError(409, 'stale_contact', 'This contact was changed by someone else. Reload and try again.');
 }
 
 export interface CreateAssignmentRecord {
@@ -277,6 +318,12 @@ export interface CrmRepository {
   getClient(ctx: RepositoryContext, clientId: string): Promise<ClientDto | null>;
   listClients(ctx: RepositoryContext): Promise<ClientDto[]>;
   createClient(ctx: RepositoryContext, record: CreateClientRecord): Promise<ClientDto>;
+  // Client master (CLI-02a); writes are idempotent on (actor, key), except deleting a contact
+  updateClient(ctx: RepositoryContext, command: UpdateClientCommand): Promise<ClientDto>;
+  getClientIdForContact(ctx: RepositoryContext, contactId: string): Promise<string | null>;
+  createClientContact(ctx: RepositoryContext, command: CreateClientContactCommand): Promise<ClientContactDto>;
+  updateClientContact(ctx: RepositoryContext, command: UpdateClientContactCommand): Promise<ClientContactDto>;
+  deleteClientContact(ctx: RepositoryContext, contactId: string): Promise<void>;
 
   // Reference Lookups (Repository-backed, split for SQL safety)
   getClientReference(ctx: RepositoryContext, clientId: string): Promise<ClientReference | null>;

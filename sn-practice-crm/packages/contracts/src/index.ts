@@ -351,6 +351,61 @@ export interface OfficeAccountsSummaryDto {
 export const CLIENT_STATUSES = ['active', 'on_hold', 'archived'] as const;
 export type ClientStatus = (typeof CLIENT_STATUSES)[number];
 
+export const CLIENT_ENTITY_TYPES = [
+  'individual',
+  'huf',
+  'proprietorship',
+  'partnership',
+  'llp',
+  'private_limited',
+  'public_limited',
+  'trust',
+  'society',
+  'other',
+] as const;
+export type ClientEntityType = (typeof CLIENT_ENTITY_TYPES)[number];
+
+/** India's 28 states and 8 union territories, as accepted for a client's address. */
+export const INDIAN_STATES = [
+  'Andhra Pradesh',
+  'Arunachal Pradesh',
+  'Assam',
+  'Bihar',
+  'Chhattisgarh',
+  'Goa',
+  'Gujarat',
+  'Haryana',
+  'Himachal Pradesh',
+  'Jharkhand',
+  'Karnataka',
+  'Kerala',
+  'Madhya Pradesh',
+  'Maharashtra',
+  'Manipur',
+  'Meghalaya',
+  'Mizoram',
+  'Nagaland',
+  'Odisha',
+  'Punjab',
+  'Rajasthan',
+  'Sikkim',
+  'Tamil Nadu',
+  'Telangana',
+  'Tripura',
+  'Uttar Pradesh',
+  'Uttarakhand',
+  'West Bengal',
+  'Andaman and Nicobar Islands',
+  'Chandigarh',
+  'Dadra and Nagar Haveli and Daman and Diu',
+  'Delhi',
+  'Jammu and Kashmir',
+  'Ladakh',
+  'Lakshadweep',
+  'Puducherry',
+] as const;
+export type IndianState = (typeof INDIAN_STATES)[number];
+
 export interface CreateClientInput {
   readonly displayName: string;
   readonly legalName?: string | null;
@@ -360,6 +415,75 @@ export interface CreateClientInput {
   readonly phone?: string | null;
   readonly relationshipOwnerId?: string | null; // RFC 4122 UUID references public.profiles(user_id)
   readonly notes?: string | null;
+  readonly entityType?: ClientEntityType | null;
+  readonly addressLine1?: string | null;
+  readonly addressLine2?: string | null;
+  readonly city?: string | null;
+  readonly state?: IndianState | null;
+  readonly pincode?: string | null;
+  readonly tan?: string | null;
+  readonly cinLlpin?: string | null;
+  readonly udyamNumber?: string | null;
+  readonly iec?: string | null;
+  readonly incorporationDate?: string | null; // YYYY-MM-DD; date of incorporation or birth
+}
+
+/** Every editable field is optional; an omitted field is left unchanged and null clears it. */
+export interface UpdateClientInput {
+  readonly displayName?: string;
+  readonly legalName?: string | null;
+  readonly pan?: string | null;
+  readonly gstin?: string | null;
+  readonly email?: string | null;
+  readonly phone?: string | null;
+  readonly relationshipOwnerId?: string | null; // Founder or Manager only
+  readonly status?: ClientStatus; // Founder or Manager only
+  readonly notes?: string | null;
+  readonly entityType?: ClientEntityType | null;
+  readonly addressLine1?: string | null;
+  readonly addressLine2?: string | null;
+  readonly city?: string | null;
+  readonly state?: IndianState | null;
+  readonly pincode?: string | null;
+  readonly tan?: string | null;
+  readonly cinLlpin?: string | null;
+  readonly udyamNumber?: string | null;
+  readonly iec?: string | null;
+  readonly incorporationDate?: string | null; // YYYY-MM-DD
+  readonly expectedUpdatedAt: string; // Required optimistic concurrency token
+}
+
+export interface ClientContactDto {
+  readonly id: string; // RFC 4122 UUID
+  readonly name: string;
+  readonly designation: string | null;
+  readonly email: string | null;
+  readonly phone: string | null;
+  readonly whatsapp: string | null;
+  readonly isPrimary: boolean;
+  readonly notes: string | null;
+  readonly updatedAt: string; // ISO-8601 UTC
+}
+
+export interface CreateClientContactInput {
+  readonly name: string;
+  readonly designation?: string | null;
+  readonly email?: string | null;
+  readonly phone?: string | null;
+  readonly whatsapp?: string | null;
+  readonly isPrimary?: boolean;
+  readonly notes?: string | null;
+}
+
+export interface UpdateClientContactInput {
+  readonly name?: string;
+  readonly designation?: string | null;
+  readonly email?: string | null;
+  readonly phone?: string | null;
+  readonly whatsapp?: string | null;
+  readonly isPrimary?: boolean;
+  readonly notes?: string | null;
+  readonly expectedUpdatedAt: string; // Required optimistic concurrency token
 }
 
 export interface ClientDto {
@@ -368,22 +492,39 @@ export interface ClientDto {
   readonly displayName: string;
   readonly legalName: string | null;
   /**
-   * Routine-read safe masked GSTIN (e.g. '27**********1Z5'). Raw plaintext GSTIN
-   * embeds the complete 10-character PAN; routine reads mask this derivation surface.
-   * Statutory raw GSTIN reveal requires a future audited access path.
+   * Masked GSTIN (e.g. '27**********1Z5'), returned to every reader. A raw GSTIN
+   * embeds the complete 10-character PAN, so it is only returned in `gstin`.
    */
   readonly gstinMasked: string | null;
-  /**
-   * Routine-read safe masked PAN (e.g. '******1234'). Raw plaintext PAN must
-   * never appear in this DTO; sensitive unmasked reveal requires dedicated audit.
-   */
+  /** Masked PAN (e.g. '******1234'), returned to every reader. */
   readonly panMasked: string | null;
+  /**
+   * Full PAN. Filled only when the reader looks after the client (Founder, Manager, or
+   * Senior Staff/Staff who own the client or own/review one of its assignments); otherwise null.
+   */
+  readonly pan: string | null;
+  /** Full GSTIN, filled under the same rule as `pan`; otherwise null. */
+  readonly gstin: string | null;
   readonly email: string | null;
   readonly phone: string | null;
   readonly relationshipOwnerId: string | null; // RFC 4122 UUID references public.profiles(user_id)
   readonly relationshipOwnerName: string | null; // Read-model join; null when no owner
   readonly status: ClientStatus;
   readonly notes: string | null;
+  readonly entityType: ClientEntityType | null;
+  readonly addressLine1: string | null;
+  readonly addressLine2: string | null;
+  readonly city: string | null;
+  readonly state: string | null;
+  readonly pincode: string | null;
+  readonly tan: string | null;
+  readonly cinLlpin: string | null;
+  readonly udyamNumber: string | null;
+  readonly iec: string | null;
+  readonly incorporationDate: string | null; // YYYY-MM-DD; date of incorporation or birth
+  readonly contacts: readonly ClientContactDto[]; // Primary first, then by name
+  readonly canEdit: boolean; // The reader may edit this client's details and contacts
+  readonly canChangeOwnerOrStatus: boolean; // The reader may change the relationship owner or status
   readonly activeAssignmentsCount: number; // Server-derived read-model value
   readonly createdById: string; // RFC 4122 UUID references public.profiles(user_id)
   readonly createdAt: string; // ISO-8601 UTC

@@ -25,6 +25,22 @@ function createMockDto(overrides: Partial<ClientDto> = {}): ClientDto {
     status: 'active',
     notes: 'Key FMCG account with monthly GST filings.',
     activeAssignmentsCount: 3,
+    pan: null,
+    gstin: null,
+    entityType: null,
+    addressLine1: null,
+    addressLine2: null,
+    city: null,
+    state: null,
+    pincode: null,
+    tan: null,
+    cinLlpin: null,
+    udyamNumber: null,
+    iec: null,
+    incorporationDate: null,
+    contacts: [],
+    canEdit: false,
+    canChangeOwnerOrStatus: false,
     createdById: 'u1111111-1111-4111-8111-111111111111',
     createdAt: '2026-04-01T09:30:00.000Z',
     updatedAt: '2026-04-15T14:20:00.000Z',
@@ -225,8 +241,13 @@ describe('ClientProfileDrawer', () => {
     expect(screen.getByRole('tabpanel', { name: /^kyc$/i })).toBeTruthy();
     expect(screen.getByText('******1234')).toBeTruthy();
     expect(screen.getByText('27**********1Z5')).toBeTruthy();
-    expect(screen.getByText('Routine views expose masked identifiers only.')).toBeTruthy();
-    expect(screen.getByText('Not available in this view')).toBeTruthy();
+    expect(
+      screen.getByText(
+        'Full PAN and GSTIN are shown to the Founder, the Manager and the staff who look after this client. Everyone else sees them masked.',
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByText('Not available in this view')).toBeNull();
+    expect(screen.getByText('TAN')).toBeTruthy();
 
     // Switch to compact Schedules tab
     const schedulesTab = screen.getByRole('tab', { name: /^schedules$/i });
@@ -265,5 +286,166 @@ describe('ClientProfileDrawer', () => {
 
     const notesEl = screen.getByText(unbreakableNotes);
     expect(notesEl.className).toContain('drawer-text-contain');
+  });
+
+  describe('client master sections', () => {
+    const contact = {
+      id: 'd1111111-1111-4111-8111-111111111111',
+      name: 'Asha Rao',
+      designation: 'Finance head',
+      email: 'asha@asterfoods.in',
+      phone: '+91 98200 11111',
+      whatsapp: '+91 98200 22222',
+      isPrimary: true,
+      notes: null,
+      updatedAt: '2026-04-15T14:20:00.000Z',
+    };
+    const second = {
+      ...contact,
+      id: 'd2222222-2222-4222-8222-222222222222',
+      name: 'Vikram Shah',
+      designation: 'Accounts',
+      email: 'vikram@asterfoods.in',
+      isPrimary: false,
+    };
+    const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+
+    it('shows Not added, No address added and the empty contact state for a bare client', () => {
+      render(<ClientProfileDrawer client={toClientDetailViewModel(createMockDto())} onClose={vi.fn()} />);
+
+      expect(screen.getByText('Identity and registrations')).toBeTruthy();
+      expect(screen.getByText('Entity type')).toBeTruthy();
+      expect(screen.getAllByText('Not added').length).toBeGreaterThanOrEqual(6);
+      expect(screen.getByText('Address')).toBeTruthy();
+      expect(screen.getByText('No address added')).toBeTruthy();
+      expect(screen.getByText('Contact people')).toBeTruthy();
+      expect(screen.getByText('No contact people yet.')).toBeTruthy();
+    });
+
+    it('shows each registration, the address block and the contact people', () => {
+      const dto = createMockDto({
+        entityType: 'llp',
+        tan: 'ABCD12345E',
+        cinLlpin: 'AAB-1234',
+        udyamNumber: 'UDYAM-MH-01-0000001',
+        iec: 'ABCDE12345',
+        incorporationDate: '2015-03-09',
+        addressLine1: '12 Park Street',
+        addressLine2: 'Second floor',
+        city: 'Kolkata',
+        state: 'West Bengal',
+        pincode: '700016',
+        contacts: [contact, second],
+      });
+      render(<ClientProfileDrawer client={toClientDetailViewModel(dto)} onClose={vi.fn()} />);
+
+      expect(screen.getByText('LLP')).toBeTruthy();
+      expect(screen.getByText('ABCD12345E')).toBeTruthy();
+      expect(screen.getByText('AAB-1234')).toBeTruthy();
+      expect(screen.getByText('UDYAM-MH-01-0000001')).toBeTruthy();
+      expect(screen.getByText('ABCDE12345')).toBeTruthy();
+      expect(screen.getByText('09/03/2015')).toBeTruthy();
+
+      expect(screen.getByText('12 Park Street')).toBeTruthy();
+      expect(screen.getByText('Second floor')).toBeTruthy();
+      expect(screen.getByText('Kolkata, West Bengal 700016')).toBeTruthy();
+      expect(screen.queryByText('No address added')).toBeNull();
+
+      expect(screen.getByText('Asha Rao')).toBeTruthy();
+      expect(screen.getAllByText('Primary')).toHaveLength(1);
+      expect(screen.getByText('Finance head')).toBeTruthy();
+      expect(screen.getByText('asha@asterfoods.in')).toBeTruthy();
+      expect(screen.getAllByText('Phone: +91 98200 11111')).toHaveLength(2);
+      expect(screen.getAllByText('WhatsApp: +91 98200 22222')).toHaveLength(2);
+      expect(screen.getByText('Vikram Shah')).toBeTruthy();
+      expect(screen.queryByText('No contact people yet.')).toBeNull();
+    });
+
+    it('shows the full PAN and GSTIN when the client carries them, otherwise the masked values', () => {
+      const { unmount } = render(
+        <ClientProfileDrawer
+          client={toClientDetailViewModel(createMockDto({ pan: 'ABCDE1234F', gstin: '27ABCDE1234F1Z5' }))}
+          onClose={vi.fn()}
+        />,
+      );
+      expect(screen.getByText('ABCDE1234F')).toBeTruthy();
+      expect(screen.getByText('27ABCDE1234F1Z5')).toBeTruthy();
+      expect(screen.queryByText('******1234')).toBeNull();
+      unmount();
+
+      render(<ClientProfileDrawer client={toClientDetailViewModel(createMockDto())} onClose={vi.fn()} />);
+      expect(screen.getByText('******1234')).toBeTruthy();
+      expect(screen.getByText('27**********1Z5')).toBeTruthy();
+      expect(document.body.textContent).not.toContain('ABCDE1234F');
+    });
+
+    it('hides Edit details, Add contact and the contact Edit and Remove when canEdit is false', () => {
+      const client = toClientDetailViewModel(createMockDto({ canEdit: false, contacts: [contact] }));
+      render(
+        <ClientProfileDrawer
+          client={client}
+          onClose={vi.fn()}
+          onEditClient={vi.fn()}
+          onAddContact={vi.fn()}
+          onEditContact={vi.fn()}
+          onRemoveContact={vi.fn()}
+        />,
+      );
+
+      expect(screen.queryByRole('button', { name: 'Edit details' })).toBeNull();
+      expect(screen.queryByRole('button', { name: 'Add contact' })).toBeNull();
+      expect(screen.queryByRole('button', { name: 'Edit Asha Rao' })).toBeNull();
+      expect(screen.queryByRole('button', { name: 'Remove Asha Rao' })).toBeNull();
+      expect(screen.getByText('Asha Rao')).toBeTruthy();
+    });
+
+    it('shows the edit actions when canEdit is true and reports which contact was chosen', () => {
+      const onEditClient = vi.fn();
+      const onAddContact = vi.fn();
+      const onEditContact = vi.fn();
+      const onRemoveContact = vi.fn();
+      const client = toClientDetailViewModel(createMockDto({ canEdit: true, contacts: [contact, second] }));
+      render(
+        <ClientProfileDrawer
+          client={client}
+          onClose={vi.fn()}
+          onEditClient={onEditClient}
+          onAddContact={onAddContact}
+          onEditContact={onEditContact}
+          onRemoveContact={onRemoveContact}
+        />,
+      );
+
+      fireEvent.click(screen.getByRole('button', { name: 'Edit details' }));
+      expect(onEditClient).toHaveBeenCalledTimes(1);
+      fireEvent.click(screen.getByRole('button', { name: 'Add contact' }));
+      expect(onAddContact).toHaveBeenCalledTimes(1);
+      fireEvent.click(screen.getByRole('button', { name: 'Edit Vikram Shah' }));
+      expect(onEditContact).toHaveBeenCalledWith(second.id);
+      fireEvent.click(screen.getByRole('button', { name: 'Remove Asha Rao' }));
+      expect(onRemoveContact).toHaveBeenCalledWith(contact.id);
+    });
+
+    it('never shows a raw UUID anywhere in the drawer', () => {
+      const client = toClientDetailViewModel(
+        createMockDto({ canEdit: true, relationshipOwnerName: null, contacts: [contact, second] }),
+      );
+      render(<ClientProfileDrawer client={client} onClose={vi.fn()} onEditClient={vi.fn()} />);
+
+      expect(UUID.test(document.body.textContent ?? '')).toBe(false);
+    });
+
+    it('leaves Escape to a dialog opened over the drawer', () => {
+      const onClose = vi.fn();
+      render(<ClientProfileDrawer client={toClientDetailViewModel(createMockDto())} onClose={onClose} />);
+
+      const handled = new KeyboardEvent('keydown', { key: 'Escape', cancelable: true });
+      handled.preventDefault();
+      window.dispatchEvent(handled);
+      expect(onClose).not.toHaveBeenCalled();
+
+      fireEvent.keyDown(window, { key: 'Escape' });
+      expect(onClose).toHaveBeenCalledTimes(1);
+    });
   });
 });

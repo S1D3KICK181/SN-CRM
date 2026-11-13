@@ -1,5 +1,12 @@
 import type { CompanyRole } from '@sn/domain';
-import type { ClientDto, CreateClientInput } from '@sn/contracts';
+import type {
+  ClientContactDto,
+  ClientDto,
+  CreateClientContactInput,
+  CreateClientInput,
+  UpdateClientContactInput,
+  UpdateClientInput,
+} from '@sn/contracts';
 import type { PortExecutionOptions } from './types';
 
 export type ClientErrorCode =
@@ -95,14 +102,90 @@ export function sanitizeCreateClientError(err: unknown): ClientOperationError {
   });
 }
 
+export const CLIENT_FORBIDDEN_MESSAGE = "You don't have permission to do this.";
+export const CLIENT_STALE_MESSAGE = 'This client was changed by someone else. Reload and try again.';
+export const CONTACT_STALE_MESSAGE = 'This contact was changed by someone else. Reload and try again.';
+
+/**
+ * Whitelisted safe copy for failed client and contact changes (edit details, add, edit or remove a
+ * contact). Server text is never reflected.
+ */
+export const SAFE_CLIENT_MUTATION_ERROR_MESSAGES: Readonly<Record<ClientErrorCode, string>> = {
+  unauthorized: 'Session expired. Please sign in again to continue.',
+  forbidden: CLIENT_FORBIDDEN_MESSAGE,
+  not_found: 'This client or contact could not be found. It may have been removed.',
+  validation: 'The details could not be saved. Please check the entered fields.',
+  conflict: 'This record was changed by someone else. Reload and try again.',
+  network: 'Unable to reach the server. Please check your network connection and try again.',
+  aborted: 'The change was cancelled.',
+  unexpected: 'Something went wrong while saving. Please try again.',
+};
+
+/** Sanitizes any error caught while changing a client or contact. */
+export function sanitizeClientMutationError(err: unknown): ClientOperationError {
+  if (err instanceof ClientOperationError) {
+    let message = SAFE_CLIENT_MUTATION_ERROR_MESSAGES[err.code] ?? SAFE_CLIENT_MUTATION_ERROR_MESSAGES.unexpected;
+    const serverCode = sanitizeServerCode(err.serverCode);
+    if (serverCode === 'stale_client') message = CLIENT_STALE_MESSAGE;
+    else if (serverCode === 'stale_contact') message = CONTACT_STALE_MESSAGE;
+    else if (err.code === 'forbidden' || err.status === 403) message = CLIENT_FORBIDDEN_MESSAGE;
+    return new ClientOperationError({
+      code: err.code,
+      message,
+      status: err.status,
+      serverCode,
+      requestId: sanitizeRequestId(err.requestId),
+    });
+  }
+  return new ClientOperationError({
+    code: 'unexpected',
+    message: SAFE_CLIENT_MUTATION_ERROR_MESSAGES.unexpected,
+  });
+}
+
+/** User-facing copy for a failed client or contact change. */
+export function clientSaveErrorMessage(err: unknown): string {
+  return sanitizeClientMutationError(err).message;
+}
+
+export function isStaleClientError(err: unknown): boolean {
+  return (
+    err instanceof ClientOperationError &&
+    (err.serverCode === 'stale_client' || err.serverCode === 'stale_contact')
+  );
+}
+
 /**
  * Stateless ClientsPort interface.
  * Role must be passed explicitly on every invocation; no ambient mutable role state.
+ * Every change except removing a contact requires an idempotency key.
  */
 export interface ClientsPort {
   list(role: CompanyRole, options?: PortExecutionOptions): Promise<ClientDto[]>;
   get(role: CompanyRole, id: string, options?: PortExecutionOptions): Promise<ClientDto>;
   create(role: CompanyRole, input: CreateClientInput, options?: PortExecutionOptions): Promise<ClientDto>;
+  updateClient(
+    role: CompanyRole,
+    clientId: string,
+    input: UpdateClientInput,
+    idempotencyKey: string,
+    options?: PortExecutionOptions,
+  ): Promise<ClientDto>;
+  createContact(
+    role: CompanyRole,
+    clientId: string,
+    input: CreateClientContactInput,
+    idempotencyKey: string,
+    options?: PortExecutionOptions,
+  ): Promise<ClientContactDto>;
+  updateContact(
+    role: CompanyRole,
+    contactId: string,
+    input: UpdateClientContactInput,
+    idempotencyKey: string,
+    options?: PortExecutionOptions,
+  ): Promise<ClientContactDto>;
+  deleteContact(role: CompanyRole, contactId: string, options?: PortExecutionOptions): Promise<void>;
 }
 
 export interface ClientsCoordinatorState {

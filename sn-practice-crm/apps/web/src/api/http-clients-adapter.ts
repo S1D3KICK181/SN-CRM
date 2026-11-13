@@ -1,9 +1,20 @@
-import type { ClientDto, CreateClientInput } from '@sn/contracts';
+import {
+  CLIENT_ENTITY_TYPES,
+  type ClientContactDto,
+  type ClientDto,
+  type ClientEntityType,
+  type CreateClientContactInput,
+  type CreateClientInput,
+  type UpdateClientContactInput,
+  type UpdateClientInput,
+} from '@sn/contracts';
 import type { CompanyRole } from '@sn/domain';
 import { ROLE_TO_DEMO_ACTOR_ID } from './dev-auth';
 import type { PortExecutionOptions } from './types';
+import { validateIdempotencyKey } from './engagements-types';
 import {
   ClientOperationError,
+  sanitizeClientMutationError,
   sanitizeCreateClientError,
   type ClientErrorCode,
   type ClientsPort,
@@ -71,6 +82,72 @@ function isValidIsoUtcDate(isoString: string): boolean {
     date.getUTCMonth() + 1 === m &&
     date.getUTCDate() === d
   );
+}
+
+// Detail fields added with the client master. They may be absent from older responses, which read as empty.
+const OPTIONAL_TEXT_FIELDS = [
+  'pan',
+  'gstin',
+  'addressLine1',
+  'addressLine2',
+  'city',
+  'state',
+  'pincode',
+  'tan',
+  'cinLlpin',
+  'udyamNumber',
+  'iec',
+  'incorporationDate',
+] as const;
+
+function readOptionalText(rec: Record<string, unknown>, field: string, owner: string): string | null {
+  const val = rec[field];
+  if (val === undefined || val === null) return null;
+  if (typeof val !== 'string') {
+    throw new ClientOperationError({
+      code: 'unexpected',
+      message: `Invalid ${owner} item: field "${field}" must be string or null.`,
+    });
+  }
+  return val;
+}
+
+function parseContact(raw: unknown): ClientContactDto {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+    throw new ClientOperationError({
+      code: 'unexpected',
+      message: 'Expected client contact item to be a non-null object.',
+    });
+  }
+  const rec = raw as Record<string, unknown>;
+  const id = rec['id'];
+  const name = rec['name'];
+  const isPrimary = rec['isPrimary'];
+  const updatedAt = rec['updatedAt'];
+  if (
+    typeof id !== 'string' ||
+    !RFC4122_UUID_REGEX.test(id) ||
+    typeof name !== 'string' ||
+    typeof isPrimary !== 'boolean' ||
+    typeof updatedAt !== 'string' ||
+    !isValidIsoUtcDate(updatedAt)
+  ) {
+    throw new ClientOperationError({
+      code: 'unexpected',
+      message: 'Invalid client contact item.',
+    });
+  }
+  return {
+    id,
+    name,
+    designation: readOptionalText(rec, 'designation', 'client contact'),
+    email: readOptionalText(rec, 'email', 'client contact'),
+    phone: readOptionalText(rec, 'phone', 'client contact'),
+    whatsapp: readOptionalText(rec, 'whatsapp', 'client contact'),
+    isPrimary,
+    notes: readOptionalText(rec, 'notes', 'client contact'),
+    updatedAt,
+  };
 }
 
 function parseClientDto(raw: unknown): ClientDto {
@@ -251,6 +328,46 @@ function parseClientDto(raw: unknown): ClientDto {
   const relationshipOwnerName = rec['relationshipOwnerName'] as string | null;
   const notes = rec['notes'] as string | null;
 
+  const detail: Record<(typeof OPTIONAL_TEXT_FIELDS)[number], string | null> = {
+    pan: null,
+    gstin: null,
+    addressLine1: null,
+    addressLine2: null,
+    city: null,
+    state: null,
+    pincode: null,
+    tan: null,
+    cinLlpin: null,
+    udyamNumber: null,
+    iec: null,
+    incorporationDate: null,
+  };
+  for (const field of OPTIONAL_TEXT_FIELDS) {
+    detail[field] = readOptionalText(rec, field, 'client');
+  }
+  const entityTypeRaw = readOptionalText(rec, 'entityType', 'client');
+  let entityType: ClientEntityType | null = null;
+  if (entityTypeRaw !== null) {
+    const match = CLIENT_ENTITY_TYPES.find((candidate) => candidate === entityTypeRaw);
+    if (!match) {
+      throw new ClientOperationError({
+        code: 'unexpected',
+        message: 'Invalid client item: invalid "entityType".',
+      });
+    }
+    entityType = match;
+  }
+  const contactsRaw = rec['contacts'];
+  if (contactsRaw !== undefined && !Array.isArray(contactsRaw)) {
+    throw new ClientOperationError({
+      code: 'unexpected',
+      message: 'Invalid client item: "contacts" must be an array.',
+    });
+  }
+  const contacts = (contactsRaw ?? []).map(parseContact);
+  const canEdit = rec['canEdit'] === true;
+  const canChangeOwnerOrStatus = rec['canChangeOwnerOrStatus'] === true;
+
   // Construct a safe, clean projection containing ONLY contract-approved fields.
   // Hostile/untrusted properties (such as raw `pan`, raw `gstin`, or arbitrary properties)
   // are never passed through.
@@ -267,6 +384,11 @@ function parseClientDto(raw: unknown): ClientDto {
     relationshipOwnerName,
     status,
     notes,
+    ...detail,
+    entityType,
+    contacts,
+    canEdit,
+    canChangeOwnerOrStatus,
     activeAssignmentsCount,
     createdById,
     createdAt,
@@ -464,6 +586,10 @@ export class HttpClientsAdapter implements ClientsPort {
       });
     }
 
+    if (response.status === 204) {
+      return { data: null as T, requestId: headerRequestId ?? options?.requestId };
+    }
+
     let envelopeJson: unknown;
     try {
       envelopeJson = await response.json();
@@ -577,6 +703,121 @@ export class HttpClientsAdapter implements ClientsPort {
       }
     } catch (err: unknown) {
       throw sanitizeCreateClientError(err);
+    }
+  }
+
+  private requireIdempotencyKey(raw: string, requestId?: string): string {
+    const valid = validateIdempotencyKey(raw);
+    if (valid === null) {
+      throw new ClientOperationError({
+        code: 'unexpected',
+        message: 'Idempotency-Key is required: must be a non-blank string of at most 255 characters.',
+        requestId,
+      });
+    }
+    return valid;
+  }
+
+  private async mutate<T>(
+    role: CompanyRole,
+    path: string,
+    method: 'POST' | 'PATCH',
+    body: unknown,
+    idempotencyKey: string,
+    parse: (raw: unknown) => T,
+    options?: PortExecutionOptions,
+  ): Promise<T> {
+    try {
+      const key = this.requireIdempotencyKey(idempotencyKey, options?.requestId);
+      const result = await this.execute<unknown>(
+        role,
+        path,
+        {
+          method,
+          headers: { 'content-type': 'application/json', 'idempotency-key': key },
+          body: JSON.stringify(body),
+        },
+        options,
+      );
+      try {
+        return parse(result.data);
+      } catch {
+        throw new ClientOperationError({
+          code: 'unexpected',
+          message: 'Failed to parse the saved record.',
+          requestId: result.requestId ?? options?.requestId,
+          status: 200,
+        });
+      }
+    } catch (err: unknown) {
+      throw sanitizeClientMutationError(err);
+    }
+  }
+
+  updateClient(
+    role: CompanyRole,
+    clientId: string,
+    input: UpdateClientInput,
+    idempotencyKey: string,
+    options?: PortExecutionOptions,
+  ): Promise<ClientDto> {
+    return this.mutate(
+      role,
+      `/api/v1/clients/${encodeURIComponent(clientId)}`,
+      'PATCH',
+      input,
+      idempotencyKey,
+      parseClientDetail,
+      options,
+    );
+  }
+
+  createContact(
+    role: CompanyRole,
+    clientId: string,
+    input: CreateClientContactInput,
+    idempotencyKey: string,
+    options?: PortExecutionOptions,
+  ): Promise<ClientContactDto> {
+    return this.mutate(
+      role,
+      `/api/v1/clients/${encodeURIComponent(clientId)}/contacts`,
+      'POST',
+      input,
+      idempotencyKey,
+      parseContact,
+      options,
+    );
+  }
+
+  updateContact(
+    role: CompanyRole,
+    contactId: string,
+    input: UpdateClientContactInput,
+    idempotencyKey: string,
+    options?: PortExecutionOptions,
+  ): Promise<ClientContactDto> {
+    return this.mutate(
+      role,
+      `/api/v1/client-contacts/${encodeURIComponent(contactId)}`,
+      'PATCH',
+      input,
+      idempotencyKey,
+      parseContact,
+      options,
+    );
+  }
+
+  async deleteContact(role: CompanyRole, contactId: string, options?: PortExecutionOptions): Promise<void> {
+    try {
+      await this.execute<unknown>(
+        role,
+        `/api/v1/client-contacts/${encodeURIComponent(contactId)}`,
+        { method: 'DELETE' },
+        options,
+      );
+    } catch (err: unknown) {
+      throw sanitizeClientMutationError(err);
     }
   }
 }

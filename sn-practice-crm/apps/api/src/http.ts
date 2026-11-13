@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type postgres from 'postgres';
-import type { ZodType } from 'zod';
+import type { ZodType, ZodTypeDef } from 'zod';
 import type { ApiErrorEnvelope, SessionActor } from '@sn/contracts';
 import { CrmApplication } from './application';
 import { DEV_ACTOR_ALIASES, normalizeDevUserHeader, resolveActor, verifySupabaseToken } from './auth';
@@ -14,6 +14,7 @@ import {
   endEngagementSchema,
   reviseEngagementDraftSchema,
   createAssignmentSchema,
+  createClientContactSchema,
   createClientSchema,
   createLedgerEntrySchema,
   createRecurringScheduleSchema,
@@ -28,6 +29,8 @@ import {
   generateDueAssignmentsSchema,
   reportingLineSchema,
   updateAssignmentSchema,
+  updateClientContactSchema,
+  updateClientSchema,
   updateRecurringScheduleSchema,
   updateServiceSchema,
   workItemTransitionSchema,
@@ -110,7 +113,7 @@ function writeCorsHeaders(response: ServerResponse, origin: string | undefined, 
   if (!origin || !allowedOrigins.has(origin)) return;
   response.setHeader('access-control-allow-origin', origin);
   response.setHeader('vary', 'Origin');
-  response.setHeader('access-control-allow-methods', 'GET,POST,PUT,PATCH,OPTIONS');
+  response.setHeader('access-control-allow-methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
   response.setHeader(
     'access-control-allow-headers',
     'authorization,content-type,idempotency-key,x-demo-user-id,x-request-id',
@@ -143,7 +146,7 @@ function sendData(
   sendJson(response, context, allowedOrigins, status, { data, requestId: context.requestId });
 }
 
-async function readJson<T>(request: IncomingMessage, schema: ZodType<T>): Promise<T> {
+async function readJson<T>(request: IncomingMessage, schema: ZodType<T, ZodTypeDef, unknown>): Promise<T> {
   const contentType = request.headers['content-type'];
   if (!contentType?.toLowerCase().startsWith('application/json')) {
     throw new ApiError(415, 'json_content_type_required', 'This endpoint requires an application/json request body.');
@@ -513,6 +516,41 @@ export function createApiServer(application: CrmApplication, options: ApiServerO
       const clientId = routeId(pathname, /^\/api\/v1\/clients\/([^/]+)$/);
       if (request.method === 'GET' && clientId) {
         sendData(response, context, allowedOrigins, 200, await application.getClient(actor, clientId));
+        return;
+      }
+      if (request.method === 'PATCH' && clientId) {
+        const key = idempotencyKey(request);
+        const body = await readJson(request, updateClientSchema);
+        sendData(response, context, allowedOrigins, 200, await application.updateClient(actor, clientId, body, key));
+        return;
+      }
+      const clientContactsClientId = routeId(pathname, /^\/api\/v1\/clients\/([^/]+)\/contacts$/);
+      if (request.method === 'POST' && clientContactsClientId) {
+        const key = idempotencyKey(request);
+        const body = await readJson(request, createClientContactSchema);
+        sendData(
+          response,
+          context,
+          allowedOrigins,
+          201,
+          await application.createClientContact(actor, clientContactsClientId, body, key),
+        );
+        return;
+      }
+      const clientContactId = routeId(pathname, /^\/api\/v1\/client-contacts\/([^/]+)$/);
+      if (request.method === 'PATCH' && clientContactId) {
+        const key = idempotencyKey(request);
+        const body = await readJson(request, updateClientContactSchema);
+        sendData(response, context, allowedOrigins, 200, await application.updateClientContact(actor, clientContactId, body, key));
+        return;
+      }
+      if (request.method === 'DELETE' && clientContactId) {
+        await application.deleteClientContact(actor, clientContactId);
+        response.statusCode = 204;
+        response.setHeader('cache-control', 'no-store');
+        response.setHeader('x-request-id', context.requestId);
+        writeCorsHeaders(response, context.origin, allowedOrigins);
+        response.end();
         return;
       }
 

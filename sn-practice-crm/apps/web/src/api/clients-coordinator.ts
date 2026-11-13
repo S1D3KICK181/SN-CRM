@@ -1,7 +1,15 @@
-import type { ClientDto, CreateClientInput } from '@sn/contracts';
+import type {
+  ClientContactDto,
+  ClientDto,
+  CreateClientContactInput,
+  CreateClientInput,
+  UpdateClientContactInput,
+  UpdateClientInput,
+} from '@sn/contracts';
 import type { CompanyRole } from '@sn/domain';
 import {
   ClientOperationError,
+  sanitizeClientMutationError,
   sanitizeCreateClientError,
   type ClientsCoordinatorState,
   type ClientsPort,
@@ -337,6 +345,103 @@ export class ClientsCoordinator {
     } finally {
       if (this.createAbortController === controller) {
         this.createAbortController = null;
+      }
+    }
+  }
+
+  /**
+   * Runs one client or contact change. A failure is rethrown as safe, sanitized copy for the dialog.
+   * A stale failure reloads the open client in the background so the next try starts from fresh data.
+   */
+  private async runMutation<T>(run: (role: CompanyRole) => Promise<T>): Promise<T | null> {
+    if (this.disposed) return null;
+    const role = this.currentRole;
+    let result: T;
+    try {
+      result = await run(role);
+    } catch (err: unknown) {
+      if (this.disposed || role !== this.currentRole) return null;
+      const opError = sanitizeClientMutationError(err);
+      if (opError.code === 'aborted') return null;
+      if (opError.serverCode === 'stale_client' || opError.serverCode === 'stale_contact') {
+        void this.refreshOpenClient();
+      }
+      throw opError;
+    }
+    if (this.disposed || role !== this.currentRole) return null;
+    await this.refreshOpenClient();
+    return result;
+  }
+
+  async updateClient(clientId: string, input: UpdateClientInput, idempotencyKey: string): Promise<ClientDto | null> {
+    return this.runMutation((role) => this.port.updateClient(role, clientId, input, idempotencyKey));
+  }
+
+  async createContact(
+    clientId: string,
+    input: CreateClientContactInput,
+    idempotencyKey: string,
+  ): Promise<ClientContactDto | null> {
+    return this.runMutation((role) => this.port.createContact(role, clientId, input, idempotencyKey));
+  }
+
+  async updateContact(
+    contactId: string,
+    input: UpdateClientContactInput,
+    idempotencyKey: string,
+  ): Promise<ClientContactDto | null> {
+    return this.runMutation((role) => this.port.updateContact(role, contactId, input, idempotencyKey));
+  }
+
+  async deleteContact(contactId: string): Promise<boolean> {
+    const done = await this.runMutation(async (role) => {
+      await this.port.deleteContact(role, contactId);
+      return true;
+    });
+    return done === true;
+  }
+
+  /**
+   * Reloads the open client's detail without blanking the drawer, then the list. Neither failure
+   * is reported to the caller: the change itself is already saved or already refused.
+   */
+  async refreshOpenClient(): Promise<void> {
+    if (this.disposed) return;
+    const openId = this.selectedClientId;
+    const role = this.currentRole;
+    const tasks: Array<Promise<void>> = [this.sync()];
+    if (openId) {
+      tasks.push(this.reloadDetailQuietly(role, openId));
+    }
+    await Promise.all(tasks);
+  }
+
+  private async reloadDetailQuietly(role: CompanyRole, id: string): Promise<void> {
+    if (this.detailAbortController) {
+      this.detailAbortController.abort();
+    }
+    const generation = ++this.detailGeneration;
+    const controller = new AbortController();
+    this.detailAbortController = controller;
+    try {
+      const client = await this.port.get(role, id, { signal: controller.signal });
+      if (
+        this.disposed ||
+        generation !== this.detailGeneration ||
+        role !== this.currentRole ||
+        this.selectedClientId !== id
+      ) {
+        return;
+      }
+      this.selectedDetail = client;
+      this.detailLoading = false;
+      this.detailError = null;
+      this.notify();
+    } catch {
+      // Keep showing the last loaded detail; the list refresh reports its own failures.
+    } finally {
+      if (this.detailAbortController === controller) {
+        this.detailAbortController = null;
       }
     }
   }
