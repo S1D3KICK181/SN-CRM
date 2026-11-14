@@ -347,3 +347,23 @@ describe('MSG-01 message authority', () => {
     });
   });
 });
+
+describe('REP-01 report authority', () => {
+  // Which rows each person sees in a report is decided by row-level security in Postgres.
+  it.each(['founder', 'manager', 'senior_staff', 'staff'] as const)('allows the %s to view reports', (role) => {
+    expect(authorize({ action: 'reports.view', actor: actor(role) })).toEqual({ allowed: true });
+  });
+
+  it('denies a trainee viewing reports', () => {
+    expect(authorize({ action: 'reports.view', actor: actor('trainee') })).toEqual({
+      allowed: false,
+      code: 'role_not_permitted',
+      reason: 'Trainees do not have reports.',
+    });
+  });
+
+  it('keeps the practice-wide report authority with leadership', () => {
+    expect(authorize({ action: 'reports.view_practice', actor: actor('manager') })).toEqual({ allowed: true });
+    expect(authorize({ action: 'reports.view_practice', actor: actor('staff') }).allowed).toBe(false);
+  });
+});

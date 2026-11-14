@@ -22,11 +22,14 @@ import type {
   LedgerEntryDto,
   OfficeAccountsSummaryDto,
   PaymentReceiptDto,
+  PracticeReportDto,
   RecordClientMessageInput,
   RecordPaymentInput,
   RecordVyaparBillInput,
   RecurringScheduleDto,
   RemoveDocumentInput,
+  ReportPeriodDto,
+  ReportPeriodKind,
   ReportingLineDto,
   ReviseEngagementDraftInput,
   ServiceDto,
@@ -487,6 +490,9 @@ export interface CrmRepository {
   applyCredit(ctx: RepositoryContext, command: ApplyCreditCommand): Promise<InvoiceDto>;
   removeCreditAllocation(ctx: RepositoryContext, command: RemoveCreditAllocationCommand): Promise<InvoiceDto>;
 
+  // Reports (REP-01): read-only; the rows counted are the ones the actor may see. The "now" figures are as at the call.
+  getPracticeReport(ctx: RepositoryContext, period: ReportPeriodDto): Promise<PracticeReportBody>;
+
   // Office Accounts & Ledger
   getOfficeAccountsSummary(ctx: RepositoryContext): Promise<OfficeAccountsSummaryDto>;
   listLedgerEntries(ctx: RepositoryContext): Promise<LedgerEntryDto[]>;
@@ -497,3 +503,77 @@ export interface CrmRepository {
 }
 
 export type CrmApplicationDependencies = CrmRepository & DevActorDirectory;
+
+// --- Reports (REP-01) ---
+
+const REPORT_MONTH_NAMES = [
+  'January',
+  'February',
+  'March',
+  'April',
+  'May',
+  'June',
+  'July',
+  'August',
+  'September',
+  'October',
+  'November',
+  'December',
+] as const;
+
+function addCalendarDays(date: string, days: number): string {
+  const shifted = new Date(Date.parse(`${date}T00:00:00.000Z`) + days * 86400000);
+  return shifted.toISOString().slice(0, 10);
+}
+
+/** The reporting window for a calendar date (YYYY-MM-DD, Asia/Kolkata): that day, its Monday-to-Sunday week, or its month. */
+export function resolveReportPeriod(kind: ReportPeriodKind, date: string): ReportPeriodDto {
+  const year = Number.parseInt(date.slice(0, 4), 10);
+  const month = Number.parseInt(date.slice(5, 7), 10);
+  const day = Number.parseInt(date.slice(8, 10), 10);
+  const monthShort = (value: number) => REPORT_MONTH_NAMES[value - 1]!.slice(0, 3);
+
+  if (kind === 'day') {
+    return {
+      kind,
+      start: date,
+      endExclusive: addCalendarDays(date, 1),
+      label: `${day} ${monthShort(month)} ${year}`,
+    };
+  }
+
+  if (kind === 'month') {
+    const nextYear = month === 12 ? year + 1 : year;
+    const nextMonth = month === 12 ? 1 : month + 1;
+    return {
+      kind,
+      start: `${String(year).padStart(4, '0')}-${String(month).padStart(2, '0')}-01`,
+      endExclusive: `${String(nextYear).padStart(4, '0')}-${String(nextMonth).padStart(2, '0')}-01`,
+      label: `${REPORT_MONTH_NAMES[month - 1]} ${year}`,
+    };
+  }
+
+  // Monday is day 1; Date.getUTCDay() returns 0 for Sunday.
+  const weekday = new Date(Date.parse(`${date}T00:00:00.000Z`)).getUTCDay();
+  const start = addCalendarDays(date, -((weekday + 6) % 7));
+  const endExclusive = addCalendarDays(start, 7);
+  const last = addCalendarDays(start, 6);
+  const startYear = Number.parseInt(start.slice(0, 4), 10);
+  const startMonth = Number.parseInt(start.slice(5, 7), 10);
+  const startDay = Number.parseInt(start.slice(8, 10), 10);
+  const lastYear = Number.parseInt(last.slice(0, 4), 10);
+  const lastMonth = Number.parseInt(last.slice(5, 7), 10);
+  const lastDay = Number.parseInt(last.slice(8, 10), 10);
+  let label: string;
+  if (startYear === lastYear && startMonth === lastMonth) {
+    label = `${startDay}–${lastDay} ${monthShort(lastMonth)} ${lastYear}`;
+  } else if (startYear === lastYear) {
+    label = `${startDay} ${monthShort(startMonth)} – ${lastDay} ${monthShort(lastMonth)} ${lastYear}`;
+  } else {
+    label = `${startDay} ${monthShort(startMonth)} ${startYear} – ${lastDay} ${monthShort(lastMonth)} ${lastYear}`;
+  }
+  return { kind, start, endExclusive, label };
+}
+
+/** The report sections that depend on the database; the application adds the period and decides on the fees section. */
+export type PracticeReportBody = Omit<PracticeReportDto, 'period'>;

@@ -492,6 +492,15 @@ export function createApiServer(application: CrmApplication, options: ApiServerO
         return;
       }
 
+      if (request.method === 'GET' && pathname === '/api/v1/reports') {
+        const report = await application.getPracticeReport(actor, {
+          period: url.searchParams.get('period') ?? undefined,
+          date: url.searchParams.get('date') ?? undefined,
+        });
+        sendData(response, context, allowedOrigins, 200, report);
+        return;
+      }
+
       if (request.method === 'GET' && pathname === '/api/v1/engagements') {
         sendData(response, context, allowedOrigins, 200, await application.listEngagements(actor));
         return;

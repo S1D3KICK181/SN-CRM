@@ -37,3 +37,6 @@ export * from './use-documents';
 export * from './messages-types';
 export * from './http-messages-adapter';
 export * from './use-messages';
+export * from './reports-types';
+export * from './http-reports-adapter';
+export * from './use-reports';

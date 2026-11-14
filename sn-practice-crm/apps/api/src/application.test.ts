@@ -1029,6 +1029,9 @@ describe("CrmApplication authority and workflow rules", () => {
         async recordClientMessage(ctx: RepositoryContext) {
           throw new Error(`Unexpected message repository call: recordClientMessage(${ctx.actorId})`);
         },
+        async getPracticeReport(ctx: RepositoryContext) {
+          throw new Error(`Unexpected report repository call: getPracticeReport(${ctx.actorId})`);
+        },
       };
 
       const application = new CrmApplication(trackingRepo, {
@@ -3454,5 +3457,93 @@ describe("MSG-01 client messages", () => {
     await expect(
       application.recordClientMessage(staff, messageInput({ body: "Other text" }), replayKey),
     ).rejects.toMatchObject({ status: 409, code: "conflict" });
+  });
+});
+
+describe("REP-01 reports", () => {
+  async function reportFixture(now = "2026-10-30T12:00:00.000Z") {
+    const repository = new InMemoryCrmRepository(createDemoSeed());
+    const application = new CrmApplication(repository, { now: () => new Date(now) });
+    return {
+      application,
+      repository,
+      founder: await application.requireActor(DEMO_ACTOR_IDS.founder),
+      manager: await application.requireActor(DEMO_ACTOR_IDS.manager),
+      senior: await application.requireActor(DEMO_ACTOR_IDS.senior),
+      staff: await application.requireActor(DEMO_ACTOR_IDS.staff),
+      trainee: await application.requireActor(DEMO_ACTOR_IDS.trainee),
+    };
+  }
+
+  it("gives the Founder and Manager every employee row and everyone else only their own", async () => {
+    const { application, founder, manager, senior, staff } = await reportFixture();
+    expect((await application.getPracticeReport(founder, { period: "week" })).teamActivity).toHaveLength(5);
+    expect((await application.getPracticeReport(manager, { period: "week" })).teamActivity).toHaveLength(5);
+    expect((await application.getPracticeReport(senior, { period: "week" })).teamActivity.map((row) => row.role)).toEqual(["senior_staff"]);
+    expect((await application.getPracticeReport(staff, { period: "week" })).teamActivity.map((row) => row.role)).toEqual(["staff"]);
+  });
+
+  it("limits Staff to their own assignments and gives every role that can see bills a fees section", async () => {
+    const { application, founder, manager, senior, staff } = await reportFixture();
+    const owners = async (actor: typeof founder) =>
+      (await application.getPracticeReport(actor, { period: "month" })).workProgress.byOwner.map((row) => row.ownerName);
+    expect((await owners(founder)).length).toBeGreaterThan(1);
+    expect(await owners(staff)).toEqual(["Rohan Mehta"]);
+    for (const actor of [founder, manager, senior, staff]) {
+      expect((await application.getPracticeReport(actor, { period: "month" })).fees).not.toBeNull();
+    }
+  });
+
+  it("refuses a Trainee before reading the query or the repository", async () => {
+    const { application, repository, trainee } = await reportFixture();
+    const spy = vi.spyOn(repository, "getPracticeReport");
+    await expect(application.getPracticeReport(trainee, { period: "day" })).rejects.toMatchObject({
+      status: 403,
+      code: "role_not_permitted",
+      message: "Trainees do not have reports.",
+    });
+    await expect(application.getPracticeReport(trainee, { period: "century" })).rejects.toMatchObject({ status: 403 });
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("resolves the period from the date, and defaults to today in Kolkata", async () => {
+    const { application, founder } = await reportFixture();
+    expect((await application.getPracticeReport(founder, { period: "day" })).period).toEqual({
+      kind: "day",
+      start: "2026-10-30",
+      endExclusive: "2026-10-31",
+      label: "30 Oct 2026",
+    });
+    expect((await application.getPracticeReport(founder, { period: "week", date: "2026-11-01" })).period).toEqual({
+      kind: "week",
+      start: "2026-10-26",
+      endExclusive: "2026-11-02",
+      label: "26 Oct – 1 Nov 2026",
+    });
+    expect((await application.getPracticeReport(founder, { period: "month", date: "2026-02-15" })).period).toEqual({
+      kind: "month",
+      start: "2026-02-01",
+      endExclusive: "2026-03-01",
+      label: "February 2026",
+    });
+
+    // 20:00 UTC on 30 October is already 31 October in Kolkata
+    const late = await reportFixture("2026-10-30T20:00:00.000Z");
+    expect((await late.application.getPracticeReport(late.founder, { period: "day" })).period.start).toBe("2026-10-31");
+  });
+
+  it.each([
+    [{}, "period must be day, week or month."],
+    [{ period: "year" }, "period must be day, week or month."],
+    [{ period: "day", date: "30/10/2026" }, "Must be YYYY-MM-DD"],
+    [{ period: "day", date: "2026-02-30" }, "Must be a valid calendar date in YYYY-MM-DD format."],
+    [{ period: "day", date: "" }, "Must be YYYY-MM-DD"],
+  ])("rejects the invalid query %j", async (query, message) => {
+    const { application, founder } = await reportFixture();
+    await expect(application.getPracticeReport(founder, query)).rejects.toMatchObject({
+      status: 422,
+      code: "validation_failed",
+      message,
+    });
   });
 });

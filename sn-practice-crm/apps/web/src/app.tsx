@@ -45,6 +45,7 @@ import { BillingWorkspace, type BillingActions } from './workspaces/billing/bill
 import { DocumentsWorkspace, type DocumentsWorkspaceProps } from './workspaces/documents/documents-workspace';
 import { CommunicationWorkspace, type CommunicationWorkspaceProps } from './workspaces/messages/communication-workspace';
 import { MessageComposerProvider } from './workspaces/messages/message-composer';
+import { ReportsWorkspace } from './workspaces/reports/reports-workspace';
 import { TeamWorkspace } from './workspaces/team/team-workspace';
 import { SettingsWorkspace, type SettingsWorkspaceProps } from './workspaces/settings/settings-workspace';
 import {
@@ -1453,8 +1454,9 @@ export function ModuleWorkspace({
       ) : null}
       {page === 'Office Accounts' ? <AccountsWorkspace /> : null}
       {page === 'Team' ? <TeamWorkspace role={role} onToast={onToast} /> : null}
+      {page === 'Reports' ? <ReportsWorkspace role={role} /> : null}
       {showSettings && serviceCatalog ? <SettingsWorkspace {...serviceCatalog} onToast={onToast} /> : null}
-      {!['Clients', 'Engagements', 'Assignments', 'Billing & Collections', 'My Tasks', 'Documents', 'Communication', 'Office Accounts', 'Team'].includes(page) &&
+      {!['Clients', 'Engagements', 'Assignments', 'Billing & Collections', 'My Tasks', 'Documents', 'Communication', 'Office Accounts', 'Team', 'Reports'].includes(page) &&
       !showSettings ? (
         <ModuleFoundation page={page} />
       ) : null}
@@ -1466,7 +1468,6 @@ function ModuleFoundation({ page }: { page: PageKey }) {
   const modules: Record<string, Array<[string, string, string]>> = {
     Clients: [['Active clients', '48', '3 require attention'], ['Registrations tracked', '126', 'PAN, GSTIN, TAN and more'], ['Document requests', '12', '5 overdue']],
     'Billing & Collections': [['Raised this month', '₹1,84,000', '12 invoices'], ['Collected', '₹1,27,500', '69% realized'], ['Outstanding', '₹1,21,750', '4 clients']],
-    Reports: [['Delivery readiness', '86%', 'Across open work'], ['Review velocity', '78%', 'Within 24 hours'], ['Collections discipline', '61%', 'Improvement needed']],
     Settings: [['Active staff', '12', '5 role types'], ['Recurring templates', '18', '42 live schedules'], ['Audit events', '286', 'Last 30 days']],
   };
   const stats = modules[page] ?? [['Workspace records', '24', 'Ready for API wiring'], ['Recent activity', '18', 'This week'], ['Needs attention', '3', 'Action required']];

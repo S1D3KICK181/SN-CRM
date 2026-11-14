@@ -1,6 +1,8 @@
-import { DOCUMENT_MAX_BYTES } from '@sn/contracts';
+import { DOCUMENT_CATEGORIES, DOCUMENT_MAX_BYTES, MESSAGE_PURPOSES } from '@sn/contracts';
+import type { CompanyRole } from '@sn/domain';
 import type {
   AssignmentDto,
+  AssignmentStatus,
   ClientContactDto,
   ClientDocumentDto,
   ClientDto,
@@ -9,6 +11,7 @@ import type {
   CreateRecurringScheduleInput,
   EngagementDto,
   EngagementVersionDto,
+  FeesByClientRowDto,
   GenerateDueAssignmentsResult,
   InvoiceDto,
   InvoiceItemDto,
@@ -22,6 +25,7 @@ import type {
   PaymentReceiptDto,
   PaymentReceiptStatus,
   RecurringScheduleDto,
+  ReportPeriodDto,
   ReportingLineDto,
   ServiceDto,
   UpdateRecurringScheduleInput,
@@ -44,6 +48,7 @@ import type {
   DevActorDirectory,
   EmployeeRecord,
   MutateEngagementCommand,
+  PracticeReportBody,
   RecordClientMessageCommand,
   RecordPaymentCommand,
   RecordVyaparBillCommand,
@@ -1859,6 +1864,291 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
       record.removedAt = this.now().toISOString();
       return { result: this.toDocumentDto(record) };
     });
+  }
+
+  // --- Reports (REP-01) ---
+  // Mirrors the SQL aggregates with simple loops over the visible rows. Periods are Asia/Kolkata calendar
+  // days; "now" figures use the repository clock. Reviews are not tracked in memory, so reviewsDone is 0,
+  // and a document counts from the time it was uploaded because no confirmation time is kept.
+
+  private canViewWorkItem(actor: EmployeeRecord, item: WorkItemDto): boolean {
+    const assignment = item.assignmentId ? this.assignments.get(item.assignmentId) : undefined;
+    const hasAuthority =
+      assignment !== undefined &&
+      (this.isManagement(actor) || assignment.ownerId === actor.id || assignment.reviewerIds.includes(actor.id));
+    if (item.kind === 'personal') return item.assigneeId === actor.id || hasAuthority;
+    if (this.isManagement(actor) || item.assigneeId === actor.id || item.createdById === actor.id) return true;
+    return item.kind === 'delegated' && assignment !== undefined && this.hasAssignmentInvolvement(actor, assignment);
+  }
+
+  async getPracticeReport(ctx: RepositoryContext, period: ReportPeriodDto): Promise<PracticeReportBody> {
+    const actor = this.getActor(ctx);
+    const now = this.now();
+    const nowMs = now.getTime();
+    const today = kolkataToday(now);
+    const startMs = Date.parse(`${period.start}T00:00:00+05:30`);
+    const endMs = Date.parse(`${period.endExclusive}T00:00:00+05:30`);
+    const inPeriod = (instant: string | null | undefined): boolean => {
+      if (!instant) return false;
+      const time = Date.parse(instant);
+      return time >= startMs && time < endMs;
+    };
+    const dateInPeriod = (date: string): boolean => date >= period.start && date < period.endExclusive;
+    const isOpen = (status: AssignmentStatus): boolean =>
+      status !== 'approved' && status !== 'closed' && status !== 'cancelled';
+    const isLate = (assignment: AssignmentDto): boolean => isOpen(assignment.status) && Date.parse(assignment.dueAt) < nowMs;
+    const ownerName = (id: string): string => this.employees.get(id)?.name ?? 'Unassigned';
+
+    const assignments = actor
+      ? [...this.assignments.values()].filter((assignment) => this.hasAssignmentInvolvement(actor, assignment))
+      : [];
+    const workItems = actor ? [...this.workItems.values()].filter((item) => this.canViewWorkItem(actor, item)) : [];
+
+    // Work progress
+    const completedAt = (assignment: AssignmentDto): string | null =>
+      assignment.approvedAt ?? assignment.closedAt ?? null;
+    const summary = {
+      created: assignments.filter((assignment) => inPeriod(assignment.createdAt)).length,
+      completed: assignments.filter((assignment) => inPeriod(completedAt(assignment))).length,
+      submittedForReview: assignments.filter((assignment) => inPeriod(assignment.submittedAt)).length,
+      overdueNow: assignments.filter(isLate).length,
+      dueNext7Days: assignments.filter((assignment) => {
+        const due = Date.parse(assignment.dueAt);
+        return isOpen(assignment.status) && due >= nowMs && due <= nowMs + 7 * 86400000;
+      }).length,
+    };
+
+    type Counts = { created: number; completed: number; openNow: number; overdueNow: number };
+    const tally = (
+      groups: Map<string, { name: string; counts: Counts }>,
+      key: string,
+      name: string,
+      assignment: AssignmentDto,
+    ): void => {
+      const entry = groups.get(key) ?? { name, counts: { created: 0, completed: 0, openNow: 0, overdueNow: 0 } };
+      if (inPeriod(assignment.createdAt)) entry.counts.created += 1;
+      if (inPeriod(completedAt(assignment))) entry.counts.completed += 1;
+      if (isOpen(assignment.status)) entry.counts.openNow += 1;
+      if (isLate(assignment)) entry.counts.overdueNow += 1;
+      groups.set(key, entry);
+    };
+    const byServiceGroups = new Map<string, { name: string; counts: Counts }>();
+    const byOwnerGroups = new Map<string, { name: string; counts: Counts }>();
+    for (const assignment of assignments) {
+      tally(byServiceGroups, assignment.service, assignment.service, assignment);
+      tally(byOwnerGroups, assignment.ownerId, ownerName(assignment.ownerId), assignment);
+    }
+    const byName = (left: { name: string }, right: { name: string }): number =>
+      left.name.toLowerCase().localeCompare(right.name.toLowerCase()) || left.name.localeCompare(right.name);
+    const hasWork = (counts: Counts): boolean => counts.created + counts.completed + counts.openNow > 0;
+
+    const overdueList = assignments
+      .filter(isLate)
+      .sort((left, right) => Date.parse(left.dueAt) - Date.parse(right.dueAt) || left.code.localeCompare(right.code))
+      .slice(0, 25)
+      .map((assignment) => {
+        const dueDate = kolkataToday(new Date(assignment.dueAt));
+        return {
+          assignmentCode: assignment.code,
+          title: assignment.title,
+          clientName: this.clients.get(assignment.clientId)?.displayName ?? '',
+          ownerName: ownerName(assignment.ownerId),
+          dueDate,
+          daysOverdue: wholeDaysBetween(dueDate, today),
+        };
+      });
+
+    // Team activity: leadership see every active employee, everyone else only themselves.
+    const roleRank: Record<CompanyRole, number> = { founder: 1, manager: 2, senior_staff: 3, staff: 4, trainee: 5 };
+    const people = actor
+      ? [...this.employees.values()].filter(
+          (employee) => employee.active && (this.isManagement(actor) || employee.id === actor.id),
+        )
+      : [];
+    const teamActivity = people
+      .sort((left, right) => roleRank[left.role] - roleRank[right.role] || byName(
+        { name: left.name },
+        { name: right.name },
+      ))
+      .map((employee) => {
+        const owned = assignments.filter((assignment) => assignment.ownerId === employee.id);
+        const tasks = workItems.filter((item) => item.assigneeId === employee.id);
+        const openTasks = tasks.filter(
+          (item) => item.kind !== 'personal' && item.status !== 'completed' && item.status !== 'cancelled',
+        );
+        return {
+          name: employee.name,
+          role: employee.role,
+          assignmentsCompleted: owned.filter((assignment) => inPeriod(completedAt(assignment))).length,
+          submittedForReview: owned.filter((assignment) => inPeriod(assignment.submittedAt)).length,
+          tasksCompleted: tasks.filter((item) => inPeriod(item.completedAt)).length,
+          tasksOpen: openTasks.length,
+          tasksOverdue: openTasks.filter((item) => Date.parse(item.dueAt) < nowMs).length,
+          reviewsDone: 0,
+        };
+      });
+
+    // Fees and collections
+    const visibleInvoices = actor
+      ? this.invoiceSeeds
+          .filter((invoice) => this.isFeeVisible(actor, invoice.clientId))
+          .map((invoice) => this.toInvoiceDto(invoice, today))
+      : [];
+    const visibleReceipts = actor
+      ? this.paymentReceipts
+          .filter((receipt) => this.isFeeVisible(actor, receipt.clientId))
+          .map((receipt) => this.toReceiptDto(receipt))
+      : [];
+    const feeRows = new Map<
+      string,
+      {
+        bills: number;
+        payments: number;
+        row: FeesByClientRowDto;
+      }
+    >();
+    const feeRowFor = (clientId: string) => {
+      const existing = feeRows.get(clientId);
+      if (existing) return existing;
+      const client = this.clients.get(clientId);
+      const created = {
+        bills: 0,
+        payments: 0,
+        row: {
+          clientCode: client?.code ?? '',
+          clientName: client?.displayName ?? '',
+          billedPaise: 0,
+          receivedPaise: 0,
+          pendingNowPaise: 0,
+          overdueNowPaise: 0,
+          creditPaise: 0,
+        },
+      };
+      feeRows.set(clientId, created);
+      return created;
+    };
+    for (const invoice of visibleInvoices) {
+      const entry = feeRowFor(invoice.clientId);
+      if (invoice.status !== 'draft' && invoice.status !== 'voided' && dateInPeriod(invoice.issueDate)) {
+        entry.bills += 1;
+        entry.row = { ...entry.row, billedPaise: entry.row.billedPaise + invoice.totalPaise };
+      }
+      if (invoice.status === 'issued' || invoice.status === 'part_paid') {
+        entry.row = {
+          ...entry.row,
+          pendingNowPaise: entry.row.pendingNowPaise + invoice.balancePaise,
+          overdueNowPaise: entry.row.overdueNowPaise + (invoice.dueDate < today ? invoice.balancePaise : 0),
+        };
+      }
+    }
+    for (const receipt of visibleReceipts) {
+      if (receipt.status !== 'received') continue;
+      const entry = feeRowFor(receipt.clientId);
+      if (dateInPeriod(receipt.receivedOn)) {
+        entry.payments += 1;
+        entry.row = { ...entry.row, receivedPaise: entry.row.receivedPaise + receipt.amountPaise };
+      }
+      entry.row = { ...entry.row, creditPaise: entry.row.creditPaise + receipt.unallocatedPaise };
+    }
+    const feeEntries = [...feeRows.values()];
+    const feeSum = (pick: (row: FeesByClientRowDto) => number): number =>
+      feeEntries.reduce((total, entry) => total + pick(entry.row), 0);
+    const byClient = feeEntries
+      .map((entry) => entry.row)
+      .filter(
+        (row) =>
+          row.billedPaise !== 0 ||
+          row.receivedPaise !== 0 ||
+          row.pendingNowPaise !== 0 ||
+          row.overdueNowPaise !== 0 ||
+          row.creditPaise !== 0,
+      )
+      .sort((left, right) => right.pendingNowPaise - left.pendingNowPaise || left.clientCode.localeCompare(right.clientCode));
+
+    // Client follow-ups
+    const visibleMessages = actor
+      ? this.messages.filter((record) => this.isFeeVisible(actor, record.clientId))
+      : [];
+    const visibleDocuments = actor
+      ? this.documents.filter((record) => record.status === 'available' && this.isFeeVisible(actor, record.clientId))
+      : [];
+    const needsFollowUp = (actor ? [...this.clients.values()].filter((client) => this.isFeeVisible(actor, client.id)) : [])
+      .map((client) => {
+        const overdueAssignments = assignments.filter(
+          (assignment) => assignment.clientId === client.id && isLate(assignment),
+        ).length;
+        const overdueFeesPaise = visibleInvoices
+          .filter(
+            (invoice) =>
+              invoice.clientId === client.id &&
+              (invoice.status === 'issued' || invoice.status === 'part_paid') &&
+              invoice.dueDate < today,
+          )
+          .reduce((total, invoice) => total + invoice.balancePaise, 0);
+        const sentTimes = visibleMessages
+          .filter((record) => record.clientId === client.id)
+          .map((record) => Date.parse(record.createdAt));
+        const last = sentTimes.length > 0 ? Math.max(...sentTimes) : null;
+        return {
+          clientCode: client.code,
+          clientName: client.displayName,
+          overdueAssignments,
+          overdueFeesPaise,
+          lastMessageAt: last === null ? null : new Date(last).toISOString(),
+          last,
+        };
+      })
+      .filter(
+        (row) =>
+          (row.overdueAssignments > 0 || row.overdueFeesPaise > 0) &&
+          (row.last === null || row.last < nowMs - 14 * 86400000),
+      )
+      .sort(
+        (left, right) =>
+          right.overdueFeesPaise - left.overdueFeesPaise ||
+          right.overdueAssignments - left.overdueAssignments ||
+          left.clientCode.localeCompare(right.clientCode),
+      )
+      .map(({ last: _last, ...row }) => row);
+
+    return {
+      workProgress: {
+        summary,
+        byService: [...byServiceGroups.values()]
+          .filter((entry) => hasWork(entry.counts))
+          .sort(byName)
+          .map((entry) => ({ serviceName: entry.name, ...entry.counts })),
+        byOwner: [...byOwnerGroups.values()]
+          .filter((entry) => hasWork(entry.counts))
+          .sort(byName)
+          .map((entry) => ({ ownerName: entry.name, ...entry.counts })),
+        overdueList,
+      },
+      teamActivity,
+      fees: {
+        summary: {
+          billsRecorded: feeEntries.reduce((total, entry) => total + entry.bills, 0),
+          billedPaise: feeSum((row) => row.billedPaise),
+          paymentsReceived: feeEntries.reduce((total, entry) => total + entry.payments, 0),
+          receivedPaise: feeSum((row) => row.receivedPaise),
+          pendingNowPaise: feeSum((row) => row.pendingNowPaise),
+          overdueNowPaise: feeSum((row) => row.overdueNowPaise),
+          creditHeldPaise: feeSum((row) => row.creditPaise),
+        },
+        byClient,
+      },
+      followUps: {
+        messagesByPurpose: MESSAGE_PURPOSES.map((purpose) => ({
+          purpose,
+          count: visibleMessages.filter((record) => record.purpose === purpose && inPeriod(record.createdAt)).length,
+        })).filter((row) => row.count > 0),
+        documentsByCategory: DOCUMENT_CATEGORIES.map((category) => ({
+          category,
+          count: visibleDocuments.filter((record) => record.category === category && inPeriod(record.createdAt)).length,
+        })).filter((row) => row.count > 0),
+        needsFollowUp,
+      },
+    };
   }
 
   // --- Client messages (MSG-01) ---

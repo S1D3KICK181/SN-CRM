@@ -5,7 +5,8 @@ import { CrmApplication } from './application';
 import { maskGstinForRoutineRead, maskPanForRoutineRead } from './client-privacy';
 import { createApiServer } from './http';
 import { PostgresCrmRepository } from './postgres-repository';
-import type { CreateDocumentCommand, RecordClientMessageCommand } from './repository';
+import type { ReportPeriodKind } from '@sn/contracts';
+import { kolkataToday, resolveReportPeriod, type CreateDocumentCommand, type RecordClientMessageCommand } from './repository';
 
 const DATABASE_URL = process.env['DATABASE_URL'] ?? 'postgresql://postgres:postgres@127.0.0.1:54322/postgres';
 const GOTRUE_URL = process.env['SUPABASE_URL'] ? `${process.env['SUPABASE_URL']}/auth/v1` : 'http://127.0.0.1:54321/auth/v1';
@@ -102,6 +103,24 @@ describe('PostgresCrmRepository Integration Suite', () => {
         await rootClient`SELECT setval('public.work_item_code_seq', ${seqWorkSnapshot.last_value}::bigint, ${seqWorkSnapshot.is_called})`;
         await rootClient`SELECT setval('public.client_code_seq', ${seqClientSnapshot.last_value}::bigint, ${seqClientSnapshot.is_called})`;
         await rootClient`SELECT setval('public.engagement_code_seq', ${seqEngagementSnapshot.last_value}::bigint, ${seqEngagementSnapshot.is_called})`;
+        // Never leave a sequence behind a code already in use: if the app created records while the suite
+        // ran, restoring an older snapshot would make the next real insert collide on its code.
+        for (const [sequence, table] of [
+          ['assignment_code_seq', 'assignments'],
+          ['work_item_code_seq', 'work_items'],
+          ['client_code_seq', 'clients'],
+          ['engagement_code_seq', 'engagements'],
+          ['invoice_code_seq', 'invoices'],
+          ['receipt_code_seq', 'payment_receipts'],
+          ['schedule_code_seq', 'recurring_schedules'],
+        ] as const) {
+          await rootClient.unsafe(
+            `SELECT setval('public.${sequence}', greatest(
+               (SELECT last_value FROM public.${sequence}),
+               coalesce((SELECT max(substring(code from '[0-9]+')::bigint) FROM public.${table}), 0)
+             ), true)`,
+          );
+        }
 
         // Post-condition: assert 0 table count drift
         const assCountRows = await rootClient`SELECT count(*)::int as c FROM public.assignments`;
@@ -4036,6 +4055,304 @@ describe('PostgresCrmRepository Integration Suite', () => {
         await tx`RESET ROLE`;
         const counted = await tx`SELECT count(*)::int AS c FROM public.client_messages WHERE body = ${command.body}`;
         expect(counted[0]!['c']).toBe(1);
+      });
+    });
+  });
+
+  describe('REP-01 reports', () => {
+    const founderCtx = { actorId: FOUNDER_ID };
+    const managerCtx = { actorId: MANAGER_ID };
+    const seniorCtx = { actorId: SENIOR_ID };
+    const staffCtx = { actorId: STAFF_ID };
+    const GST_SERVICE = '50000000-0000-4000-a000-000000000001';
+    const BLUEPEAK = '10000000-0000-4000-a000-000000000002'; // looked after by Founder, Manager, Staff
+
+    // Fixtures are written in the server role, with no user claim left over from an earlier repository call.
+    async function asServerRole(tx: postgres.TransactionSql) {
+      await tx`RESET ROLE`;
+      await tx`SELECT set_config('request.jwt.claim.sub', '', true)`;
+      await tx`SELECT set_config('request.jwt.claim.role', '', true)`;
+    }
+
+    // Codes outside the sequences' range, so the fee fixtures never depend on where the code sequences stand
+    const testCode = (prefix: 'INV' | 'RCT') => `${prefix}-9${String(Math.floor(Math.random() * 900000) + 100000)}`;
+
+    // The test's own rows are dated in March 2021, so the figures for those periods are compared as
+    // before-and-after deltas, which keeps the checks independent of the data already in the local database.
+    const report = (repo: PostgresCrmRepository, ctx: { actorId: string }, kind: ReportPeriodKind, date: string) =>
+      repo.getPracticeReport(ctx, resolveReportPeriod(kind, date));
+
+    async function insertAssignment(
+      tx: postgres.TransactionSql,
+      fields: { clientId: string; ownerId: string; status: string; dueAt: string; createdAt: string; submittedAt?: string; approvedAt?: string },
+    ) {
+      await asServerRole(tx);
+      const rows = await tx`
+        INSERT INTO public.assignments (
+          client_id, service_id, title, owner_id, status, due_at, created_at, submitted_at,
+          approved_at, approved_by, created_by
+        ) VALUES (
+          ${fields.clientId}::uuid,
+          ${GST_SERVICE}::uuid,
+          'IT report assignment',
+          ${fields.ownerId}::uuid,
+          ${fields.status}::public.assignment_status,
+          ${fields.dueAt}::timestamptz,
+          ${fields.createdAt}::timestamptz,
+          ${fields.submittedAt ?? null}::timestamptz,
+          ${fields.approvedAt ?? null}::timestamptz,
+          ${fields.approvedAt ? FOUNDER_ID : null}::uuid,
+          ${FOUNDER_ID}::uuid
+        )
+        RETURNING id::text AS id`;
+      return String(rows[0]!['id']);
+    }
+
+    it('IT-85: a completed assignment counts in its own day, week and month and not in the next one, on the Kolkata calendar', async () => {
+      await runIsolatedTest(async (repo, tx) => {
+        const serviceName = String((await tx`SELECT name FROM public.service_catalog WHERE id = ${GST_SERVICE}::uuid`)[0]!['name']);
+        const windows = [
+          ['day', '2021-03-10'],
+          ['day', '2021-03-14'],
+          ['day', '2021-03-15'],
+          ['week', '2021-03-10'], // Monday 8 to Sunday 14 March
+          ['week', '2021-03-17'], // Monday 15 to Sunday 21 March
+          ['month', '2021-03-20'],
+          ['month', '2021-04-02'],
+        ] as const;
+
+        const snapshot = async () => {
+          const taken: Record<string, { completed: number; byService: number; staffRow: number }> = {};
+          for (const [kind, date] of windows) {
+            const result = await report(repo, founderCtx, kind, date);
+            taken[`${kind}:${date}`] = {
+              completed: result.workProgress.summary.completed,
+              byService: result.workProgress.byService.find((row) => row.serviceName === serviceName)?.completed ?? 0,
+              staffRow: result.teamActivity.find((row) => row.role === 'staff')?.assignmentsCompleted ?? 0,
+            };
+          }
+          return taken;
+        };
+        const before = await snapshot();
+
+        // Approved on Wednesday 10 March, at the very end of Sunday 14 March, and just after midnight on Monday 15 March (Kolkata)
+        for (const approvedAt of ['2021-03-10T09:00:00+05:30', '2021-03-14T23:59:00+05:30', '2021-03-15T00:01:00+05:30']) {
+          await insertAssignment(tx, {
+            clientId: BLUEPEAK,
+            ownerId: STAFF_ID,
+            status: 'approved',
+            dueAt: '2021-03-20T12:00:00+05:30',
+            createdAt: '2021-03-01T10:00:00+05:30',
+            approvedAt,
+          });
+        }
+        const after = await snapshot();
+        const gained = (label: string) => ({
+          completed: after[label]!.completed - before[label]!.completed,
+          byService: after[label]!.byService - before[label]!.byService,
+          staffRow: after[label]!.staffRow - before[label]!.staffRow,
+        });
+
+        expect(gained('day:2021-03-10')).toEqual({ completed: 1, byService: 1, staffRow: 1 });
+        expect(gained('day:2021-03-14')).toEqual({ completed: 1, byService: 1, staffRow: 1 });
+        expect(gained('day:2021-03-15')).toEqual({ completed: 1, byService: 1, staffRow: 1 });
+        expect(gained('week:2021-03-10')).toEqual({ completed: 2, byService: 2, staffRow: 2 });
+        expect(gained('week:2021-03-17')).toEqual({ completed: 1, byService: 1, staffRow: 1 });
+        expect(gained('month:2021-03-20')).toEqual({ completed: 3, byService: 3, staffRow: 3 });
+        expect(gained('month:2021-04-02')).toEqual({ completed: 0, byService: 0, staffRow: 0 });
+
+        // Created and submitted are counted by their own dates
+        const createdDay = await report(repo, founderCtx, 'day', '2021-03-01');
+        const submittedBefore = (await report(repo, founderCtx, 'day', '2021-03-02')).workProgress.summary.submittedForReview;
+        await insertAssignment(tx, {
+          clientId: BLUEPEAK,
+          ownerId: STAFF_ID,
+          status: 'ready_for_review',
+          dueAt: '2021-03-20T12:00:00+05:30',
+          createdAt: '2021-03-01T10:00:00+05:30',
+          submittedAt: '2021-03-02T10:00:00+05:30',
+        });
+        const createdAfter = await report(repo, founderCtx, 'day', '2021-03-01');
+        expect(createdAfter.workProgress.summary.created - createdDay.workProgress.summary.created).toBe(1);
+        expect((await report(repo, founderCtx, 'day', '2021-03-02')).workProgress.summary.submittedForReview - submittedBefore).toBe(1);
+      });
+    });
+
+    it('IT-86: Staff and Senior Staff get only their own row in Team activity, and personal tasks stay out of the open counts', async () => {
+      await runIsolatedTest(async (repo, tx) => {
+        const founderRows = (await report(repo, founderCtx, 'month', '2021-03-10')).teamActivity;
+        expect(founderRows.map((row) => row.role)).toEqual(['founder', 'manager', 'senior_staff', 'staff', 'trainee']);
+        expect((await report(repo, managerCtx, 'month', '2021-03-10')).teamActivity).toHaveLength(founderRows.length);
+
+        for (const [ctx, role] of [
+          [staffCtx, 'staff'],
+          [seniorCtx, 'senior_staff'],
+        ] as const) {
+          const rows = (await report(repo, ctx, 'month', '2021-03-10')).teamActivity;
+          expect(rows.map((row) => row.role)).toEqual([role]);
+        }
+
+        const staffBefore = (await report(repo, staffCtx, 'month', '2021-03-10')).teamActivity[0]!;
+        const managerBefore = (await report(repo, managerCtx, 'month', '2021-03-10')).teamActivity.find((row) => row.role === 'manager')!;
+
+        await asServerRole(tx);
+        // A completed personal task counts as completed; an open overdue personal task counts nowhere;
+        // an open overdue internal task counts as open and overdue; a reviewed internal task counts for its reviewer.
+        await tx`
+          INSERT INTO public.work_items (kind, title, assignee_id, created_by, status, due_at, completed_at, progress_percent)
+          VALUES ('personal', 'IT private done', ${STAFF_ID}::uuid, ${STAFF_ID}::uuid, 'completed', '2021-03-09T12:00:00+05:30', '2021-03-10T10:00:00+05:30', 100)`;
+        await tx`
+          INSERT INTO public.work_items (kind, title, assignee_id, created_by, status, due_at)
+          VALUES ('personal', 'IT private open', ${STAFF_ID}::uuid, ${STAFF_ID}::uuid, 'todo', '2021-03-01T12:00:00+05:30')`;
+        await tx`
+          INSERT INTO public.work_items (kind, title, assignee_id, created_by, status, due_at)
+          VALUES ('internal', 'IT internal open', ${STAFF_ID}::uuid, ${MANAGER_ID}::uuid, 'todo', '2021-03-01T12:00:00+05:30')`;
+        await tx`
+          INSERT INTO public.work_items (kind, title, assignee_id, created_by, status, due_at, completed_at, reviewed_by, reviewed_at, progress_percent)
+          VALUES ('internal', 'IT internal reviewed', ${STAFF_ID}::uuid, ${MANAGER_ID}::uuid, 'completed', '2021-03-12T12:00:00+05:30', '2021-03-10T10:00:00+05:30', ${MANAGER_ID}::uuid, '2021-03-10T12:00:00+05:30', 100)`;
+
+        const staffAfter = (await report(repo, staffCtx, 'month', '2021-03-10')).teamActivity[0]!;
+        expect(staffAfter.tasksCompleted - staffBefore.tasksCompleted).toBe(2);
+        expect(staffAfter.tasksOpen - staffBefore.tasksOpen).toBe(1);
+        expect(staffAfter.tasksOverdue - staffBefore.tasksOverdue).toBe(1);
+        const managerAfter = (await report(repo, managerCtx, 'month', '2021-03-10')).teamActivity.find((row) => row.role === 'manager')!;
+        expect(managerAfter.reviewsDone - managerBefore.reviewsDone).toBe(1);
+        // Reviews are outside the staff member's own row
+        expect(staffAfter.reviewsDone - staffBefore.reviewsDone).toBe(0);
+      });
+    });
+
+    it('IT-87: fee totals follow bills by issue date, receipts by received date, and now-figures and credit across all time', async () => {
+      await runIsolatedTest(async (repo, tx) => {
+        const clientCode = String((await tx`SELECT code FROM public.clients WHERE id = ${BLUEPEAK}::uuid`)[0]!['code']);
+        const row = (result: Awaited<ReturnType<typeof report>>) =>
+          result.fees?.byClient.find((candidate) => candidate.clientCode === clientCode);
+        const zero = { billedPaise: 0, receivedPaise: 0, pendingNowPaise: 0, overdueNowPaise: 0, creditPaise: 0 };
+        const figures = (result: Awaited<ReturnType<typeof report>>) => ({ ...zero, ...row(result) });
+
+        const founderBefore = await report(repo, founderCtx, 'month', '2021-03-10');
+        const staffBefore = await report(repo, staffCtx, 'month', '2021-03-10');
+        const seniorBefore = await report(repo, seniorCtx, 'month', '2021-03-10');
+        const aprilBefore = await report(repo, founderCtx, 'month', '2021-04-10');
+
+        await asServerRole(tx);
+        // A bill of 11,800.00 (10,000 + 18%) issued 10 March 2021 and due 20 March 2021, with 3,000.00 of a 4,000.00 payment on it
+        const invoice = (
+          await tx`
+            INSERT INTO public.invoices (code, client_id, issue_date, due_date, created_by)
+            VALUES (${testCode('INV')}, ${BLUEPEAK}::uuid, '2021-03-10', '2021-03-20', ${FOUNDER_ID}::uuid)
+            RETURNING id::text AS id`
+        )[0]!;
+        await tx`
+          INSERT INTO public.invoice_items (invoice_id, description, quantity, unit_price, tax_rate, sort_order)
+          VALUES (${String(invoice['id'])}::uuid, 'IT audit fee', 1, 10000.00, 18, 0)`;
+        await tx`UPDATE public.invoices SET status = 'issued' WHERE id = ${String(invoice['id'])}::uuid`;
+        const receipt = (
+          await tx`
+            INSERT INTO public.payment_receipts (code, client_id, received_on, amount, method, created_by)
+            VALUES (${testCode('RCT')}, ${BLUEPEAK}::uuid, '2021-03-12', 4000.00, 'upi', ${FOUNDER_ID}::uuid)
+            RETURNING id::text AS id`
+        )[0]!;
+        await tx`
+          INSERT INTO public.payment_allocations (receipt_id, invoice_id, amount, created_by)
+          VALUES (${String(receipt['id'])}::uuid, ${String(invoice['id'])}::uuid, 3000.00, ${FOUNDER_ID}::uuid)`;
+        // A cancelled payment and a draft bill in the same month count nowhere
+        const voidedReceipt = (
+          await tx`
+            INSERT INTO public.payment_receipts (code, client_id, received_on, amount, method, created_by)
+            VALUES (${testCode('RCT')}, ${BLUEPEAK}::uuid, '2021-03-13', 777.00, 'cash', ${FOUNDER_ID}::uuid)
+            RETURNING id::text AS id`
+        )[0]!;
+        await tx`UPDATE public.payment_receipts SET status = 'voided', void_reason = 'IT cancelled', voided_at = now(), voided_by = ${FOUNDER_ID}::uuid WHERE id = ${String(voidedReceipt['id'])}::uuid`;
+        await tx`INSERT INTO public.invoices (code, client_id, issue_date, due_date, created_by) VALUES (${testCode('INV')}, ${BLUEPEAK}::uuid, '2021-03-11', '2021-03-30', ${FOUNDER_ID}::uuid)`;
+
+        const founderAfter = await report(repo, founderCtx, 'month', '2021-03-10');
+        const delta = (after: Awaited<ReturnType<typeof report>>, before: Awaited<ReturnType<typeof report>>) => {
+          const a = figures(after);
+          const b = figures(before);
+          return {
+            billedPaise: a.billedPaise - b.billedPaise,
+            receivedPaise: a.receivedPaise - b.receivedPaise,
+            pendingNowPaise: a.pendingNowPaise - b.pendingNowPaise,
+            overdueNowPaise: a.overdueNowPaise - b.overdueNowPaise,
+            creditPaise: a.creditPaise - b.creditPaise,
+          };
+        };
+        const expected = {
+          billedPaise: 1180000,
+          receivedPaise: 400000,
+          pendingNowPaise: 880000,
+          overdueNowPaise: 880000,
+          creditPaise: 100000,
+        };
+        expect(delta(founderAfter, founderBefore)).toEqual(expected);
+
+        // The practice totals move by the same amounts
+        const summaryDelta = (key: keyof NonNullable<typeof founderAfter.fees>['summary']) =>
+          founderAfter.fees!.summary[key] - founderBefore.fees!.summary[key];
+        expect(summaryDelta('billsRecorded')).toBe(1);
+        expect(summaryDelta('paymentsReceived')).toBe(1);
+        expect(summaryDelta('billedPaise')).toBe(1180000);
+        expect(summaryDelta('receivedPaise')).toBe(400000);
+        expect(summaryDelta('pendingNowPaise')).toBe(880000);
+        expect(summaryDelta('overdueNowPaise')).toBe(880000);
+        expect(summaryDelta('creditHeldPaise')).toBe(100000);
+
+        // The bill is outside April, but its pending amount and the credit are still held now
+        const april = delta(await report(repo, founderCtx, 'month', '2021-04-10'), aprilBefore);
+        expect(april).toEqual({ ...zero, pendingNowPaise: 880000, overdueNowPaise: 880000, creditPaise: 100000 });
+
+        // Staff who look after the client see the same movement; Senior Staff, who do not, see none
+        expect(delta(await report(repo, staffCtx, 'month', '2021-03-10'), staffBefore)).toEqual(expected);
+        expect(delta(await report(repo, seniorCtx, 'month', '2021-03-10'), seniorBefore)).toEqual(zero);
+      });
+    });
+
+    it('IT-88: a client with overdue work and no recent message needs follow-up, and stops once a message is recorded', async () => {
+      await runIsolatedTest(async (repo, tx) => {
+        const client = await repo.createClient(founderCtx, {
+          id: '90000000-0000-4000-a000-000000000088',
+          displayName: 'IT Follow-up Client',
+          relationshipOwnerId: STAFF_ID,
+          createdAt: '2026-11-06T12:00:00.000Z',
+          updatedAt: '2026-11-06T12:00:00.000Z',
+        });
+        const listed = async (ctx: { actorId: string }) =>
+          (await report(repo, ctx, 'day', '2021-03-10')).followUps.needsFollowUp.filter((row) => row.clientCode === client.code);
+
+        expect(await listed(founderCtx)).toEqual([]);
+
+        await insertAssignment(tx, {
+          clientId: client.id,
+          ownerId: STAFF_ID,
+          status: 'in_progress',
+          dueAt: '2021-03-20T12:00:00+05:30',
+          createdAt: '2021-03-01T10:00:00+05:30',
+        });
+
+        expect(await listed(founderCtx)).toEqual([
+          { clientCode: client.code, clientName: 'IT Follow-up Client', overdueAssignments: 1, overdueFeesPaise: 0, lastMessageAt: null },
+        ]);
+        expect(await listed(staffCtx)).toHaveLength(1);
+        // Senior Staff do not look after this client
+        expect(await listed(seniorCtx)).toEqual([]);
+
+        const message = await repo.recordClientMessage(staffCtx, {
+          clientId: client.id,
+          recipientName: 'Rahul Shah',
+          recipientNumber: '919820012345',
+          purpose: 'deadline_reminder',
+          body: `Reminder ${crypto.randomUUID()}`,
+          idempotencyKey: `it-rep-${crypto.randomUUID()}`,
+        });
+        expect(message.clientId).toBe(client.id);
+        expect(await listed(founderCtx)).toEqual([]);
+        expect(await listed(staffCtx)).toEqual([]);
+
+        // The message shows in the follow-ups for the day it was recorded
+        const today = kolkataToday(new Date());
+        const messages = (await report(repo, founderCtx, 'day', today)).followUps.messagesByPurpose;
+        expect(messages.find((row) => row.purpose === 'deadline_reminder')?.count).toBeGreaterThanOrEqual(1);
       });
     });
   });

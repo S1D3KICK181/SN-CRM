@@ -33,6 +33,7 @@ import type {
   LedgerEntryDto,
   OfficeAccountsSummaryDto,
   PaymentReceiptDto,
+  PracticeReportDto,
   RecordClientMessageInput,
   RecordPaymentInput,
   RecordVyaparBillInput,
@@ -63,7 +64,7 @@ import type {
   ServiceReference,
   UpdateAssignmentCommand,
 } from './repository';
-import { fileTooLarge, fileTypeNotAllowed, kolkataToday } from './repository';
+import { fileTooLarge, fileTypeNotAllowed, kolkataToday, resolveReportPeriod } from './repository';
 import {
   CONTACT_UNREACHABLE_MESSAGE,
   createClientContactSchema,
@@ -73,6 +74,7 @@ import {
   normalizeWhatsAppNumber,
   parseIsoInstant,
   recordClientMessageSchema,
+  reportQuerySchema,
   updateClientContactSchema,
   WHATSAPP_NUMBER_MESSAGE,
   removeDocumentSchema,
@@ -163,6 +165,19 @@ export class CrmApplication {
   async listPaymentReceipts(actor: SessionActor): Promise<PaymentReceiptDto[]> {
     requireAuthority({ action: 'billing.read', actor: asActor(actor) });
     return this.repository.listPaymentReceipts({ actorId: actor.id });
+  }
+
+  // --- Reports (REP-01) ---
+  // Authority first, then the query. Which rows are counted is decided by row-level security in Postgres,
+  // so Senior Staff and Staff get the same report limited to their own work and clients.
+
+  async getPracticeReport(actor: SessionActor, query: { period?: unknown; date?: unknown }): Promise<PracticeReportDto> {
+    requireAuthority({ action: 'reports.view', actor: asActor(actor) });
+    const data = validateInput(reportQuerySchema, definedOnly(query));
+    const period = resolveReportPeriod(data.period, data.date ?? kolkataToday(this.now()));
+    const { fees, ...body } = await this.repository.getPracticeReport({ actorId: actor.id }, period);
+    const canSeeBills = authorize({ action: 'billing.read', actor: asActor(actor) }).allowed;
+    return { period, ...body, fees: canSeeBills ? fees : null };
   }
 
   // --- Vyapar bills and payments (FEE-01a) ---

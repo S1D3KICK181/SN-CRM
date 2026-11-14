@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { AssignmentDto, ReportPeriodKind, WorkItemDto } from '@sn/contracts';
 import { createDemoSeed, DEMO_ACTOR_IDS } from './demo-seed';
 import { InMemoryCrmRepository } from './in-memory-repository';
 import type {
@@ -13,7 +14,7 @@ import type {
   UpdateAssignmentStatusCommand,
   UpdateWorkItemStatusCommand,
 } from './repository';
-import { documentStoragePath, safeDocumentFileName } from './repository';
+import { documentStoragePath, resolveReportPeriod, safeDocumentFileName } from './repository';
 
 describe('InMemoryCrmRepository Contract, Lookups and Invariants', () => {
   const ctx: RepositoryContext = { actorId: DEMO_ACTOR_IDS.founder };
@@ -2164,5 +2165,420 @@ describe('InMemoryCrmRepository client messages (MSG-01)', () => {
     const [listed] = await repository.listClientMessages(staffCtx);
     (listed as { body: string }).body = 'Changed';
     expect((await repository.listClientMessages(staffCtx))[0]?.body).toBe('Dear Rahul, ');
+  });
+});
+
+describe('InMemoryCrmRepository reports (REP-01)', () => {
+  const NOW = new Date('2026-11-14T10:00:00.000Z'); // Saturday 14 November 2026, 15:30 in Kolkata
+  const ASTER = '10000000-0000-4000-a000-000000000001'; // looked after by Founder, Manager and Senior Staff
+  const BLUEPEAK = '10000000-0000-4000-a000-000000000002'; // looked after by Founder, Manager and Staff
+  const founderCtx: RepositoryContext = { actorId: DEMO_ACTOR_IDS.founder };
+  const seniorCtx: RepositoryContext = { actorId: DEMO_ACTOR_IDS.senior };
+  const staffCtx: RepositoryContext = { actorId: DEMO_ACTOR_IDS.staff };
+  const traineeCtx: RepositoryContext = { actorId: DEMO_ACTOR_IDS.trainee };
+
+  describe('resolveReportPeriod', () => {
+    it.each([
+      ['day', '2026-11-14', '2026-11-14', '2026-11-15', '14 Nov 2026'],
+      ['day', '2026-12-31', '2026-12-31', '2027-01-01', '31 Dec 2026'],
+      // Monday to Sunday: Wednesday, Monday and Sunday of the same week resolve to the same window
+      ['week', '2026-11-11', '2026-11-09', '2026-11-16', '9–15 Nov 2026'],
+      ['week', '2026-11-09', '2026-11-09', '2026-11-16', '9–15 Nov 2026'],
+      ['week', '2026-11-15', '2026-11-09', '2026-11-16', '9–15 Nov 2026'],
+      ['week', '2026-11-16', '2026-11-16', '2026-11-23', '16–22 Nov 2026'],
+      ['week', '2026-11-01', '2026-10-26', '2026-11-02', '26 Oct – 1 Nov 2026'],
+      ['week', '2026-12-31', '2026-12-28', '2027-01-04', '28 Dec 2026 – 3 Jan 2027'],
+      ['month', '2026-11-14', '2026-11-01', '2026-12-01', 'November 2026'],
+      ['month', '2026-11-30', '2026-11-01', '2026-12-01', 'November 2026'],
+      ['month', '2026-12-31', '2026-12-01', '2027-01-01', 'December 2026'],
+      ['month', '2028-02-29', '2028-02-01', '2028-03-01', 'February 2028'],
+      ['month', '2027-02-28', '2027-02-01', '2027-03-01', 'February 2027'],
+    ] as const)('%s of %s is %s up to %s, labelled %s', (kind, date, start, endExclusive, label) => {
+      expect(resolveReportPeriod(kind, date)).toEqual({ kind, start, endExclusive, label });
+    });
+  });
+
+  // BluePeak's assignment AS-001002 is owned by Staff; the helper makes more like it
+  const template = createDemoSeed(NOW).assignments[1]!;
+  const assignment = (code: string, overrides: Partial<AssignmentDto>): AssignmentDto => ({
+    ...template,
+    id: `30000000-0000-4000-a000-0000000${code.slice(-5)}`,
+    code,
+    clientId: BLUEPEAK,
+    clientName: 'BluePeak Tech',
+    service: 'GST Compliance',
+    ownerId: DEMO_ACTOR_IDS.staff,
+    reviewerIds: [DEMO_ACTOR_IDS.manager],
+    status: 'assigned',
+    createdAt: '2026-10-01T05:00:00.000Z',
+    dueAt: '2026-11-30T06:30:00.000Z',
+    ...overrides,
+  });
+
+  const workAssignments: AssignmentDto[] = [
+    // Approved just after midnight on Tuesday 10 November in Kolkata, though still the 9th in UTC
+    assignment('AS-099001', { status: 'approved', createdAt: '2026-11-01T05:00:00.000Z', approvedAt: '2026-11-09T18:45:00.000Z' }),
+    // Approved at 23:45 on Tuesday 10 November in Kolkata
+    assignment('AS-099002', { status: 'approved', createdAt: '2026-11-01T05:00:00.000Z', approvedAt: '2026-11-10T18:15:00.000Z' }),
+    // Closed with no approval time, so the closing time counts
+    assignment('AS-099007', { status: 'closed', createdAt: '2026-11-01T05:00:00.000Z', approvedAt: null, closedAt: '2026-11-11T05:00:00.000Z' }),
+    // Submitted at exactly midnight starting Monday 16 November in Kolkata
+    assignment('AS-099003', { status: 'ready_for_review', submittedAt: '2026-11-15T18:30:00.000Z' }),
+    // Overdue, owned by the Manager, for Aster
+    assignment('AS-099004', {
+      status: 'in_progress',
+      clientId: ASTER,
+      clientName: 'Aster Foods',
+      service: 'Internal Audit',
+      ownerId: DEMO_ACTOR_IDS.manager,
+      reviewerIds: [DEMO_ACTOR_IDS.founder],
+      dueAt: '2026-11-12T06:30:00.000Z',
+    }),
+    // Due within the next seven days, owned by Senior Staff
+    assignment('AS-099005', {
+      clientId: ASTER,
+      clientName: 'Aster Foods',
+      service: 'Statutory Audit',
+      ownerId: DEMO_ACTOR_IDS.senior,
+      reviewerIds: [DEMO_ACTOR_IDS.founder],
+      dueAt: '2026-11-18T06:30:00.000Z',
+    }),
+    // Cancelled work is never overdue, and counts nowhere for November
+    assignment('AS-099006', { status: 'cancelled', service: 'Direct Tax Advisory', dueAt: '2026-11-01T06:30:00.000Z' }),
+  ];
+
+  const workItem = (code: string, overrides: Partial<WorkItemDto>): WorkItemDto => ({
+    id: `40000000-0000-4000-a000-0000000${code.slice(-5)}`,
+    code,
+    kind: 'internal',
+    title: `Task ${code}`,
+    notes: null,
+    assignmentId: null,
+    relatedClientId: null,
+    relatedPartyName: null,
+    assigneeId: DEMO_ACTOR_IDS.staff,
+    createdById: DEMO_ACTOR_IDS.manager,
+    status: 'todo',
+    dueAt: '2026-11-20T06:30:00.000Z',
+    reminderAt: null,
+    createdAt: '2026-11-01T05:00:00.000Z',
+    updatedAt: '2026-11-01T05:00:00.000Z',
+    ...overrides,
+  });
+
+  const buildWork = () =>
+    new InMemoryCrmRepository(
+      {
+        ...createDemoSeed(NOW),
+        assignments: workAssignments,
+        workItems: [
+          workItem('WI-099001', { dueAt: '2026-11-10T06:30:00.000Z' }), // open and overdue
+          workItem('WI-099002', { kind: 'personal', createdById: DEMO_ACTOR_IDS.staff, dueAt: '2026-11-10T06:30:00.000Z' }), // private, open, overdue
+          workItem('WI-099003', {
+            kind: 'personal',
+            createdById: DEMO_ACTOR_IDS.staff,
+            status: 'completed',
+            completedAt: '2026-11-12T05:00:00.000Z',
+          }),
+          workItem('WI-099004', {
+            kind: 'delegated',
+            assignmentId: workAssignments[0]!.id,
+            status: 'completed',
+            completedAt: '2026-11-12T06:00:00.000Z',
+          }),
+        ],
+        invoices: [],
+        paymentReceipts: [],
+      },
+      { now: () => NOW },
+    );
+
+  const report = (repository: InMemoryCrmRepository, ctx: RepositoryContext, kind: ReportPeriodKind, date: string) =>
+    repository.getPracticeReport(ctx, resolveReportPeriod(kind, date));
+
+  it('counts completed work on the Kolkata calendar: completion by approval, or by closing when there is no approval', async () => {
+    const repository = buildWork();
+    const completed = async (kind: ReportPeriodKind, date: string) =>
+      (await report(repository, founderCtx, kind, date)).workProgress.summary.completed;
+
+    expect(await completed('day', '2026-11-09')).toBe(0);
+    expect(await completed('day', '2026-11-10')).toBe(2);
+    expect(await completed('day', '2026-11-11')).toBe(1);
+    expect(await completed('week', '2026-11-13')).toBe(3);
+    expect(await completed('week', '2026-11-16')).toBe(0);
+    expect(await completed('week', '2026-11-08')).toBe(0);
+    expect(await completed('month', '2026-11-20')).toBe(3);
+    expect(await completed('month', '2026-12-01')).toBe(0);
+    expect(await completed('month', '2026-10-31')).toBe(0);
+  });
+
+  it('counts created and submitted work in their own periods', async () => {
+    const repository = buildWork();
+    const month = (await report(repository, founderCtx, 'month', '2026-11-14')).workProgress.summary;
+    expect(month).toMatchObject({ created: 3, completed: 3, submittedForReview: 1 });
+    expect((await report(repository, founderCtx, 'month', '2026-10-14')).workProgress.summary).toMatchObject({
+      created: 4,
+      completed: 0,
+      submittedForReview: 0,
+    });
+    expect((await report(repository, founderCtx, 'week', '2026-11-14')).workProgress.summary.submittedForReview).toBe(0);
+    expect((await report(repository, founderCtx, 'week', '2026-11-16')).workProgress.summary.submittedForReview).toBe(1);
+  });
+
+  it('reports overdue and due-soon work as at now, with the breakdowns and the overdue list', async () => {
+    const repository = buildWork();
+    const result = (await report(repository, founderCtx, 'month', '2026-11-14')).workProgress;
+
+    expect(result.summary).toMatchObject({ overdueNow: 1, dueNext7Days: 1 });
+    expect(result.byService).toEqual([
+      { serviceName: 'GST Compliance', created: 3, completed: 3, openNow: 1, overdueNow: 0 },
+      { serviceName: 'Internal Audit', created: 0, completed: 0, openNow: 1, overdueNow: 1 },
+      { serviceName: 'Statutory Audit', created: 0, completed: 0, openNow: 1, overdueNow: 0 },
+    ]);
+    expect(result.byOwner).toEqual([
+      { ownerName: 'Ananya Rao', created: 0, completed: 0, openNow: 1, overdueNow: 0 },
+      { ownerName: 'Priya Desai', created: 0, completed: 0, openNow: 1, overdueNow: 1 },
+      { ownerName: 'Rohan Mehta', created: 3, completed: 3, openNow: 1, overdueNow: 0 },
+    ]);
+    expect(result.overdueList).toEqual([
+      {
+        assignmentCode: 'AS-099004',
+        title: template.title,
+        clientName: 'Aster Foods',
+        ownerName: 'Priya Desai',
+        dueDate: '2026-11-12',
+        daysOverdue: 2,
+      },
+    ]);
+  });
+
+  it('lists at most 25 overdue assignments, the most overdue first', async () => {
+    const many = Array.from({ length: 30 }, (_, index) =>
+      assignment(`AS-098${String(index).padStart(3, '0')}`, {
+        status: 'in_progress',
+        dueAt: new Date(Date.UTC(2026, 10, 13, 6, 30) - index * 3600000).toISOString(),
+      }),
+    );
+    const repository = new InMemoryCrmRepository({ ...createDemoSeed(NOW), assignments: many }, { now: () => NOW });
+    const list = (await report(repository, founderCtx, 'day', '2026-11-14')).workProgress.overdueList;
+    expect(list).toHaveLength(25);
+    expect(list[0]?.assignmentCode).toBe('AS-098029');
+    expect(list[24]?.assignmentCode).toBe('AS-098005');
+  });
+
+  it('gives leadership a row per active employee and everyone else only their own row', async () => {
+    const repository = buildWork();
+    const founderRows = (await report(repository, founderCtx, 'week', '2026-11-13')).teamActivity;
+    expect(founderRows.map((row) => [row.name, row.role])).toEqual([
+      ['S. Narayanan', 'founder'],
+      ['Priya Desai', 'manager'],
+      ['Ananya Rao', 'senior_staff'],
+      ['Rohan Mehta', 'staff'],
+      ['Neha Kapoor', 'trainee'],
+    ]);
+    expect(founderRows.find((row) => row.role === 'staff')).toMatchObject({ assignmentsCompleted: 3, submittedForReview: 0 });
+    expect((await report(repository, founderCtx, 'week', '2026-11-16')).teamActivity.find((row) => row.role === 'staff')).toMatchObject({
+      assignmentsCompleted: 0,
+      submittedForReview: 1,
+    });
+
+    expect((await report(repository, staffCtx, 'week', '2026-11-13')).teamActivity.map((row) => row.role)).toEqual(['staff']);
+    expect((await report(repository, seniorCtx, 'week', '2026-11-13')).teamActivity.map((row) => row.role)).toEqual(['senior_staff']);
+  });
+
+  it('keeps personal tasks out of the open counts but counts them when completed', async () => {
+    const repository = buildWork();
+    const ownRow = (await report(repository, staffCtx, 'week', '2026-11-13')).teamActivity[0]!;
+    // One open overdue internal task; the private open task is not counted; the private and the delegated task were completed
+    expect(ownRow).toMatchObject({ tasksOpen: 1, tasksOverdue: 1, tasksCompleted: 2, reviewsDone: 0 });
+    const leadershipRow = (await report(repository, founderCtx, 'week', '2026-11-13')).teamActivity.find((row) => row.role === 'staff')!;
+    expect(leadershipRow).toMatchObject({ tasksOpen: 1, tasksOverdue: 1 });
+  });
+
+  it('limits Staff to the assignments they are involved in', async () => {
+    const repository = buildWork();
+    const result = (await report(repository, staffCtx, 'month', '2026-11-14')).workProgress;
+    expect(result.summary).toMatchObject({ overdueNow: 0, dueNext7Days: 0, created: 3, completed: 3 });
+    expect(result.byOwner.map((row) => row.ownerName)).toEqual(['Rohan Mehta']);
+    expect(result.overdueList).toEqual([]);
+  });
+
+  describe('fees and follow-ups', () => {
+    let current = NOW;
+    const buildFees = () => {
+      current = NOW;
+      return new InMemoryCrmRepository(
+        { ...createDemoSeed(NOW), assignments: workAssignments, workItems: [], invoices: [], paymentReceipts: [] },
+        { now: () => current },
+      );
+    };
+    const bill = (number: string, overrides: Partial<RecordVyaparBillCommand>): RecordVyaparBillCommand => ({
+      clientId: BLUEPEAK,
+      vyaparBillNumber: number,
+      billDate: '2026-11-02',
+      dueDate: '2026-11-10',
+      amountPaise: 1000000,
+      description: 'Retainer fee',
+      idempotencyKey: `bill-${number}`,
+      ...overrides,
+    });
+    const pay = (invoiceId: string, amountPaise: number, receivedOn: string): RecordPaymentCommand => ({
+      invoiceId,
+      receivedOn,
+      amountPaise,
+      method: 'upi',
+      idempotencyKey: `pay-${invoiceId}-${receivedOn}`,
+    });
+    const message = (overrides: Partial<RecordClientMessageCommand> = {}): RecordClientMessageCommand => ({
+      clientId: BLUEPEAK,
+      recipientName: 'Rahul Shah',
+      recipientNumber: '919820012345',
+      purpose: 'payment_reminder',
+      body: 'Dear Rahul, ',
+      idempotencyKey: `msg-${Math.random()}`,
+      ...overrides,
+    });
+
+    async function withBills() {
+      const repository = buildFees();
+      const november = await repository.recordVyaparBill(founderCtx, bill('VYP-1', {}));
+      const october = await repository.recordVyaparBill(
+        founderCtx,
+        bill('VYP-2', { billDate: '2026-10-20', dueDate: '2026-12-01', amountPaise: 500000 }),
+      );
+      await repository.recordPayment(founderCtx, pay(november.id, 300000, '2026-11-12'));
+      await repository.recordPayment(founderCtx, pay(october.id, 800000, '2026-11-13')); // 3,00,000 left over as credit
+      return repository;
+    }
+
+    it('totals bills by issue date, payments by received date, and pending, overdue and credit as at now', async () => {
+      const repository = await withBills();
+      const row = {
+        clientCode: 'CL-001002',
+        clientName: 'BluePeak Tech',
+        billedPaise: 1000000,
+        receivedPaise: 1100000,
+        pendingNowPaise: 700000,
+        overdueNowPaise: 700000,
+        creditPaise: 300000,
+      };
+
+      const november = (await report(repository, founderCtx, 'month', '2026-11-14')).fees!;
+      expect(november.summary).toEqual({
+        billsRecorded: 1,
+        billedPaise: 1000000,
+        paymentsReceived: 2,
+        receivedPaise: 1100000,
+        pendingNowPaise: 700000,
+        overdueNowPaise: 700000,
+        creditHeldPaise: 300000,
+      });
+      expect(november.byClient).toEqual([row]);
+
+      // October: only the bill issued then; the now-figures and the credit do not depend on the period
+      const october = (await report(repository, founderCtx, 'month', '2026-10-14')).fees!;
+      expect(october.summary).toMatchObject({ billsRecorded: 1, billedPaise: 500000, paymentsReceived: 0, receivedPaise: 0, pendingNowPaise: 700000 });
+      expect(october.byClient).toEqual([{ ...row, billedPaise: 500000, receivedPaise: 0 }]);
+
+      // A week with no bills or payments still shows what is pending and held
+      const quiet = (await report(repository, founderCtx, 'week', '2026-11-23')).fees!;
+      expect(quiet.summary).toMatchObject({ billsRecorded: 0, paymentsReceived: 0, pendingNowPaise: 700000, creditHeldPaise: 300000 });
+
+      expect((await report(repository, staffCtx, 'month', '2026-11-14')).fees!.byClient).toEqual([row]);
+      expect((await report(repository, seniorCtx, 'month', '2026-11-14')).fees).toEqual({
+        summary: {
+          billsRecorded: 0,
+          billedPaise: 0,
+          paymentsReceived: 0,
+          receivedPaise: 0,
+          pendingNowPaise: 0,
+          overdueNowPaise: 0,
+          creditHeldPaise: 0,
+        },
+        byClient: [],
+      });
+    });
+
+    it('lists clients with overdue work or fees and no message in 14 days, most overdue fees first, for the people who look after them', async () => {
+      const repository = await withBills();
+      const needs = async (ctx: RepositoryContext) => (await report(repository, ctx, 'day', '2026-11-14')).followUps.needsFollowUp;
+
+      expect(await needs(founderCtx)).toEqual([
+        { clientCode: 'CL-001002', clientName: 'BluePeak Tech', overdueAssignments: 0, overdueFeesPaise: 700000, lastMessageAt: null },
+        { clientCode: 'CL-001001', clientName: 'Aster Foods', overdueAssignments: 1, overdueFeesPaise: 0, lastMessageAt: null },
+      ]);
+      expect((await needs(staffCtx)).map((row) => row.clientCode)).toEqual(['CL-001002']);
+      // Senior Staff look after Aster but are not involved in its overdue assignment, so it is not overdue work they can see
+      expect(await needs(seniorCtx)).toEqual([]);
+      expect(await needs(traineeCtx)).toEqual([]);
+
+      // A message 20 days ago is too old to count
+      current = new Date('2026-10-25T10:00:00.000Z');
+      await repository.recordClientMessage(staffCtx, message());
+      current = NOW;
+      expect((await needs(founderCtx))[0]).toMatchObject({ clientCode: 'CL-001002', lastMessageAt: '2026-10-25T10:00:00.000Z' });
+
+      // A message 4 days ago takes the client off the list
+      current = new Date('2026-11-10T10:00:00.000Z');
+      await repository.recordClientMessage(staffCtx, message());
+      current = NOW;
+      expect((await needs(founderCtx)).map((row) => row.clientCode)).toEqual(['CL-001001']);
+    });
+
+    it('counts messages by purpose and documents by category for the period only', async () => {
+      const repository = await withBills();
+      current = new Date('2026-10-25T10:00:00.000Z');
+      await repository.recordClientMessage(staffCtx, message({ purpose: 'deadline_reminder' }));
+      current = new Date('2026-11-10T10:00:00.000Z');
+      await repository.recordClientMessage(staffCtx, message({ purpose: 'payment_reminder' }));
+      await repository.recordClientMessage(staffCtx, message({ purpose: 'payment_reminder' }));
+      await repository.recordClientMessage(staffCtx, message({ purpose: 'general' }));
+      current = new Date('2026-11-11T10:00:00.000Z');
+      const doc = await repository.createClientDocument(staffCtx, {
+        clientId: BLUEPEAK,
+        title: 'Board resolution',
+        category: 'agreements',
+        financialYearStart: 2026,
+        fileName: 'resolution.pdf',
+        mimeType: 'application/pdf',
+        sizeBytes: 1000,
+        idempotencyKey: 'doc-1',
+      });
+      await repository.createClientDocument(staffCtx, {
+        clientId: BLUEPEAK,
+        title: 'Still uploading',
+        category: 'kyc',
+        fileName: 'kyc.pdf',
+        mimeType: 'application/pdf',
+        sizeBytes: 1000,
+        idempotencyKey: 'doc-2',
+      });
+      repository.markObjectUploaded(doc.storagePath, 900);
+      await repository.confirmClientDocument(staffCtx, { id: doc.id, idempotencyKey: 'confirm-1' });
+      current = NOW;
+
+      const november = (await report(repository, founderCtx, 'month', '2026-11-14')).followUps;
+      expect(november.messagesByPurpose).toEqual([
+        { purpose: 'payment_reminder', count: 2 },
+        { purpose: 'general', count: 1 },
+      ]);
+      // The document still waiting for its upload is not counted
+      expect(november.documentsByCategory).toEqual([{ category: 'agreements', count: 1 }]);
+
+      const october = (await report(repository, founderCtx, 'month', '2026-10-14')).followUps;
+      expect(october.messagesByPurpose).toEqual([{ purpose: 'deadline_reminder', count: 1 }]);
+      expect(october.documentsByCategory).toEqual([]);
+
+      // Senior Staff do not look after BluePeak, so they see none of it
+      expect((await report(repository, seniorCtx, 'month', '2026-11-14')).followUps.messagesByPurpose).toEqual([]);
+    });
+  });
+
+  it('returns an empty report for an unknown actor', async () => {
+    const repository = buildWork();
+    const result = await report(repository, { actorId: '00000000-0000-4000-a000-0000000000ff' }, 'day', '2026-11-14');
+    expect(result.teamActivity).toEqual([]);
+    expect(result.workProgress.summary).toEqual({ created: 0, completed: 0, submittedForReview: 0, overdueNow: 0, dueNext7Days: 0 });
+    expect(result.followUps).toEqual({ messagesByPurpose: [], documentsByCategory: [], needsFollowUp: [] });
   });
 });

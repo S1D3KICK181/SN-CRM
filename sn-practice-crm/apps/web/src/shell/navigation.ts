@@ -110,6 +110,7 @@ const ROLE_NAV: Record<CompanyRole, readonly PageKey[]> = {
     'Billing & Collections',
     'Documents',
     'Communication',
+    'Reports',
   ],
   trainee: ['Dashboard', 'My Tasks', 'Documents', 'Communication'],
 };
@@ -125,7 +126,7 @@ export const MODULE_DESCRIPTIONS: Record<PageKey, string> = {
   Communication: 'WhatsApp messages sent to clients from the CRM, with who sent them and why.',
   'Billing & Collections': 'Bills raised in Vyapar, payments received, and what each client still owes.',
   'Office Accounts': 'Manager-operated cash ledger, expenses, bank entries, and daily reconciliation.',
-  Reports: 'Delivery, compliance, utilization, revenue, collection, and practice-performance reporting.',
+  Reports: 'Daily, weekly and monthly reports on work, the team, fees and client follow-ups.',
   Settings: 'Practice settings for the Founder, starting with the services the firm offers.',
 };
 

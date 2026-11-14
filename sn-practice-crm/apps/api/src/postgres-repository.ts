@@ -1,5 +1,6 @@
 import type postgres from 'postgres';
-import { DOCUMENT_MAX_BYTES } from '@sn/contracts';
+import { DOCUMENT_CATEGORIES, DOCUMENT_MAX_BYTES, MESSAGE_PURPOSES } from '@sn/contracts';
+import type { CompanyRole } from '@sn/domain';
 import type {
   AssignmentDto,
   ClientContactDto,
@@ -21,6 +22,7 @@ import type {
   PaymentAllocationDto,
   PaymentReceiptDto,
   RecurringScheduleDto,
+  ReportPeriodDto,
   ReportingLineDto,
   ServiceDto,
   UpdateRecurringScheduleInput,
@@ -45,6 +47,7 @@ import type {
   DevActorDirectory,
   EmployeeRecord,
   MutateEngagementCommand,
+  PracticeReportBody,
   RecordClientMessageCommand,
   RecordPaymentCommand,
   RecordVyaparBillCommand,
@@ -2186,6 +2189,387 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
   async listPaymentReceipts(ctx: RepositoryContext): Promise<PaymentReceiptDto[]> {
     try {
       return await this.runner.withUserContext(ctx, (tx) => this.queryPaymentReceiptDtos(tx));
+    } catch (error) {
+      sanitizeDatabaseError(error);
+    }
+  }
+
+  // --- Reports (REP-01) ---
+  // Plain aggregates, a handful of queries, all inside withUserContext so row-level security limits the
+  // rows to what the actor may see. Period bounds are Asia/Kolkata calendar days; "now" figures use the
+  // transaction's now().
+
+  private reportBounds(tx: SqlClient, period: ReportPeriodDto) {
+    return tx`
+      bounds AS (
+        SELECT
+          (${period.start}::date)::timestamp AT TIME ZONE 'Asia/Kolkata' AS s,
+          (${period.endExclusive}::date)::timestamp AT TIME ZONE 'Asia/Kolkata' AS e,
+          ${period.start}::date AS sd,
+          ${period.endExclusive}::date AS ed,
+          now() AS n,
+          (now() AT TIME ZONE 'Asia/Kolkata')::date AS today
+      )
+    `;
+  }
+
+  private reportAssignmentFacts(tx: SqlClient, period: ReportPeriodDto) {
+    return tx`
+      WITH ${this.reportBounds(tx, period)},
+      a AS (
+        SELECT
+          x.id, x.code, x.title, x.due_at, x.owner_id, x.client_id, x.service_id,
+          (x.created_at >= b.s AND x.created_at < b.e) AS is_created,
+          (coalesce(x.approved_at, x.closed_at) >= b.s AND coalesce(x.approved_at, x.closed_at) < b.e) AS is_completed,
+          (x.submitted_at >= b.s AND x.submitted_at < b.e) AS is_submitted,
+          (x.status NOT IN ('approved', 'closed', 'cancelled')) AS is_open,
+          (x.status NOT IN ('approved', 'closed', 'cancelled') AND x.due_at < b.n) AS is_overdue,
+          (x.status NOT IN ('approved', 'closed', 'cancelled')
+            AND x.due_at >= b.n AND x.due_at <= b.n + interval '7 days') AS is_due_soon,
+          b.today
+        FROM public.assignments x
+        CROSS JOIN bounds b
+      )
+    `;
+  }
+
+  async getPracticeReport(ctx: RepositoryContext, period: ReportPeriodDto): Promise<PracticeReportBody> {
+    try {
+      return await this.runner.withUserContext(ctx, async (tx) => {
+        const count = (value: unknown): number => Number(value ?? 0);
+
+        // Work progress
+        const summaryRows = await tx`
+          ${this.reportAssignmentFacts(tx, period)}
+          SELECT
+            count(*) FILTER (WHERE is_created)::int AS created,
+            count(*) FILTER (WHERE is_completed)::int AS completed,
+            count(*) FILTER (WHERE is_submitted)::int AS submitted,
+            count(*) FILTER (WHERE is_overdue)::int AS overdue,
+            count(*) FILTER (WHERE is_due_soon)::int AS due_soon
+          FROM a;
+        `;
+        const summary = summaryRows[0] ?? {};
+
+        const serviceRows = await tx`
+          ${this.reportAssignmentFacts(tx, period)}
+          SELECT
+            coalesce(sc.name, 'No service') AS name,
+            count(*) FILTER (WHERE a.is_created)::int AS created,
+            count(*) FILTER (WHERE a.is_completed)::int AS completed,
+            count(*) FILTER (WHERE a.is_open)::int AS open_now,
+            count(*) FILTER (WHERE a.is_overdue)::int AS overdue_now
+          FROM a
+          LEFT JOIN public.service_catalog sc ON sc.id = a.service_id
+          GROUP BY sc.name
+          HAVING count(*) FILTER (WHERE a.is_created OR a.is_completed OR a.is_open) > 0
+          ORDER BY lower(coalesce(sc.name, 'No service')), coalesce(sc.name, 'No service');
+        `;
+
+        const ownerRows = await tx`
+          ${this.reportAssignmentFacts(tx, period)}
+          SELECT
+            coalesce(p.full_name, 'Unassigned') AS name,
+            count(*) FILTER (WHERE a.is_created)::int AS created,
+            count(*) FILTER (WHERE a.is_completed)::int AS completed,
+            count(*) FILTER (WHERE a.is_open)::int AS open_now,
+            count(*) FILTER (WHERE a.is_overdue)::int AS overdue_now
+          FROM a
+          LEFT JOIN public.profiles p ON p.user_id = a.owner_id
+          GROUP BY a.owner_id, p.full_name
+          HAVING count(*) FILTER (WHERE a.is_created OR a.is_completed OR a.is_open) > 0
+          ORDER BY lower(coalesce(p.full_name, 'Unassigned')), a.owner_id;
+        `;
+
+        const overdueRows = await tx`
+          ${this.reportAssignmentFacts(tx, period)}
+          SELECT
+            a.code,
+            a.title,
+            c.display_name AS client_name,
+            coalesce(p.full_name, 'Unassigned') AS owner_name,
+            (a.due_at AT TIME ZONE 'Asia/Kolkata')::date::text AS due_date,
+            (a.today - (a.due_at AT TIME ZONE 'Asia/Kolkata')::date)::int AS days_overdue
+          FROM a
+          JOIN public.clients c ON c.id = a.client_id
+          LEFT JOIN public.profiles p ON p.user_id = a.owner_id
+          WHERE a.is_overdue
+          ORDER BY a.due_at ASC, a.code ASC
+          LIMIT 25;
+        `;
+
+        // Team activity: leadership see every active employee, everyone else only themselves.
+        const teamRows = await tx`
+          ${this.reportAssignmentFacts(tx, period)},
+          people AS (
+            SELECT p.user_id, p.full_name, ur.role::text AS role
+            FROM public.profiles p
+            JOIN public.user_roles ur ON ur.user_id = p.user_id
+            WHERE p.is_active AND (public.is_management() OR p.user_id = auth.uid())
+          ),
+          owned AS (
+            SELECT
+              owner_id,
+              count(*) FILTER (WHERE is_completed)::int AS assignments_completed,
+              count(*) FILTER (WHERE is_submitted)::int AS submitted
+            FROM a
+            GROUP BY owner_id
+          ),
+          tasks AS (
+            SELECT
+              w.assignee_id,
+              count(*) FILTER (WHERE w.completed_at >= b.s AND w.completed_at < b.e)::int AS tasks_completed,
+              count(*) FILTER (
+                WHERE w.kind <> 'personal' AND w.status NOT IN ('completed', 'cancelled') AND w.archived_at IS NULL
+              )::int AS tasks_open,
+              count(*) FILTER (
+                WHERE w.kind <> 'personal' AND w.status NOT IN ('completed', 'cancelled') AND w.archived_at IS NULL
+                  AND w.due_at < b.n
+              )::int AS tasks_overdue
+            FROM public.work_items w
+            CROSS JOIN bounds b
+            GROUP BY w.assignee_id
+          ),
+          reviews AS (
+            SELECT w.reviewed_by, count(*)::int AS reviews_done
+            FROM public.work_items w
+            CROSS JOIN bounds b
+            WHERE w.kind <> 'personal' AND w.reviewed_at >= b.s AND w.reviewed_at < b.e
+            GROUP BY w.reviewed_by
+          )
+          SELECT
+            people.full_name AS name,
+            people.role,
+            coalesce(owned.assignments_completed, 0) AS assignments_completed,
+            coalesce(owned.submitted, 0) AS submitted,
+            coalesce(tasks.tasks_completed, 0) AS tasks_completed,
+            coalesce(tasks.tasks_open, 0) AS tasks_open,
+            coalesce(tasks.tasks_overdue, 0) AS tasks_overdue,
+            coalesce(reviews.reviews_done, 0) AS reviews_done
+          FROM people
+          LEFT JOIN owned ON owned.owner_id = people.user_id
+          LEFT JOIN tasks ON tasks.assignee_id = people.user_id
+          LEFT JOIN reviews ON reviews.reviewed_by = people.user_id
+          ORDER BY
+            CASE people.role
+              WHEN 'founder' THEN 1 WHEN 'manager' THEN 2 WHEN 'senior_staff' THEN 3 WHEN 'staff' THEN 4 ELSE 5
+            END,
+            lower(people.full_name),
+            people.user_id;
+        `;
+
+        // Fees and collections, one row per client with anything to show
+        const feeRows = await tx`
+          WITH ${this.reportBounds(tx, period)},
+          billed AS (
+            SELECT i.client_id, count(*)::int AS bills, sum(i.total_amount) AS total
+            FROM public.invoices i
+            CROSS JOIN bounds b
+            WHERE i.status NOT IN ('draft', 'voided') AND i.issue_date >= b.sd AND i.issue_date < b.ed
+            GROUP BY i.client_id
+          ),
+          received AS (
+            SELECT pr.client_id, count(*)::int AS payments, sum(pr.amount) AS total
+            FROM public.payment_receipts pr
+            CROSS JOIN bounds b
+            WHERE pr.status = 'received' AND pr.received_on >= b.sd AND pr.received_on < b.ed
+            GROUP BY pr.client_id
+          ),
+          pending AS (
+            SELECT
+              i.client_id,
+              sum(i.total_amount - i.amount_received) AS pending,
+              coalesce(sum(i.total_amount - i.amount_received) FILTER (WHERE i.due_date < b.today), 0) AS overdue
+            FROM public.invoices i
+            CROSS JOIN bounds b
+            WHERE i.status IN ('issued', 'part_paid')
+            GROUP BY i.client_id
+          ),
+          credit AS (
+            SELECT pr.client_id, sum(pr.amount - coalesce(al.allocated, 0)) AS credit
+            FROM public.payment_receipts pr
+            LEFT JOIN (
+              SELECT receipt_id, sum(amount) AS allocated FROM public.payment_allocations GROUP BY receipt_id
+            ) al ON al.receipt_id = pr.id
+            WHERE pr.status = 'received'
+            GROUP BY pr.client_id
+          )
+          SELECT
+            c.code,
+            c.display_name AS name,
+            coalesce(billed.bills, 0) AS bills,
+            round(coalesce(billed.total, 0) * 100)::bigint AS billed_paise,
+            coalesce(received.payments, 0) AS payments,
+            round(coalesce(received.total, 0) * 100)::bigint AS received_paise,
+            round(coalesce(pending.pending, 0) * 100)::bigint AS pending_paise,
+            round(coalesce(pending.overdue, 0) * 100)::bigint AS overdue_paise,
+            round(coalesce(credit.credit, 0) * 100)::bigint AS credit_paise
+          FROM public.clients c
+          LEFT JOIN billed ON billed.client_id = c.id
+          LEFT JOIN received ON received.client_id = c.id
+          LEFT JOIN pending ON pending.client_id = c.id
+          LEFT JOIN credit ON credit.client_id = c.id
+          WHERE coalesce(billed.bills, 0) > 0
+             OR coalesce(received.payments, 0) > 0
+             OR coalesce(pending.pending, 0) <> 0
+             OR coalesce(credit.credit, 0) <> 0
+          ORDER BY coalesce(pending.pending, 0) DESC, c.code ASC;
+        `;
+
+        // Client follow-ups
+        const messageRows = await tx`
+          WITH ${this.reportBounds(tx, period)}
+          SELECT m.purpose, count(*)::int AS total
+          FROM public.client_messages m
+          CROSS JOIN bounds b
+          WHERE m.created_at >= b.s AND m.created_at < b.e
+          GROUP BY m.purpose;
+        `;
+        const documentRows = await tx`
+          WITH ${this.reportBounds(tx, period)}
+          SELECT d.category, count(*)::int AS total
+          FROM public.client_documents d
+          CROSS JOIN bounds b
+          WHERE d.status = 'available' AND d.updated_at >= b.s AND d.updated_at < b.e
+          GROUP BY d.category;
+        `;
+        // Only clients the actor looks after, so the message history that decides "no recent message" is complete.
+        const followUpRows = await tx`
+          WITH ${this.reportBounds(tx, period)},
+          late_work AS (
+            SELECT x.client_id, count(*)::int AS assignments
+            FROM public.assignments x
+            CROSS JOIN bounds b
+            WHERE x.status NOT IN ('approved', 'closed', 'cancelled') AND x.due_at < b.n
+            GROUP BY x.client_id
+          ),
+          late_fees AS (
+            SELECT i.client_id, sum(i.total_amount - i.amount_received) AS owed
+            FROM public.invoices i
+            CROSS JOIN bounds b
+            WHERE i.status IN ('issued', 'part_paid') AND i.due_date < b.today
+            GROUP BY i.client_id
+          ),
+          last_message AS (
+            SELECT m.client_id, max(m.created_at) AS at
+            FROM public.client_messages m
+            WHERE m.channel = 'whatsapp'
+            GROUP BY m.client_id
+          )
+          SELECT
+            c.code,
+            c.display_name AS name,
+            coalesce(late_work.assignments, 0) AS overdue_assignments,
+            round(coalesce(late_fees.owed, 0) * 100)::bigint AS overdue_fees_paise,
+            last_message.at AS last_message_at
+          FROM public.clients c
+          CROSS JOIN bounds b
+          LEFT JOIN late_work ON late_work.client_id = c.id
+          LEFT JOIN late_fees ON late_fees.client_id = c.id
+          LEFT JOIN last_message ON last_message.client_id = c.id
+          WHERE public.looks_after_client(c.id)
+            AND (coalesce(late_work.assignments, 0) > 0 OR coalesce(late_fees.owed, 0) > 0)
+            AND (last_message.at IS NULL OR last_message.at < b.n - interval '14 days')
+          ORDER BY coalesce(late_fees.owed, 0) DESC, coalesce(late_work.assignments, 0) DESC, c.code ASC;
+        `;
+
+        const feeClients = feeRows.map((row) => ({
+          clientCode: String(row['code']),
+          clientName: String(row['name']),
+          bills: count(row['bills']),
+          payments: count(row['payments']),
+          billedPaise: toSafePaise(row['billed_paise'], 'billedPaise'),
+          receivedPaise: toSafePaise(row['received_paise'], 'receivedPaise'),
+          pendingNowPaise: toSafePaise(row['pending_paise'], 'pendingNowPaise'),
+          overdueNowPaise: toSafePaise(row['overdue_paise'], 'overdueNowPaise'),
+          creditPaise: toSafePaise(row['credit_paise'], 'creditPaise'),
+        }));
+        const sum = (pick: (row: (typeof feeClients)[number]) => number): number =>
+          feeClients.reduce((total, row) => total + pick(row), 0);
+
+        const messageCounts = new Map(messageRows.map((row) => [String(row['purpose']), count(row['total'])]));
+        const documentCounts = new Map(documentRows.map((row) => [String(row['category']), count(row['total'])]));
+
+        return {
+          workProgress: {
+            summary: {
+              created: count(summary['created']),
+              completed: count(summary['completed']),
+              submittedForReview: count(summary['submitted']),
+              overdueNow: count(summary['overdue']),
+              dueNext7Days: count(summary['due_soon']),
+            },
+            byService: serviceRows.map((row) => ({
+              serviceName: String(row['name']),
+              created: count(row['created']),
+              completed: count(row['completed']),
+              openNow: count(row['open_now']),
+              overdueNow: count(row['overdue_now']),
+            })),
+            byOwner: ownerRows.map((row) => ({
+              ownerName: String(row['name']),
+              created: count(row['created']),
+              completed: count(row['completed']),
+              openNow: count(row['open_now']),
+              overdueNow: count(row['overdue_now']),
+            })),
+            overdueList: overdueRows.map((row) => ({
+              assignmentCode: String(row['code']),
+              title: String(row['title']),
+              clientName: String(row['client_name']),
+              ownerName: String(row['owner_name']),
+              dueDate: String(row['due_date']),
+              daysOverdue: count(row['days_overdue']),
+            })),
+          },
+          teamActivity: teamRows.map((row) => ({
+            name: String(row['name']),
+            role: String(row['role']) as CompanyRole,
+            assignmentsCompleted: count(row['assignments_completed']),
+            submittedForReview: count(row['submitted']),
+            tasksCompleted: count(row['tasks_completed']),
+            tasksOpen: count(row['tasks_open']),
+            tasksOverdue: count(row['tasks_overdue']),
+            reviewsDone: count(row['reviews_done']),
+          })),
+          fees: {
+            summary: {
+              billsRecorded: sum((row) => row.bills),
+              billedPaise: sum((row) => row.billedPaise),
+              paymentsReceived: sum((row) => row.payments),
+              receivedPaise: sum((row) => row.receivedPaise),
+              pendingNowPaise: sum((row) => row.pendingNowPaise),
+              overdueNowPaise: sum((row) => row.overdueNowPaise),
+              creditHeldPaise: sum((row) => row.creditPaise),
+            },
+            byClient: feeClients
+              .filter(
+                (row) =>
+                  row.billedPaise !== 0 ||
+                  row.receivedPaise !== 0 ||
+                  row.pendingNowPaise !== 0 ||
+                  row.overdueNowPaise !== 0 ||
+                  row.creditPaise !== 0,
+              )
+              .map(({ bills: _bills, payments: _payments, ...row }) => row),
+          },
+          followUps: {
+            messagesByPurpose: MESSAGE_PURPOSES.filter((purpose) => (messageCounts.get(purpose) ?? 0) > 0).map(
+              (purpose) => ({ purpose, count: messageCounts.get(purpose) ?? 0 }),
+            ),
+            documentsByCategory: DOCUMENT_CATEGORIES.filter((category) => (documentCounts.get(category) ?? 0) > 0).map(
+              (category) => ({ category, count: documentCounts.get(category) ?? 0 }),
+            ),
+            needsFollowUp: followUpRows.map((row) => ({
+              clientCode: String(row['code']),
+              clientName: String(row['name']),
+              overdueAssignments: count(row['overdue_assignments']),
+              overdueFeesPaise: toSafePaise(row['overdue_fees_paise'], 'overdueFeesPaise'),
+              lastMessageAt: row['last_message_at'] ? toIsoString(row['last_message_at']) : null,
+            })),
+          },
+        };
+      });
     } catch (error) {
       sanitizeDatabaseError(error);
     }

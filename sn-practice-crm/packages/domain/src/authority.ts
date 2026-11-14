@@ -44,7 +44,7 @@ export type AuthorityRequest =
     }
   | { action: 'client.update'; actor: Actor; isRelationshipOwner: boolean }
   | { action: 'client.change_owner_or_status'; actor: Actor }
-  | { action: 'finance.manage' | 'reports.view_practice' | 'team.manage_access' | 'service.manage' | 'document.remove' | 'message.send'; actor: Actor }
+  | { action: 'finance.manage' | 'reports.view' | 'reports.view_practice' | 'team.manage_access' | 'service.manage' | 'document.remove' | 'message.send'; actor: Actor }
   | { action: 'team.manage_reporting'; actor: Actor; subject: EmployeeRef; proposedManager: EmployeeRef | null }
   | {
       action:
@@ -219,6 +219,13 @@ export function authorize(request: AuthorityRequest): AuthorityDecision {
       return actor.role !== 'trainee'
         ? ALLOWED
         : deny('role_not_permitted', 'Trainees cannot message clients.');
+
+    case 'reports.view':
+      // Founder and Manager see the whole practice; Senior Staff and Staff see the same reports limited
+      // to their own work and clients by row-level security. Trainees have no reports.
+      return actor.role !== 'trainee'
+        ? ALLOWED
+        : deny('role_not_permitted', 'Trainees do not have reports.');
 
     case 'service.manage':
       return actor.role === 'founder'

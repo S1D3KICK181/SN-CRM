@@ -1042,3 +1042,124 @@ export interface RecordClientMessageInput {
   readonly invoiceId?: string | null; // RFC 4122 UUID
   readonly body: string; // 1 to 2000 characters
 }
+
+// --- Reports (REP-01) ---
+
+export const REPORT_PERIOD_KINDS = ['day', 'week', 'month'] as const;
+export type ReportPeriodKind = (typeof REPORT_PERIOD_KINDS)[number];
+
+/** The reporting window on the Asia/Kolkata calendar: from start up to, but not including, endExclusive. */
+export interface ReportPeriodDto {
+  readonly kind: ReportPeriodKind;
+  readonly start: string; // YYYY-MM-DD
+  readonly endExclusive: string; // YYYY-MM-DD
+  readonly label: string; // e.g. 14 Nov 2026, 10–16 Nov 2026, November 2026
+}
+
+export interface WorkProgressSummaryDto {
+  readonly created: number; // assignments created in the period
+  readonly completed: number; // approved (or, with no approval, closed) in the period
+  readonly submittedForReview: number; // submitted for review in the period
+  readonly overdueNow: number; // open and past due as at the moment the report runs
+  readonly dueNext7Days: number; // open and due between now and seven days from now
+}
+
+export interface WorkProgressByServiceRowDto {
+  readonly serviceName: string;
+  readonly created: number;
+  readonly completed: number;
+  readonly openNow: number;
+  readonly overdueNow: number;
+}
+
+export interface WorkProgressByOwnerRowDto {
+  readonly ownerName: string;
+  readonly created: number;
+  readonly completed: number;
+  readonly openNow: number;
+  readonly overdueNow: number;
+}
+
+export interface OverdueAssignmentRowDto {
+  readonly assignmentCode: string;
+  readonly title: string;
+  readonly clientName: string;
+  readonly ownerName: string;
+  readonly dueDate: string; // YYYY-MM-DD, Asia/Kolkata
+  readonly daysOverdue: number;
+}
+
+export interface WorkProgressReportDto {
+  readonly summary: WorkProgressSummaryDto;
+  readonly byService: readonly WorkProgressByServiceRowDto[];
+  readonly byOwner: readonly WorkProgressByOwnerRowDto[];
+  readonly overdueList: readonly OverdueAssignmentRowDto[]; // at most 25, most overdue first
+}
+
+export interface TeamActivityRowDto {
+  readonly name: string;
+  readonly role: CompanyRole;
+  readonly assignmentsCompleted: number;
+  readonly submittedForReview: number;
+  readonly tasksCompleted: number;
+  readonly tasksOpen: number;
+  readonly tasksOverdue: number;
+  readonly reviewsDone: number;
+}
+
+export interface FeesSummaryDto {
+  readonly billsRecorded: number;
+  readonly billedPaise: number;
+  readonly paymentsReceived: number;
+  readonly receivedPaise: number;
+  readonly pendingNowPaise: number;
+  readonly overdueNowPaise: number;
+  readonly creditHeldPaise: number;
+}
+
+export interface FeesByClientRowDto {
+  readonly clientCode: string;
+  readonly clientName: string;
+  readonly billedPaise: number;
+  readonly receivedPaise: number;
+  readonly pendingNowPaise: number;
+  readonly overdueNowPaise: number;
+  readonly creditPaise: number;
+}
+
+export interface FeesReportDto {
+  readonly summary: FeesSummaryDto;
+  readonly byClient: readonly FeesByClientRowDto[];
+}
+
+export interface MessagesByPurposeRowDto {
+  readonly purpose: MessagePurpose;
+  readonly count: number;
+}
+
+export interface DocumentsByCategoryRowDto {
+  readonly category: DocumentCategory;
+  readonly count: number;
+}
+
+export interface NeedsFollowUpRowDto {
+  readonly clientCode: string;
+  readonly clientName: string;
+  readonly overdueAssignments: number;
+  readonly overdueFeesPaise: number;
+  readonly lastMessageAt: string | null; // ISO-8601 UTC
+}
+
+export interface FollowUpsReportDto {
+  readonly messagesByPurpose: readonly MessagesByPurposeRowDto[];
+  readonly documentsByCategory: readonly DocumentsByCategoryRowDto[];
+  readonly needsFollowUp: readonly NeedsFollowUpRowDto[];
+}
+
+export interface PracticeReportDto {
+  readonly period: ReportPeriodDto;
+  readonly workProgress: WorkProgressReportDto;
+  readonly teamActivity: readonly TeamActivityRowDto[];
+  readonly fees: FeesReportDto | null; // null for roles that cannot see bills
+  readonly followUps: FollowUpsReportDto;
+}

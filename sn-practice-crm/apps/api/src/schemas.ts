@@ -9,6 +9,7 @@ import {
   INDIAN_STATES,
   MESSAGE_PURPOSES,
   PAYMENT_METHODS,
+  REPORT_PERIOD_KINDS,
   WORK_ITEM_TRANSITIONS,
 } from '@sn/contracts';
 import { ApiError } from './errors';
@@ -195,7 +196,16 @@ export const recordClientMessageSchema = z
 
 // --- Client credit (FEE-02a) ---
 
-export const applyCreditSchema = z.object({}).strict();
+// --- Reports (REP-01) ---
+
+export const reportQuerySchema = z
+  .object({
+    period: z.enum(REPORT_PERIOD_KINDS, { errorMap: () => ({ message: 'period must be day, week or month.' }) }),
+    date: localDate.optional(),
+  })
+  .strict();
+
+export const applyCreditSchema =z.object({}).strict();
 export const removeCreditSchema = z.object({}).strict();
 
 const PAN_REGEX = /^[A-Z]{5}[0-9]{4}[A-Z]$/;

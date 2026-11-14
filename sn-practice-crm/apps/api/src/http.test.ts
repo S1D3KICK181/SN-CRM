@@ -2937,3 +2937,62 @@ describe('MSG-01 client message routes', () => {
     expect(response.body.error.message).toBe('The linked work does not belong to this client.');
   });
 });
+
+describe('REP-01 report route', () => {
+  async function getReport(baseUrl: string, query: string, actor: string | null = DEMO_ACTOR_IDS.founder) {
+    const response = await fetch(`${baseUrl}/api/v1/reports${query}`, actor ? { headers: { 'x-demo-user-id': actor } } : {});
+    return { status: response.status, body: await response.json() };
+  }
+
+  it('returns the report for a period, with every section, and defaults the date to today', async () => {
+    const baseUrl = await startServer();
+    const week = await getReport(baseUrl, '?period=week&date=2026-10-30');
+    expect(week.status).toBe(200);
+    expect(week.body.data.period).toEqual({
+      kind: 'week',
+      start: '2026-10-26',
+      endExclusive: '2026-11-02',
+      label: '26 Oct – 1 Nov 2026',
+    });
+    expect(Object.keys(week.body.data).sort()).toEqual(['fees', 'followUps', 'period', 'teamActivity', 'workProgress']);
+    expect(Object.keys(week.body.data.workProgress.summary).sort()).toEqual([
+      'completed',
+      'created',
+      'dueNext7Days',
+      'overdueNow',
+      'submittedForReview',
+    ]);
+    expect(week.body.data.teamActivity).toHaveLength(5);
+    expect(week.body.data.fees.summary).toHaveProperty('billedPaise');
+
+    const today = await getReport(baseUrl, '?period=day');
+    expect(today.body.data.period).toMatchObject({ kind: 'day', start: '2026-10-30', label: '30 Oct 2026' });
+  });
+
+  it('gives Staff the same report limited to their own row', async () => {
+    const baseUrl = await startServer();
+    const staff = await getReport(baseUrl, '?period=month', DEMO_ACTOR_IDS.staff);
+    expect(staff.status).toBe(200);
+    expect(staff.body.data.teamActivity.map((row: { role: string }) => row.role)).toEqual(['staff']);
+  });
+
+  it('refuses a Trainee with 403 and a caller without an identity with 401', async () => {
+    const baseUrl = await startServer();
+    const trainee = await getReport(baseUrl, '?period=day', DEMO_ACTOR_IDS.trainee);
+    expect(trainee.status).toBe(403);
+    expect(trainee.body.error).toMatchObject({ code: 'role_not_permitted', message: 'Trainees do not have reports.' });
+    expect((await getReport(baseUrl, '?period=day', null)).status).toBe(401);
+  });
+
+  it.each([
+    ['', 'period must be day, week or month.'],
+    ['?period=year', 'period must be day, week or month.'],
+    ['?period=day&date=14-11-2026', 'Must be YYYY-MM-DD'],
+    ['?period=day&date=2026-13-01', 'Must be a valid calendar date in YYYY-MM-DD format.'],
+  ])('rejects the query %s with 422', async (query, message) => {
+    const baseUrl = await startServer();
+    const response = await getReport(baseUrl, query);
+    expect(response.status).toBe(422);
+    expect(response.body.error).toMatchObject({ code: 'validation_failed', message });
+  });
+});

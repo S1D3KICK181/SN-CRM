@@ -64,6 +64,7 @@ describe('navigation', () => {
       'Documents',
       'Communication',
       'Billing & Collections',
+      'Reports',
     ]);
   });
 
