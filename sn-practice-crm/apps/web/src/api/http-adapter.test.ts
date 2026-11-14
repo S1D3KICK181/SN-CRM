@@ -48,6 +48,7 @@ const SAMPLE_DTO: AssignmentDto = {
   recurringScheduleId: '20000000-0000-4000-a000-000000000001',
   engagementId: null,
   engagementCode: null,
+  sla: { targetDays: 10, deadline: '2026-11-13', status: 'at_risk', workingDaysUsed: 8, workingDaysLeft: 2 },
   createdById: '00000000-0000-4000-a000-000000000001',
   createdAt: '2026-10-01T04:30:00.000Z',
   updatedAt: '2026-10-29T09:15:00.000Z',
@@ -104,6 +105,7 @@ describe('HttpAssignmentsAdapter', () => {
     expect(row.progress).toBe(40);
     expect(row.tone).toBe('default');
     expect(row.due).toBe('11/11/2026');
+    expect(row.sla).toEqual(SAMPLE_DTO.sla);
   });
 
   it('converts create command to contract payload and returns authoritative row', async () => {

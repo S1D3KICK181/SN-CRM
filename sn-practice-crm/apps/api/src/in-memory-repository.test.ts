@@ -160,6 +160,35 @@ describe('InMemoryCrmRepository Contract, Lookups and Invariants', () => {
     expect(createdWorkItem.code).toBe('WI-001007');
   });
 
+  it('stamps the lifecycle times like the database and reads the service turnaround with each assignment', async () => {
+    const seed = createDemoSeed();
+    seed.services = [{ id: '50000000-0000-4000-a000-000000000001', name: 'GST Compliance', turnaroundDays: 7 }];
+    const repository = new InMemoryCrmRepository(seed, { now: () => new Date('2026-11-04T06:00:00.000Z') });
+    const id = '30000000-0000-4000-a000-000000000001';
+    const before = await repository.getAssignment(ctx, id);
+    expect(before?.serviceTurnaroundDays).toBe(7);
+
+    const submitted = await repository.updateAssignmentStatus(ctx, {
+      id,
+      status: 'ready_for_review',
+      expectedUpdatedAt: before!.updatedAt,
+    });
+    expect(submitted.submittedAt).toBe('2026-11-04T06:00:00.000Z');
+    expect(submitted.approvedAt ?? null).toBeNull();
+
+    const approved = await repository.updateAssignmentStatus(ctx, {
+      id,
+      status: 'approved',
+      expectedUpdatedAt: submitted.updatedAt,
+    });
+    expect(approved.approvedAt).toBe('2026-11-04T06:00:00.000Z');
+    expect(approved.submittedAt).toBe('2026-11-04T06:00:00.000Z');
+
+    // A service with no turnaround reads as null
+    const other = (await repository.listAssignments(ctx)).find((row) => row.serviceId !== '50000000-0000-4000-a000-000000000001');
+    expect(other?.serviceTurnaroundDays).toBeNull();
+  });
+
   it('updates assignment status without mutating reviewers and enforces concurrency check', async () => {
     const repository = new InMemoryCrmRepository(createDemoSeed());
     const assignment = await repository.getAssignment(ctx, '30000000-0000-4000-a000-000000000001');
@@ -2201,7 +2230,8 @@ describe('InMemoryCrmRepository reports (REP-01)', () => {
 
   // BluePeak's assignment AS-001002 is owned by Staff; the helper makes more like it
   const template = createDemoSeed(NOW).assignments[1]!;
-  const assignment = (code: string, overrides: Partial<AssignmentDto>): AssignmentDto => ({
+  type SeedAssignment = Omit<AssignmentDto, 'sla'>;
+  const assignment = (code: string, overrides: Partial<SeedAssignment>): SeedAssignment => ({
     ...template,
     id: `30000000-0000-4000-a000-0000000${code.slice(-5)}`,
     code,
@@ -2216,7 +2246,7 @@ describe('InMemoryCrmRepository reports (REP-01)', () => {
     ...overrides,
   });
 
-  const workAssignments: AssignmentDto[] = [
+  const workAssignments: SeedAssignment[] = [
     // Approved just after midnight on Tuesday 10 November in Kolkata, though still the 9th in UTC
     assignment('AS-099001', { status: 'approved', createdAt: '2026-11-01T05:00:00.000Z', approvedAt: '2026-11-09T18:45:00.000Z' }),
     // Approved at 23:45 on Tuesday 10 November in Kolkata

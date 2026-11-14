@@ -307,6 +307,7 @@ describe('Recurring schedule mapping & date arithmetic', () => {
       recurringScheduleId: null,
       engagementId: null,
       engagementCode: null,
+      sla: null,
       deliveryNotes: null,
       reviewNotes: null,
       createdById: '00000000-0000-4000-a000-000000000001',
@@ -316,6 +317,12 @@ describe('Recurring schedule mapping & date arithmetic', () => {
       createdAt: '2026-11-01T00:00:00.000Z',
       updatedAt: '2026-11-01T00:00:00.000Z',
     };
+
+    it('carries the SLA into the row, and null when there is none', () => {
+      expect(mapDtoToAssignmentRow(baseDto).sla).toBeNull();
+      const sla = { targetDays: 10, deadline: '2026-11-26', status: 'on_track', workingDaysUsed: 6, workingDaysLeft: 4 } as const;
+      expect(mapDtoToAssignmentRow({ ...baseDto, sla }).sla).toEqual(sla);
+    });
 
     it('maps "assigned" to "Assigned" and preserves progressPercent exactly', () => {
       const row = mapDtoToAssignmentRow({ ...baseDto, status: 'assigned', progressPercent: 25 });
@@ -402,6 +409,7 @@ describe('Recurring schedule mapping & date arithmetic', () => {
         recurringScheduleId: null,
         engagementId: engId,
         engagementCode: 'ENG-000404',
+        sla: null,
         deliveryNotes: null,
         reviewNotes: null,
         createdById: '00000000-0000-4000-a000-000000000001',

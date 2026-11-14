@@ -280,7 +280,7 @@ export function ServiceDialog({
                 aria-describedby={describedBy('turnaroundDays', true)}
                 onChange={(event) => update('turnaroundDays', event.target.value)}
               />
-              <small id="service-turnaroundDays-hint">Used later to flag work that runs late.</small>
+              <small id="service-turnaroundDays-hint">The SLA target, in working days (Monday to Saturday). Leave empty for no SLA.</small>
               {fieldError('turnaroundDays')}
             </div>
             <div className="field">

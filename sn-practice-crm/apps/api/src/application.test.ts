@@ -18,6 +18,7 @@ import { CrmApplication } from "./application";
 import { createDemoSeed, DEMO_ACTOR_IDS } from "./demo-seed";
 import { InMemoryCrmRepository } from "./in-memory-repository";
 import type {
+  AssignmentRecord,
   ClientReference,
   CreateAssignmentRecord,
   CreateClientRecord,
@@ -872,29 +873,29 @@ describe("CrmApplication authority and workflow rules", () => {
             employee: { ...res.employee, name: "CANONICAL-EMPLOYEE-PERSISTED" },
           };
         },
-        async getAssignment(ctx: RepositoryContext, id: string): Promise<AssignmentDto | null> {
+        async getAssignment(ctx: RepositoryContext, id: string): Promise<AssignmentRecord | null> {
           callLog.push({ method: "getAssignment", actorId: ctx.actorId, targetId: id });
           return underlying.getAssignment(ctx, id);
         },
-        async listAssignments(ctx: RepositoryContext): Promise<AssignmentDto[]> {
+        async listAssignments(ctx: RepositoryContext): Promise<AssignmentRecord[]> {
           callLog.push({ method: "listAssignments", actorId: ctx.actorId });
           return underlying.listAssignments(ctx);
         },
-        async createAssignment(ctx: RepositoryContext, record: CreateAssignmentRecord): Promise<AssignmentDto> {
+        async createAssignment(ctx: RepositoryContext, record: CreateAssignmentRecord): Promise<AssignmentRecord> {
           callLog.push({ method: "createAssignment", actorId: ctx.actorId, targetId: record.id });
           const saved = await underlying.createAssignment(ctx, record);
           return { ...saved, code: "AS-CANONICAL-001001" };
         },
-        async updateAssignmentStatus(ctx: RepositoryContext, command: UpdateAssignmentStatusCommand): Promise<AssignmentDto> {
+        async updateAssignmentStatus(ctx: RepositoryContext, command: UpdateAssignmentStatusCommand): Promise<AssignmentRecord> {
           callLog.push({ method: "updateAssignmentStatus", actorId: ctx.actorId, targetId: command.id });
           const saved = await underlying.updateAssignmentStatus(ctx, command);
           return { ...saved, code: "AS-CANONICAL-001001" };
         },
-        async updateAssignmentReviewers(ctx: RepositoryContext, command: UpdateAssignmentReviewersCommand): Promise<AssignmentDto> {
+        async updateAssignmentReviewers(ctx: RepositoryContext, command: UpdateAssignmentReviewersCommand): Promise<AssignmentRecord> {
           callLog.push({ method: "updateAssignmentReviewers", actorId: ctx.actorId, targetId: command.id });
           return underlying.updateAssignmentReviewers(ctx, command);
         },
-        async updateAssignment(ctx: RepositoryContext, command: any): Promise<AssignmentDto> {
+        async updateAssignment(ctx: RepositoryContext, command: any): Promise<AssignmentRecord> {
           callLog.push({ method: "updateAssignment", actorId: ctx.actorId, targetId: command.id });
           return underlying.updateAssignment(ctx, command);
         },
@@ -1045,6 +1046,9 @@ describe("CrmApplication authority and workflow rules", () => {
         },
         async getPracticeReport(ctx: RepositoryContext) {
           throw new Error(`Unexpected report repository call: getPracticeReport(${ctx.actorId})`);
+        },
+        async listReportAssignments(ctx: RepositoryContext) {
+          throw new Error(`Unexpected report repository call: listReportAssignments(${ctx.actorId})`);
         },
       };
 
@@ -3981,5 +3985,137 @@ describe("REP-01 reports", () => {
       code: "validation_failed",
       message,
     });
+  });
+});
+
+describe("SLA-01 turnaround tracking", () => {
+  const GST = "50000000-0000-4000-a000-000000000001";
+  const AUDIT = "50000000-0000-4000-a000-000000000002";
+  const TDS = "50000000-0000-4000-a000-000000000003";
+
+  // GST has a usual turnaround of 5 working days, TDS of 2, and Internal Audit has none.
+  async function slaFixture() {
+    let nowValue = "2026-10-30T12:00:00.000Z"; // a Friday
+    const now = () => new Date(nowValue);
+    const seed = createDemoSeed();
+    seed.assignments = [];
+    seed.services = [
+      { id: GST, name: "GST Compliance", turnaroundDays: 5 },
+      { id: AUDIT, name: "Internal Audit" },
+      { id: TDS, name: "Tax Compliance (TDS)", turnaroundDays: 2 },
+    ];
+    const repository = new InMemoryCrmRepository(seed, { now });
+    const application = new CrmApplication(repository, { now });
+    const founder = await application.requireActor(DEMO_ACTOR_IDS.founder);
+    const staff = await application.requireActor(DEMO_ACTOR_IDS.staff);
+    const senior = await application.requireActor(DEMO_ACTOR_IDS.senior);
+    const create = (serviceId: string, ownerId: string, title: string) =>
+      application.createAssignment(founder, {
+        clientId: CANONICAL_CLIENT_1,
+        title,
+        serviceId,
+        ownerId,
+        reviewerIds: [DEMO_ACTOR_IDS.manager],
+        dueAt: "2026-12-01T12:30:00.000Z",
+      });
+    return {
+      application,
+      founder,
+      staff,
+      senior,
+      create,
+      setNow: (value: string) => {
+        nowValue = value;
+      },
+    };
+  }
+
+  it("gives a new assignment the service turnaround as its target, counted in working days", async () => {
+    const { create } = await slaFixture();
+    // Fri 30 Oct, then Sat 31, Mon 2, Tue 3, Wed 4 and Thu 5 November
+    expect((await create(GST, DEMO_ACTOR_IDS.staff, "GSTR-1")).sla).toEqual({
+      targetDays: 5,
+      deadline: "2026-11-05",
+      status: "on_track",
+      workingDaysUsed: 0,
+      workingDaysLeft: 5,
+    });
+  });
+
+  it("has no SLA when the service has no turnaround", async () => {
+    const { create } = await slaFixture();
+    expect((await create(AUDIT, DEMO_ACTOR_IDS.staff, "Audit")).sla).toBeNull();
+  });
+
+  it("moves a running assignment through at risk to breached as the application clock advances", async () => {
+    const { application, founder, create, setNow } = await slaFixture();
+    const created = await create(GST, DEMO_ACTOR_IDS.staff, "GSTR-1");
+    const statusOn = async (now: string) => {
+      setNow(now);
+      return (await application.listAssignments(founder)).find((row) => row.id === created.id)?.sla;
+    };
+    expect(await statusOn("2026-11-02T12:00:00.000Z")).toMatchObject({ status: "on_track", workingDaysUsed: 2, workingDaysLeft: 3 });
+    expect(await statusOn("2026-11-03T12:00:00.000Z")).toMatchObject({ status: "at_risk", workingDaysUsed: 3, workingDaysLeft: 2 });
+    expect(await statusOn("2026-11-04T12:00:00.000Z")).toMatchObject({ status: "at_risk", workingDaysLeft: 1 });
+    expect(await statusOn("2026-11-05T12:00:00.000Z")).toMatchObject({ status: "at_risk", workingDaysLeft: 0 });
+    expect(await statusOn("2026-11-06T12:00:00.000Z")).toMatchObject({ status: "breached", workingDaysLeft: 0 });
+  });
+
+  it("stops the clock when the work is submitted for review", async () => {
+    const { application, staff, create, setNow } = await slaFixture();
+    const created = await create(GST, DEMO_ACTOR_IDS.staff, "GSTR-1");
+    setNow("2026-11-04T12:00:00.000Z");
+    const submitted = await application.transitionAssignment(staff, created.id, "submit");
+    expect(submitted.sla).toEqual({ targetDays: 5, deadline: "2026-11-05", status: "met", workingDaysUsed: 4, workingDaysLeft: 0 });
+
+    // The stopped clock no longer moves
+    setNow("2026-12-20T12:00:00.000Z");
+    expect((await application.listAssignments(staff)).find((row) => row.id === created.id)?.sla).toEqual(submitted.sla);
+  });
+
+  it("marks work submitted after the deadline as late", async () => {
+    const { application, staff, create, setNow } = await slaFixture();
+    const created = await create(GST, DEMO_ACTOR_IDS.staff, "GSTR-1");
+    setNow("2026-11-09T12:00:00.000Z");
+    const submitted = await application.transitionAssignment(staff, created.id, "submit");
+    expect(submitted.sla).toMatchObject({ status: "late", workingDaysUsed: 8, workingDaysLeft: 0 });
+  });
+
+  it("reports SLA met, late, at risk, breached and no target by service and by person", async () => {
+    const { application, founder, staff, create, setNow } = await slaFixture();
+    const a = await create(GST, DEMO_ACTOR_IDS.staff, "A, GST for Staff");
+    await create(GST, DEMO_ACTOR_IDS.senior, "B, GST for Senior");
+    const c = await create(TDS, DEMO_ACTOR_IDS.staff, "C, TDS for Staff");
+    await create(AUDIT, DEMO_ACTOR_IDS.staff, "D, no turnaround");
+
+    setNow("2026-11-02T12:00:00.000Z"); // C's deadline day
+    await application.transitionAssignment(staff, c.id, "submit");
+    setNow("2026-11-06T12:00:00.000Z"); // A and B are past 5 November
+    await application.transitionAssignment(staff, a.id, "submit");
+
+    const sla = (await application.getPracticeReport(founder, { period: "month", date: "2026-11-06" })).workProgress.sla;
+    expect(sla.summary).toEqual({ metInPeriod: 1, lateInPeriod: 1, atRiskNow: 0, breachedNow: 1, noTarget: 1 });
+    expect(sla.byService).toEqual([
+      { serviceName: "GST Compliance", targetDays: 5, met: 0, late: 1, atRiskNow: 0, breachedNow: 1 },
+      { serviceName: "Tax Compliance (TDS)", targetDays: 2, met: 1, late: 0, atRiskNow: 0, breachedNow: 0 },
+    ]);
+    expect(sla.byOwner).toEqual([
+      { ownerName: "Ananya Rao", met: 0, late: 0, atRiskNow: 0, breachedNow: 1 },
+      { ownerName: "Rohan Mehta", met: 1, late: 1, atRiskNow: 0, breachedNow: 0 },
+    ]);
+
+    // Work stopped in November does not count in October, but running work is always counted as at now
+    const october = (await application.getPracticeReport(founder, { period: "month", date: "2026-10-15" })).workProgress.sla;
+    expect(october.summary).toMatchObject({ metInPeriod: 0, lateInPeriod: 0, breachedNow: 1 });
+  });
+
+  it("counts only the assignments the person can see in their report", async () => {
+    const { application, staff, create, setNow } = await slaFixture();
+    await create(GST, DEMO_ACTOR_IDS.staff, "A, GST for Staff");
+    await create(GST, DEMO_ACTOR_IDS.senior, "B, GST for Senior");
+    setNow("2026-11-06T12:00:00.000Z");
+    const sla = (await application.getPracticeReport(staff, { period: "month", date: "2026-11-06" })).workProgress.sla;
+    expect(sla.summary.breachedNow).toBe(1);
+    expect(sla.byOwner.map((row) => row.ownerName)).toEqual(["Rohan Mehta"]);
   });
 });

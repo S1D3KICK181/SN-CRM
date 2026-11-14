@@ -9,6 +9,7 @@ import {
   type PracticeReportDto,
   type ReportPeriodDto,
   type ReportPeriodKind,
+  type SlaReportDto,
   type TeamActivityRowDto,
   type WorkProgressReportDto,
 } from '@sn/contracts';
@@ -105,6 +106,12 @@ function readNullableTimestamp(rec: Record<string, unknown>, key: string, label:
   return value;
 }
 
+function readNullableCount(rec: Record<string, unknown>, key: string, label: string): number | null {
+  const value = field(rec, key, label);
+  if (value === null) return null;
+  return readCount(rec, key, label);
+}
+
 function readArray(rec: Record<string, unknown>, key: string, label: string): unknown[] {
   const value = field(rec, key, label);
   if (!Array.isArray(value)) throw malformed(`Invalid ${label} ${key}: must be an array.`);
@@ -184,6 +191,39 @@ function parseWorkProgress(raw: unknown): WorkProgressReportDto {
         dueDate: readDate(row, 'dueDate', 'overdue assignment row'),
         daysOverdue: readCount(row, 'daysOverdue', 'overdue assignment row'),
       };
+    }),
+    sla: parseSlaReport(field(rec, 'sla', 'work progress')),
+  };
+}
+
+function parseSlaReport(raw: unknown): SlaReportDto {
+  const rec = asObject(raw, 'SLA report');
+  const summary = asObject(field(rec, 'summary', 'SLA report'), 'SLA summary');
+  const outcomes = (row: Record<string, unknown>, label: string) => ({
+    met: readCount(row, 'met', label),
+    late: readCount(row, 'late', label),
+    atRiskNow: readCount(row, 'atRiskNow', label),
+    breachedNow: readCount(row, 'breachedNow', label),
+  });
+  return {
+    summary: {
+      metInPeriod: readCount(summary, 'metInPeriod', 'SLA summary'),
+      lateInPeriod: readCount(summary, 'lateInPeriod', 'SLA summary'),
+      atRiskNow: readCount(summary, 'atRiskNow', 'SLA summary'),
+      breachedNow: readCount(summary, 'breachedNow', 'SLA summary'),
+      noTarget: readCount(summary, 'noTarget', 'SLA summary'),
+    },
+    byService: readArray(rec, 'byService', 'SLA report').map((item) => {
+      const row = asObject(item, 'SLA service row');
+      return {
+        serviceName: readString(row, 'serviceName', 'SLA service row'),
+        targetDays: readNullableCount(row, 'targetDays', 'SLA service row'),
+        ...outcomes(row, 'SLA service row'),
+      };
+    }),
+    byOwner: readArray(rec, 'byOwner', 'SLA report').map((item) => {
+      const row = asObject(item, 'SLA owner row');
+      return { ownerName: readString(row, 'ownerName', 'SLA owner row'), ...outcomes(row, 'SLA owner row') };
     }),
   };
 }

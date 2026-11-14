@@ -3,6 +3,7 @@ import type { PageKey } from '../../shell/navigation';
 import { Card, Status } from '../../ui/workspace-primitives';
 import type { AssignmentRow } from '../../data';
 import { isValidUuid } from '../../api/metadata-safety';
+import { SlaChip } from './sla-chip';
 
 export function AssignmentsTable({
   title,
@@ -38,7 +39,7 @@ export function AssignmentsTable({
     >
       <div className="table-scroll">
         <table className="assignments-table">
-          <thead><tr><th>Assignment</th><th>Client</th><th>Due</th><th>Status</th><th>Progress</th><th>Owner</th><th><span className="sr-only">Open</span></th></tr></thead>
+          <thead><tr><th>Assignment</th><th>Client</th><th>Due</th><th>Status</th><th>SLA</th><th>Progress</th><th>Owner</th><th><span className="sr-only">Open</span></th></tr></thead>
           <tbody>
             {rows.map((row) => {
               const displayCode = row.code && !isValidUuid(row.code)
@@ -66,6 +67,7 @@ export function AssignmentsTable({
                   <td>{row.client}</td>
                   <td className={row.due === 'Today' ? 'is-danger-text' : ''}>{row.due}</td>
                   <td><Status tone={row.tone}>{row.status}</Status></td>
+                  <td>{row.status === 'Cancelled' ? '—' : <SlaChip sla={row.sla} />}</td>
                   <td><div className="table-progress"><i><b style={{ width: `${row.progress}%` }} /></i><span>{row.progress}%</span></div></td>
                   <td>{row.owner}</td>
                   <td>

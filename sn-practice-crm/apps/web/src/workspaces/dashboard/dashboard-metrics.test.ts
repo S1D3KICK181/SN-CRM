@@ -45,6 +45,10 @@ function assignment(overrides: Partial<AssignmentRow> = {}): AssignmentRow {
   };
 }
 
+function sla(status: NonNullable<AssignmentRow['sla']>['status']): NonNullable<AssignmentRow['sla']> {
+  return { targetDays: 10, deadline: '2026-11-20', status, workingDaysUsed: 5, workingDaysLeft: 2 };
+}
+
 function bill(overrides: Partial<InvoiceRecord> = {}): InvoiceRecord {
   return {
     id: 'i1',
@@ -322,9 +326,9 @@ describe('computeOpenWorkByPerson', () => {
 describe('buildDepartmentTiles', () => {
   it('counts open, due today, overdue and waiting for review over the given assignments only', () => {
     const rows = [
-      assignment({ id: '1', due: '13/11/2026' }),
+      assignment({ id: '1', due: '13/11/2026', sla: sla('breached') }),
       assignment({ id: '2', due: '10/11/2026', status: 'Ready for review' }),
-      assignment({ id: '3', due: '01/11/2026' }),
+      assignment({ id: '3', due: '01/11/2026', sla: sla('at_risk') }),
       assignment({ id: '4', due: '01/11/2026', status: 'Approved' }),
       assignment({ id: '5', due: '20/11/2026', status: 'Ready for review' }),
     ];
@@ -333,6 +337,7 @@ describe('buildDepartmentTiles', () => {
       { label: 'Due today', value: '1', note: '2 overdue', tone: 'danger' },
       { label: 'Overdue', value: '2', note: 'Past their due date', tone: 'danger' },
       { label: 'Waiting for review', value: '2', note: 'Founder or Manager action', tone: 'warning' },
+      { label: 'At risk / breached', value: '1 / 1', note: 'Of open work with a target', tone: 'danger' },
     ]);
   });
 
@@ -342,8 +347,9 @@ describe('buildDepartmentTiles', () => {
       { label: 'Due today', value: '0', note: 'None overdue', tone: 'default' },
       { label: 'Overdue', value: '0', note: 'Past their due date', tone: 'default' },
       { label: 'Waiting for review', value: '0', note: 'Founder or Manager action', tone: 'default' },
+      { label: 'At risk / breached', value: '0 / 0', note: 'Of open work with a target', tone: 'default' },
     ]);
-    expect(buildDepartmentTiles([], TODAY).map((tile) => tile.value)).toEqual(['0', '0', '0', '0']);
+    expect(buildDepartmentTiles([], TODAY).map((tile) => tile.value)).toEqual(['0', '0', '0', '0', '0 / 0']);
   });
 });
 
@@ -417,10 +423,17 @@ describe('taskDueIso', () => {
 
 describe('buildMetricTiles', () => {
   const rows = [
-    assignment({ id: '1', due: '12/11/2026', ownerId: 'u-priya' }),
-    assignment({ id: '2', due: '13/11/2026', ownerId: 'u-priya', status: 'Ready for review' }),
-    assignment({ id: '3', due: '20/11/2026', ownerId: 'x', reviewerIds: ['u-priya'], status: 'Changes requested' }),
-    assignment({ id: '4', due: '12/11/2026', ownerId: 'x', status: 'Closed' }),
+    assignment({ id: '1', due: '12/11/2026', ownerId: 'u-priya', sla: sla('breached') }),
+    assignment({ id: '2', due: '13/11/2026', ownerId: 'u-priya', status: 'Ready for review', sla: sla('met') }),
+    assignment({
+      id: '3',
+      due: '20/11/2026',
+      ownerId: 'x',
+      reviewerIds: ['u-priya'],
+      status: 'Changes requested',
+      sla: sla('at_risk'),
+    }),
+    assignment({ id: '4', due: '12/11/2026', ownerId: 'x', status: 'Closed', sla: sla('late') }),
   ];
   const invoices = [bill({ status: 'Overdue', balancePaise: 120000, daysOverdue: 3 }), bill({ id: 'b2', balancePaise: 30000 })];
 
@@ -430,6 +443,7 @@ describe('buildMetricTiles', () => {
       { label: 'Open assignments', value: '3', note: '1 in progress', tone: 'default' },
       { label: 'Waiting for review', value: '1', note: 'Founder or Manager action', tone: 'warning' },
       { label: 'Pending fees', value: '₹1,500', note: '₹1,200 overdue', tone: 'danger' },
+      { label: 'At risk / breached', value: '1 / 1', note: 'Of open work with a target', tone: 'danger' },
     ]);
   });
 
@@ -439,6 +453,7 @@ describe('buildMetricTiles', () => {
       { label: 'Open assignments', value: '0', note: '0 in progress', tone: 'default' },
       { label: 'Waiting for review', value: '0', note: 'Founder or Manager action', tone: 'default' },
       { label: 'Pending fees', value: '₹0', note: '₹0 overdue', tone: 'default' },
+      { label: 'At risk / breached', value: '0 / 0', note: 'Of open work with a target', tone: 'default' },
     ]);
   });
 
@@ -451,7 +466,13 @@ describe('buildMetricTiles', () => {
 
   it('Manager', () => {
     const tiles = buildMetricTiles(metricInput({ role: 'manager', assignments: rows, invoices }));
-    expect(tiles.map((t) => t.label)).toEqual(['Due today', 'Waiting for review', 'Changes requested', 'Pending fees']);
+    expect(tiles.map((t) => t.label)).toEqual([
+      'Due today',
+      'Waiting for review',
+      'Changes requested',
+      'Pending fees',
+      'At risk / breached',
+    ]);
     expect(tiles[2]).toEqual({ label: 'Changes requested', value: '1', note: 'Back with the preparer', tone: 'warning' });
   });
 
@@ -469,6 +490,7 @@ describe('buildMetricTiles', () => {
       { label: 'Overdue', value: '1', note: 'Past their due date', tone: 'danger' },
       { label: 'Waiting for my review', value: '1', note: 'Delegated work submitted', tone: 'warning' },
       { label: 'Delegated tasks', value: '1', note: '1 in progress', tone: 'default' },
+      { label: 'At risk / breached', value: '1 / 1', note: 'Of open work with a target', tone: 'danger' },
     ]);
   });
 
@@ -486,7 +508,22 @@ describe('buildMetricTiles', () => {
       { label: 'Overdue', value: '1', note: 'Past their due date', tone: 'danger' },
       { label: 'With others', value: '1', note: 'Delegated by me', tone: 'default' },
       { label: 'Personal tasks', value: '1', note: '1 done', tone: 'default' },
+      { label: 'At risk / breached', value: '0 / 1', note: 'Of open work with a target', tone: 'danger' },
     ]);
+  });
+
+  it('tones the SLA tile by its worst case, ignoring stopped work and work with no target', () => {
+    const tile = (...list: AssignmentRow[]) => buildMetricTiles(metricInput({ assignments: list }))[4];
+    expect(tile(assignment({ sla: sla('at_risk') }))).toMatchObject({ value: '1 / 0', tone: 'warning' });
+    expect(tile(assignment({ sla: sla('at_risk') }), assignment({ id: 'b', sla: sla('breached') }))).toMatchObject({
+      value: '1 / 1',
+      tone: 'danger',
+    });
+    expect(tile(assignment({ sla: sla('on_track') }), assignment({ id: 'b', sla: null }))).toMatchObject({
+      value: '0 / 0',
+      tone: 'default',
+    });
+    expect(tile(assignment({ status: 'Ready for review', sla: sla('met') }))).toMatchObject({ value: '0 / 0' });
   });
 
   it('Trainee', () => {

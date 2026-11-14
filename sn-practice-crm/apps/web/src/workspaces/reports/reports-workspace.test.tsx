@@ -39,6 +39,14 @@ const report: PracticeReportDto = {
         daysOverdue: 2,
       },
     ],
+    sla: {
+      summary: { metInPeriod: 3, lateInPeriod: 1, atRiskNow: 2, breachedNow: 1, noTarget: 4 },
+      byService: [
+        { serviceName: 'GST Compliance', targetDays: 5, met: 2, late: 1, atRiskNow: 1, breachedNow: 0 },
+        { serviceName: 'Statutory Audit, FY 2025-26', targetDays: null, met: 1, late: 0, atRiskNow: 1, breachedNow: 1 },
+      ],
+      byOwner: [{ ownerName: 'Rohan Mehta', met: 3, late: 1, atRiskNow: 2, breachedNow: 1 }],
+    },
   },
   teamActivity: [
     {
@@ -116,6 +124,11 @@ const emptyReport: PracticeReportDto = {
     byService: [],
     byOwner: [],
     overdueList: [],
+    sla: {
+      summary: { metInPeriod: 0, lateInPeriod: 0, atRiskNow: 0, breachedNow: 0, noTarget: 0 },
+      byService: [],
+      byOwner: [],
+    },
   },
   teamActivity: [],
   fees: {
@@ -326,6 +339,52 @@ describe('ReportsWorkspace tabs', () => {
     expect(within(row).getByText('2')).toBeTruthy();
   });
 
+  it('shows the SLA tiles and the SLA by service and by person tables', async () => {
+    await loaded();
+    const tiles = within(screen.getByLabelText('SLA summary'));
+    expect(tiles.getByText('Met in period').closest('article')?.textContent).toContain('3');
+    expect(tiles.getByText('Late in period').closest('article')?.textContent).toContain('1');
+    const atRisk = tiles.getByText('At risk now').closest('article');
+    expect(atRisk?.textContent).toContain('2');
+    expect(atRisk?.className).toContain('tone-warning');
+    const breached = tiles.getByText('Breached now').closest('article');
+    expect(breached?.textContent).toContain('1');
+    expect(breached?.className).toContain('tone-danger');
+
+    const service = within(section('SLA by service'));
+    expect(service.getAllByRole('columnheader').map((cell) => cell.textContent)).toEqual([
+      'Service',
+      'Target (working days)',
+      'Met',
+      'Late',
+      'At risk now',
+      'Breached now',
+    ]);
+    const gst = service.getByText('GST Compliance').closest('tr') as HTMLElement;
+    expect(within(gst).getAllByRole('cell').map((cell) => cell.textContent)).toEqual(['GST Compliance', '5', '2', '1', '1', '0']);
+    const audit = service.getByText('Statutory Audit, FY 2025-26').closest('tr') as HTMLElement;
+    expect(within(audit).getAllByRole('cell')[1]?.textContent).toBe('—');
+
+    const person = within(section('SLA by person'));
+    expect(person.getAllByRole('columnheader').map((cell) => cell.textContent)).toEqual([
+      'Person',
+      'Met',
+      'Late',
+      'At risk now',
+      'Breached now',
+    ]);
+    const rohan = person.getByText('Rohan Mehta').closest('tr') as HTMLElement;
+    expect(within(rohan).getAllByRole('cell').map((cell) => cell.textContent)).toEqual(['Rohan Mehta', '3', '1', '2', '1']);
+  });
+
+  it('does not tone the SLA tiles when nothing is at risk or breached', async () => {
+    await loaded('founder', emptyReport);
+    const tiles = within(screen.getByLabelText('SLA summary'));
+    expect(tiles.getByText('At risk now').closest('article')?.className).not.toContain('tone-');
+    expect(tiles.getByText('Breached now').closest('article')?.className).not.toContain('tone-');
+    expect(within(section('SLA by service')).getByText('Nothing in this period.')).toBeTruthy();
+  });
+
   it('does not tone the overdue tile when nothing is overdue', async () => {
     await loaded('founder', emptyReport);
     const tile = within(screen.getByLabelText('Work progress summary')).getByText('Overdue now').closest('article');
@@ -431,7 +490,7 @@ describe('ReportsWorkspace CSV downloads', () => {
 
   it('gives every table a Download CSV button', async () => {
     await loaded();
-    expect(screen.getAllByRole('button', { name: 'Download CSV' })).toHaveLength(3);
+    expect(screen.getAllByRole('button', { name: 'Download CSV' })).toHaveLength(5);
     fireEvent.click(screen.getByRole('tab', { name: 'Team activity' }));
     expect(screen.getAllByRole('button', { name: 'Download CSV' })).toHaveLength(1);
     fireEvent.click(screen.getByRole('tab', { name: 'Fees and collections' }));
@@ -452,6 +511,22 @@ describe('ReportsWorkspace CSV downloads', () => {
         'GST Compliance,3,2,5,1\r\n' +
         '"Statutory Audit, FY 2025-26",0,0,1,0\r\n',
     );
+  });
+
+  it('downloads the SLA tables, leaving an unset target empty', async () => {
+    await loaded();
+    fireEvent.click(within(section('SLA by service')).getByRole('button', { name: 'Download CSV' }));
+    const [serviceName, serviceCsv] = download.mock.calls[0] as [string, string];
+    expect(serviceName).toBe('work-sla-by-service_2026-11-09.csv');
+    expect(serviceCsv.slice(1)).toBe(
+      'Service,Target (working days),Met,Late,At risk now,Breached now\r\n' +
+        'GST Compliance,5,2,1,1,0\r\n' +
+        '"Statutory Audit, FY 2025-26",,1,0,1,1\r\n',
+    );
+    fireEvent.click(within(section('SLA by person')).getByRole('button', { name: 'Download CSV' }));
+    const [personName, personCsv] = download.mock.calls[1] as [string, string];
+    expect(personName).toBe('work-sla-by-person_2026-11-09.csv');
+    expect(personCsv.slice(1)).toBe('Person,Met,Late,At risk now,Breached now\r\nRohan Mehta,3,1,2,1\r\n');
   });
 
   it('downloads the overdue assignments with DD/MM/YYYY dates', async () => {

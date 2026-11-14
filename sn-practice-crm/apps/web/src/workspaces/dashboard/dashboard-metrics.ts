@@ -527,6 +527,19 @@ function feeTile(invoices: readonly InvoiceRecord[], feesState: FeesState): Metr
   };
 }
 
+/** Open work with a turnaround target that is at risk or past its SLA deadline. */
+function slaTile(assignments: readonly AssignmentRow[]): MetricTile {
+  const running = openAssignments(assignments).map((a) => a.sla?.status);
+  const atRisk = running.filter((status) => status === 'at_risk').length;
+  const breached = running.filter((status) => status === 'breached').length;
+  return {
+    label: 'At risk / breached',
+    value: `${atRisk} / ${breached}`,
+    note: 'Of open work with a target',
+    tone: breached > 0 ? 'danger' : countTone(atRisk, 'warning'),
+  };
+}
+
 function dueTodayTile(dueToday: number, overdue: number, note: string): MetricTile {
   return {
     label: 'Due today',
@@ -570,6 +583,7 @@ export function buildDepartmentTiles(assignments: readonly AssignmentRow[], toda
       note: 'Founder or Manager action',
       tone: countTone(review, 'warning'),
     },
+    slaTile(assignments),
   ];
 }
 
@@ -611,6 +625,7 @@ export function buildMetricTiles(input: MetricInput): MetricTile[] {
           tone: countTone(changes, 'warning'),
         },
         feeTile(invoices, feesState),
+        slaTile(assignments),
       ];
     }
     const open = openAssignments(assignments);
@@ -624,6 +639,7 @@ export function buildMetricTiles(input: MetricInput): MetricTile[] {
       },
       reviewTile,
       feeTile(invoices, feesState),
+      slaTile(assignments),
     ];
   }
 
@@ -685,6 +701,7 @@ export function buildMetricTiles(input: MetricInput): MetricTile[] {
         note: inProgressNote(delegatedOpen.filter((t) => t.status === 'In Progress').length),
         tone: 'default',
       },
+      slaTile(mine),
     ];
   }
 
@@ -693,5 +710,6 @@ export function buildMetricTiles(input: MetricInput): MetricTile[] {
     overdueTile,
     { label: 'With others', value: String(delegatedOpen.length), note: 'Delegated by me', tone: 'default' },
     personalTiles(input.personalTasks),
+    slaTile(mine),
   ];
 }

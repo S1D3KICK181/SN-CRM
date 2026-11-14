@@ -36,6 +36,7 @@ import { ApiError, notFound } from './errors';
 import { maskGstinForRoutineRead, maskPanForRoutineRead } from './client-privacy';
 import { computeRequestHash } from './idempotency';
 import type {
+  AssignmentRecord,
   ApplyCreditCommand,
   ClientReference,
   ConfirmDocumentCommand,
@@ -106,6 +107,9 @@ export interface ServiceSeedRecord extends ServiceReference {
   createdAt?: string;
   updatedAt?: string;
 }
+
+/** An Assignment as held in memory: the SLA is worked out by the application, so it is not stored. */
+type StoredAssignment = Omit<AssignmentDto, 'sla'>;
 
 type ServiceRecord = Omit<ServiceDto, 'usage' | 'departmentName'>;
 
@@ -230,7 +234,7 @@ export interface DemoSeed {
   clients: ClientSeedRecord[];
   services?: ServiceSeedRecord[];
   departments?: DepartmentSeedRecord[];
-  assignments: AssignmentDto[];
+  assignments: StoredAssignment[];
   recurringSchedules: RecurringScheduleDto[];
   workItems: WorkItemDto[];
   ledgerEntries: LedgerEntryDto[];
@@ -315,7 +319,7 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
   private readonly clients = new Map<string, ClientSeedRecord>();
   private readonly services = new Map<string, ServiceRecord>();
   private readonly departments = new Map<string, DepartmentRecord>();
-  private readonly assignments = new Map<string, AssignmentDto>();
+  private readonly assignments = new Map<string, StoredAssignment>();
   private readonly schedules = new Map<string, RecurringScheduleDto>();
   private readonly workItems = new Map<string, WorkItemDto>();
   private readonly ledgerEntries = new Map<string, LedgerEntryDto>();
@@ -457,7 +461,7 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
     return actor.role === 'founder' || actor.role === 'manager';
   }
 
-  private hasAssignmentInvolvement(actor: EmployeeRecord, assignment: AssignmentDto): boolean {
+  private hasAssignmentInvolvement(actor: EmployeeRecord, assignment: StoredAssignment): boolean {
     if (this.isManagement(actor)) {
       return true;
     }
@@ -479,7 +483,7 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
 
   // Mirrors user_heads_department_of_assignment: a head-flagged member of the ACTIVE department of the
   // assignment's service. Trainees never count. Read access only; nothing here grants a write right.
-  private headsDepartmentOfAssignment(actor: EmployeeRecord, assignment: AssignmentDto): boolean {
+  private headsDepartmentOfAssignment(actor: EmployeeRecord, assignment: StoredAssignment): boolean {
     if (actor.role === 'trainee') return false;
     const departmentId = this.services.get(assignment.serviceId)?.departmentId;
     if (!departmentId) return false;
@@ -488,7 +492,7 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
   }
 
   // Mirrors user_can_read_assignment, used wherever Postgres relies on the assignment select policy.
-  private canReadAssignment(actor: EmployeeRecord, assignment: AssignmentDto): boolean {
+  private canReadAssignment(actor: EmployeeRecord, assignment: StoredAssignment): boolean {
     return this.hasAssignmentInvolvement(actor, assignment) || this.headsDepartmentOfAssignment(actor, assignment);
   }
 
@@ -1148,16 +1152,21 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
 
   // --- Assignments ---
 
-  async getAssignment(_ctx: RepositoryContext, id: string): Promise<AssignmentDto | null> {
+  // The service's usual turnaround is read when the Assignment is read, so editing it in Settings applies at once.
+  private toAssignmentRecord(assignment: StoredAssignment): AssignmentRecord {
+    return { ...copy(assignment), serviceTurnaroundDays: this.services.get(assignment.serviceId)?.turnaroundDays ?? null };
+  }
+
+  async getAssignment(_ctx: RepositoryContext, id: string): Promise<AssignmentRecord | null> {
     const value = this.assignments.get(id);
-    return value ? copy(value) : null;
+    return value ? this.toAssignmentRecord(value) : null;
   }
 
-  async listAssignments(_ctx: RepositoryContext): Promise<AssignmentDto[]> {
-    return copy([...this.assignments.values()]);
+  async listAssignments(_ctx: RepositoryContext): Promise<AssignmentRecord[]> {
+    return [...this.assignments.values()].map((value) => this.toAssignmentRecord(value));
   }
 
-  async createAssignment(_ctx: RepositoryContext, record: CreateAssignmentRecord): Promise<AssignmentDto> {
+  async createAssignment(_ctx: RepositoryContext, record: CreateAssignmentRecord): Promise<AssignmentRecord> {
     // Mirrors guard_assignment_engagement_link: same client, active engagement, code copied from it
     let engagementCode: string | null = null;
     if (record.engagementId) {
@@ -1177,7 +1186,7 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
     const code = `AS-${String(this.assignmentCounter).padStart(6, '0')}`;
     const ownerName = this.employees.get(record.ownerId)?.name ?? 'Unassigned';
     const reviewerNames = record.reviewerIds.map((id) => this.employees.get(id)?.name ?? 'Unknown');
-    const assignment: AssignmentDto = {
+    const assignment: StoredAssignment = {
       id: record.id,
       code,
       clientId: record.clientId,
@@ -1206,13 +1215,13 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
       updatedAt: record.updatedAt,
     };
     this.assignments.set(assignment.id, copy(assignment));
-    return copy(assignment);
+    return this.toAssignmentRecord(assignment);
   }
 
   async updateAssignmentStatus(
     _ctx: RepositoryContext,
     command: UpdateAssignmentStatusCommand,
-  ): Promise<AssignmentDto> {
+  ): Promise<AssignmentRecord> {
     const existing = this.assignments.get(command.id);
     if (!existing) {
       throw new ApiError(404, 'assignment_not_found', 'Assignment was not found.');
@@ -1220,9 +1229,16 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
     if (!command.expectedUpdatedAt || command.expectedUpdatedAt !== existing.updatedAt) {
       throw new ApiError(409, 'concurrency_conflict', 'The resource was updated concurrently by another operation.');
     }
-    const updated: AssignmentDto = {
+    // Mirrors the database trigger that stamps the lifecycle times when the status changes.
+    const changedAt = this.now().toISOString();
+    const statusChanged = existing.status !== command.status;
+    const updated: StoredAssignment = {
       ...existing,
       status: command.status,
+      ...(statusChanged && command.status === 'in_progress' && !existing.startedAt ? { startedAt: changedAt } : {}),
+      ...(statusChanged && command.status === 'ready_for_review' ? { submittedAt: changedAt } : {}),
+      ...(statusChanged && command.status === 'approved' ? { approvedAt: changedAt } : {}),
+      ...(statusChanged && command.status === 'closed' ? { closedAt: changedAt } : {}),
       deliveryNotes: command.deliveryNotes !== undefined ? command.deliveryNotes : existing.deliveryNotes,
       reviewNotes: command.reviewNotes !== undefined ? command.reviewNotes : existing.reviewNotes,
       progressPercent:
@@ -1234,32 +1250,32 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
       updatedAt: new Date().toISOString(),
     };
     this.assignments.set(updated.id, copy(updated));
-    return copy(updated);
+    return this.toAssignmentRecord(updated);
   }
 
   async updateAssignmentReviewers(
     _ctx: RepositoryContext,
     command: UpdateAssignmentReviewersCommand,
-  ): Promise<AssignmentDto> {
+  ): Promise<AssignmentRecord> {
     const existing = this.assignments.get(command.id);
     if (!existing) {
       throw new ApiError(404, 'assignment_not_found', 'Assignment was not found.');
     }
     const reviewerNames = command.reviewerIds.map((id) => this.employees.get(id)?.name ?? 'Unknown');
-    const updated: AssignmentDto = {
+    const updated: StoredAssignment = {
       ...existing,
       reviewerIds: [...command.reviewerIds],
       reviewerNames,
       updatedAt: new Date().toISOString(),
     };
     this.assignments.set(updated.id, copy(updated));
-    return copy(updated);
+    return this.toAssignmentRecord(updated);
   }
 
   async updateAssignment(
     _ctx: RepositoryContext,
     command: UpdateAssignmentCommand,
-  ): Promise<AssignmentDto> {
+  ): Promise<AssignmentRecord> {
     const existing = this.assignments.get(command.id);
     if (!existing) {
       throw new ApiError(404, 'assignment_not_found', 'Assignment was not found.');
@@ -1271,7 +1287,7 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
     const nextOwnerName = this.employees.get(nextOwnerId)?.name ?? existing.ownerName;
     const nextReviewerIds = command.reviewerIds !== undefined ? [...command.reviewerIds] : existing.reviewerIds;
     const nextReviewerNames = nextReviewerIds.map((id) => this.employees.get(id)?.name ?? 'Unknown');
-    const updated: AssignmentDto = {
+    const updated: StoredAssignment = {
       ...existing,
       title: command.title !== undefined ? command.title : existing.title,
       description: command.description !== undefined ? command.description : existing.description,
@@ -1288,7 +1304,7 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
       updatedAt: new Date().toISOString(),
     };
     this.assignments.set(updated.id, copy(updated));
-    return copy(updated);
+    return this.toAssignmentRecord(updated);
   }
 
   // --- Work Items ---
@@ -1476,7 +1492,7 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
           const id = crypto.randomUUID();
           const now = new Date().toISOString();
           const recurrenceDates = calculateRecurrenceDates(occurrence, schedule.cadence, schedule.dueDay);
-          const assignment: AssignmentDto = {
+          const assignment: StoredAssignment = {
             id,
             code,
             clientId: schedule.clientId,
@@ -2073,6 +2089,14 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
     return item.kind === 'delegated' && assignment !== undefined && this.hasAssignmentInvolvement(actor, assignment);
   }
 
+  async listReportAssignments(ctx: RepositoryContext): Promise<AssignmentRecord[]> {
+    const actor = this.getActor(ctx);
+    if (!actor) return [];
+    return [...this.assignments.values()]
+      .filter((assignment) => this.canReadAssignment(actor, assignment))
+      .map((assignment) => this.toAssignmentRecord(assignment));
+  }
+
   async getPracticeReport(ctx: RepositoryContext, period: ReportPeriodDto): Promise<PracticeReportBody> {
     const actor = this.getActor(ctx);
     const now = this.now();
@@ -2088,7 +2112,7 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
     const dateInPeriod = (date: string): boolean => date >= period.start && date < period.endExclusive;
     const isOpen = (status: AssignmentStatus): boolean =>
       status !== 'approved' && status !== 'closed' && status !== 'cancelled';
-    const isLate = (assignment: AssignmentDto): boolean => isOpen(assignment.status) && Date.parse(assignment.dueAt) < nowMs;
+    const isLate = (assignment: StoredAssignment): boolean => isOpen(assignment.status) && Date.parse(assignment.dueAt) < nowMs;
     const ownerName = (id: string): string => this.employees.get(id)?.name ?? 'Unassigned';
 
     const assignments = actor
@@ -2097,7 +2121,7 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
     const workItems = actor ? [...this.workItems.values()].filter((item) => this.canViewWorkItem(actor, item)) : [];
 
     // Work progress
-    const completedAt = (assignment: AssignmentDto): string | null =>
+    const completedAt = (assignment: StoredAssignment): string | null =>
       assignment.approvedAt ?? assignment.closedAt ?? null;
     const summary = {
       created: assignments.filter((assignment) => inPeriod(assignment.createdAt)).length,
@@ -2115,7 +2139,7 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
       groups: Map<string, { name: string; counts: Counts }>,
       key: string,
       name: string,
-      assignment: AssignmentDto,
+      assignment: StoredAssignment,
     ): void => {
       const entry = groups.get(key) ?? { name, counts: { created: 0, completed: 0, openNow: 0, overdueNow: 0 } };
       if (inPeriod(assignment.createdAt)) entry.counts.created += 1;

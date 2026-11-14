@@ -211,6 +211,7 @@ export function mapDtoToAssignmentRow(dto: AssignmentDto): AssignmentRow {
     recurringScheduleId: dto.recurringScheduleId ?? null,
     engagementId: dto.engagementId ?? null,
     engagementCode: dto.engagementCode ?? null,
+    sla: dto.sla ?? null,
     expectedUpdatedAt: dto.updatedAt,
     status: displayStatus,
     progress,

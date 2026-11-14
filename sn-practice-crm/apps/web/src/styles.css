@@ -1106,6 +1106,15 @@ tbody tr:hover {
   color: var(--success);
 }
 
+.status.is-muted {
+  background: var(--surface-muted);
+  color: var(--ink-muted);
+}
+
+.status.tone-danger.is-muted {
+  color: var(--danger);
+}
+
 .is-danger-text {
   color: var(--danger);
   font-weight: 750;

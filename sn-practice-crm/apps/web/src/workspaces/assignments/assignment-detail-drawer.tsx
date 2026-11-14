@@ -26,6 +26,7 @@ import {
 import { Field } from '../../ui/workspace-primitives';
 import { isValidUuid } from '../../api/metadata-safety';
 import { useMessageComposer } from '../messages/message-composer';
+import { SlaChip, slaDetailText } from './sla-chip';
 
 export function AssignmentDetailDrawer({
   assignment,
@@ -984,6 +985,20 @@ export function AssignmentDetailDrawer({
                       {assignment.due}
                     </span>
                   </div>
+                  {assignment.status !== 'Cancelled' ? (
+                    <div className="drawer-item" style={{ gridColumn: 'span 2' }}>
+                      <span className="drawer-label">SLA</span>
+                      <span className="drawer-val" style={{ fontWeight: 400, fontSize: 13 }}>
+                        {assignment.sla ? (
+                          <>
+                            {slaDetailText(assignment.sla)} · <SlaChip sla={assignment.sla} />
+                          </>
+                        ) : (
+                          `No target set for ${assignment.service}. Set a usual turnaround in Settings → Services.`
+                        )}
+                      </span>
+                    </div>
+                  ) : null}
                   <div className="drawer-item" style={{ gridColumn: 'span 2' }}>
                     <span className="drawer-label">Delivery Notes</span>
                     <span className="drawer-val" style={{ fontWeight: 400, fontSize: 12 }}>

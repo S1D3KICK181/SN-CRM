@@ -4875,5 +4875,118 @@ describe('PostgresCrmRepository Integration Suite', () => {
         expect(messages.find((row) => row.purpose === 'deadline_reminder')?.count).toBeGreaterThanOrEqual(1);
       });
     });
+
+    // SLA-01: the target is the service's usual turnaround, counted in working days (Monday to Saturday).
+    // The tests set it inside the rolled-back transaction and check only their own rows.
+    const setTurnaround = async (tx: postgres.TransactionSql, days: number | null) => {
+      await asServerRole(tx);
+      await tx`UPDATE public.service_catalog SET default_duration_days = ${days}::smallint WHERE id = ${GST_SERVICE}::uuid`;
+    };
+
+    it('IT-89: a running assignment shows the deadline and status worked out from its service turnaround', async () => {
+      await runIsolatedTest(async (repo, tx) => {
+        await setTurnaround(tx, 5);
+        // Created Monday 1 March 2021; day 5 is Saturday 6 March
+        const id = await insertAssignment(tx, {
+          clientId: BLUEPEAK,
+          ownerId: STAFF_ID,
+          status: 'in_progress',
+          dueAt: '2021-04-20T12:00:00+05:30',
+          createdAt: '2021-03-01T10:00:00+05:30',
+        });
+        let nowValue = '2021-03-03T12:00:00+05:30';
+        const application = new CrmApplication(repo, { now: () => new Date(nowValue) });
+        const founder = await application.requireActor(FOUNDER_ID);
+        const sla = async () => (await application.listAssignments(founder)).find((row) => row.id === id)?.sla;
+
+        expect(await sla()).toEqual({ targetDays: 5, deadline: '2021-03-06', status: 'on_track', workingDaysUsed: 2, workingDaysLeft: 3 });
+        nowValue = '2021-03-05T12:00:00+05:30';
+        expect(await sla()).toMatchObject({ status: 'at_risk', workingDaysUsed: 4, workingDaysLeft: 1 });
+        nowValue = '2021-03-08T12:00:00+05:30';
+        expect(await sla()).toMatchObject({ status: 'breached', workingDaysUsed: 6, workingDaysLeft: 0 });
+
+        // The same row counts as breached in the report, for the owner and the service
+        const summaryBefore = (await application.getPracticeReport(founder, { period: 'day', date: '2021-03-08' })).workProgress.sla;
+        await tx`RESET ROLE`;
+        await tx`UPDATE public.assignments SET status = 'cancelled' WHERE id = ${id}::uuid`;
+        const summaryAfter = (await application.getPracticeReport(founder, { period: 'day', date: '2021-03-08' })).workProgress.sla;
+        expect(summaryBefore.summary.breachedNow - summaryAfter.summary.breachedNow).toBe(1);
+        // A cancelled assignment has no SLA
+        expect(await sla()).toBeNull();
+      });
+    });
+
+    it('IT-90: submitting for review stops the clock, and the result is met or late against the deadline', async () => {
+      await runIsolatedTest(async (repo, tx) => {
+        await setTurnaround(tx, 5);
+        const submitted = (submittedAt: string) =>
+          insertAssignment(tx, {
+            clientId: BLUEPEAK,
+            ownerId: STAFF_ID,
+            status: 'ready_for_review',
+            dueAt: '2021-04-20T12:00:00+05:30',
+            createdAt: '2021-03-01T10:00:00+05:30',
+            submittedAt,
+          });
+        const onTime = await submitted('2021-03-04T10:00:00+05:30');
+        const late = await submitted('2021-03-08T10:00:00+05:30');
+        const application = new CrmApplication(repo, { now: () => new Date('2021-06-01T12:00:00+05:30') });
+        const founder = await application.requireActor(FOUNDER_ID);
+        const rows = await application.listAssignments(founder);
+        // Months later, the stopped clock has not moved
+        expect(rows.find((row) => row.id === onTime)?.sla).toEqual({
+          targetDays: 5,
+          deadline: '2021-03-06',
+          status: 'met',
+          workingDaysUsed: 3,
+          workingDaysLeft: 0,
+        });
+        expect(rows.find((row) => row.id === late)?.sla).toMatchObject({ status: 'late', workingDaysUsed: 6, workingDaysLeft: 0 });
+
+        const march = (await application.getPracticeReport(founder, { period: 'month', date: '2021-03-20' })).workProgress.sla.summary;
+        await tx`RESET ROLE`;
+        await tx`UPDATE public.assignments SET status = 'cancelled' WHERE id IN (${onTime}::uuid, ${late}::uuid)`;
+        const without = (await application.getPracticeReport(founder, { period: 'month', date: '2021-03-20' })).workProgress.sla.summary;
+        expect(march.metInPeriod - without.metInPeriod).toBe(1);
+        expect(march.lateInPeriod - without.lateInPeriod).toBe(1);
+
+        // A real submission through the application stops the clock the same way
+        const live = new CrmApplication(repo);
+        const staff = await live.requireActor(STAFF_ID);
+        const created = await live.createAssignment(founder, {
+          clientId: BLUEPEAK,
+          title: 'IT SLA live submission',
+          serviceId: GST_SERVICE,
+          ownerId: STAFF_ID,
+          reviewerIds: [MANAGER_ID],
+          dueAt: '2099-01-01T12:00:00.000Z',
+        });
+        expect(created.sla).toMatchObject({ targetDays: 5, status: 'on_track', workingDaysUsed: 0, workingDaysLeft: 5 });
+        const done = await live.transitionAssignment(staff, created.id, 'submit');
+        expect(done.submittedAt).not.toBeNull();
+        expect(done.sla).toMatchObject({ status: 'met', workingDaysLeft: 0 });
+      });
+    });
+
+    it('IT-91: a service without a turnaround gives no SLA, and its open work counts as no target in the report', async () => {
+      await runIsolatedTest(async (repo, tx) => {
+        await setTurnaround(tx, null);
+        const application = new CrmApplication(repo, { now: () => new Date('2021-03-03T12:00:00+05:30') });
+        const founder = await application.requireActor(FOUNDER_ID);
+        const before = (await application.getPracticeReport(founder, { period: 'day', date: '2021-03-03' })).workProgress.sla.summary;
+        const id = await insertAssignment(tx, {
+          clientId: BLUEPEAK,
+          ownerId: STAFF_ID,
+          status: 'in_progress',
+          dueAt: '2021-04-20T12:00:00+05:30',
+          createdAt: '2021-03-01T10:00:00+05:30',
+        });
+        expect((await application.listAssignments(founder)).find((row) => row.id === id)?.sla).toBeNull();
+        const after = (await application.getPracticeReport(founder, { period: 'day', date: '2021-03-03' })).workProgress.sla.summary;
+        expect(after.noTarget - before.noTarget).toBe(1);
+        expect(after.breachedNow).toBe(before.breachedNow);
+        expect(after.atRiskNow).toBe(before.atRiskNow);
+      });
+    });
   });
 });

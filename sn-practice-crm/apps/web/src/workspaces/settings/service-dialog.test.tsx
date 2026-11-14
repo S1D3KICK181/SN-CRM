@@ -75,7 +75,7 @@ describe('ServiceDialog', () => {
     for (const label of ['Name', 'Description', 'Usual turnaround (days)', 'Has statutory due dates']) {
       expect(screen.getByLabelText(label)).toBeTruthy();
     }
-    expect(dialog.textContent).toContain('Used later to flag work that runs late.');
+    expect(dialog.textContent).toContain('The SLA target, in working days (Monday to Saturday). Leave empty for no SLA.');
     expect(dialog.textContent).toContain('For filings with government due dates, like GST and income tax returns.');
     const checkbox = screen.getByLabelText('Has statutory due dates') as HTMLInputElement;
     expect(checkbox.type).toBe('checkbox');

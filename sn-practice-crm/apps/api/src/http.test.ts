@@ -3268,3 +3268,66 @@ describe('REP-01 report route', () => {
     expect(response.body.error).toMatchObject({ code: 'validation_failed', message });
   });
 });
+
+describe('SLA-01 over HTTP', () => {
+  const GST_SERVICE = '50000000-0000-4000-a000-000000000001';
+
+  async function send(baseUrl: string, method: 'GET' | 'POST' | 'PATCH', path: string, body?: unknown) {
+    const headers: Record<string, string> = { 'x-demo-user-id': DEMO_ACTOR_IDS.founder };
+    if (body !== undefined) headers['content-type'] = 'application/json';
+    if (method !== 'GET') headers['Idempotency-Key'] = `key-${Math.random()}`;
+    const response = await fetch(`${baseUrl}${path}`, {
+      method,
+      headers,
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    });
+    return { status: response.status, body: await response.json() };
+  }
+
+  it('carries sla on every assignment, null while the service has no turnaround', async () => {
+    const baseUrl = await startServer();
+    const list = await send(baseUrl, 'GET', '/api/v1/assignments');
+    expect(list.status).toBe(200);
+    expect(list.body.data.length).toBeGreaterThan(0);
+    for (const row of list.body.data) expect(row.sla).toBeNull();
+  });
+
+  it('gives an assignment its SLA once the service has a turnaround, on create and on list', async () => {
+    const baseUrl = await startServer();
+    const catalog = await send(baseUrl, 'GET', '/api/v1/service-catalog');
+    const service = catalog.body.data.find((row: { id: string }) => row.id === GST_SERVICE);
+    const patched = await send(baseUrl, 'PATCH', `/api/v1/service-catalog/${GST_SERVICE}`, {
+      turnaroundDays: 5,
+      expectedUpdatedAt: service.updatedAt,
+    });
+    expect(patched.status).toBe(200);
+
+    const created = await send(baseUrl, 'POST', '/api/v1/assignments', {
+      clientId: '10000000-0000-4000-a000-000000000001',
+      title: 'Annual return',
+      serviceId: GST_SERVICE,
+      ownerId: DEMO_ACTOR_IDS.staff,
+      reviewerIds: [DEMO_ACTOR_IDS.manager],
+      dueAt: '2026-12-01T12:30:00.000Z',
+    });
+    expect(created.status).toBe(201);
+    // Created Friday 30 October 2026 (the test clock); day 5 is Thursday 5 November
+    const expected = { targetDays: 5, deadline: '2026-11-05', status: 'on_track', workingDaysUsed: 0, workingDaysLeft: 5 };
+    expect(created.body.data.sla).toEqual(expected);
+
+    const list = await send(baseUrl, 'GET', '/api/v1/assignments');
+    expect(list.body.data.find((row: { id: string }) => row.id === created.body.data.id).sla).toEqual(expected);
+  });
+
+  it('adds the SLA section to the work progress report', async () => {
+    const baseUrl = await startServer();
+    const report = await send(baseUrl, 'GET', '/api/v1/reports?period=week&date=2026-10-30');
+    expect(report.status).toBe(200);
+    expect(Object.keys(report.body.data.workProgress).sort()).toEqual(['byOwner', 'byService', 'overdueList', 'sla', 'summary']);
+    const sla = report.body.data.workProgress.sla;
+    expect(Object.keys(sla.summary).sort()).toEqual(['atRiskNow', 'breachedNow', 'lateInPeriod', 'metInPeriod', 'noTarget']);
+    expect(sla.byService).toEqual([]);
+    expect(sla.byOwner).toEqual([]);
+    expect(sla.summary.noTarget).toBeGreaterThan(0);
+  });
+});

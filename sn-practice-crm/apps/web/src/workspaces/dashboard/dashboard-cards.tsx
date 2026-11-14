@@ -17,7 +17,11 @@ import {
 
 export function DashboardMetricStrip({ tiles }: { tiles: readonly MetricTile[] }) {
   return (
-    <section className="metric-strip" aria-label="Operational summary">
+    <section
+      className="metric-strip"
+      aria-label="Operational summary"
+      style={tiles.length === 5 ? { gridTemplateColumns: 'repeat(5, minmax(0, 1fr))' } : undefined}
+    >
       {tiles.map((tile) => (
         <article className={`metric-card tone-${tile.tone}`} key={tile.label}>
           <span>{tile.label}</span>

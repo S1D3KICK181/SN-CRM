@@ -127,6 +127,12 @@ export function staleContact(): ApiError {
   return new ApiError(409, 'stale_contact', 'This contact was changed by someone else. Reload and try again.');
 }
 
+/** An Assignment as the repository stores it: the application adds the SLA, which depends on the clock. */
+export type AssignmentRecord = Omit<AssignmentDto, 'sla'> & {
+  /** The service's usual turnaround in working days (service_catalog.default_duration_days), or null. */
+  readonly serviceTurnaroundDays: number | null;
+};
+
 export interface CreateAssignmentRecord {
   readonly id: string; // RFC 4122 UUID (pre-generated)
   readonly clientId: string; // RFC 4122 UUID
@@ -468,21 +474,21 @@ export interface CrmRepository {
   ): Promise<ReportingLineDto>;
 
   // Assignments
-  getAssignment(ctx: RepositoryContext, id: string): Promise<AssignmentDto | null>;
-  listAssignments(ctx: RepositoryContext): Promise<AssignmentDto[]>;
-  createAssignment(ctx: RepositoryContext, record: CreateAssignmentRecord): Promise<AssignmentDto>;
+  getAssignment(ctx: RepositoryContext, id: string): Promise<AssignmentRecord | null>;
+  listAssignments(ctx: RepositoryContext): Promise<AssignmentRecord[]>;
+  createAssignment(ctx: RepositoryContext, record: CreateAssignmentRecord): Promise<AssignmentRecord>;
   updateAssignmentStatus(
     ctx: RepositoryContext,
     command: UpdateAssignmentStatusCommand,
-  ): Promise<AssignmentDto>;
+  ): Promise<AssignmentRecord>;
   updateAssignmentReviewers(
     ctx: RepositoryContext,
     command: UpdateAssignmentReviewersCommand,
-  ): Promise<AssignmentDto>;
+  ): Promise<AssignmentRecord>;
   updateAssignment(
     ctx: RepositoryContext,
     command: UpdateAssignmentCommand,
-  ): Promise<AssignmentDto>;
+  ): Promise<AssignmentRecord>;
 
   // Work Items
   getWorkItem(ctx: RepositoryContext, id: string): Promise<WorkItemDto | null>;
@@ -532,6 +538,8 @@ export interface CrmRepository {
 
   // Reports (REP-01): read-only; the rows counted are the ones the actor may see. The "now" figures are as at the call.
   getPracticeReport(ctx: RepositoryContext, period: ReportPeriodDto): Promise<PracticeReportBody>;
+  // The Assignments the report counts (the same visibility), for the SLA section the application works out.
+  listReportAssignments(ctx: RepositoryContext): Promise<AssignmentRecord[]>;
 
   // Office Accounts & Ledger
   getOfficeAccountsSummary(ctx: RepositoryContext): Promise<OfficeAccountsSummaryDto>;
@@ -616,4 +624,6 @@ export function resolveReportPeriod(kind: ReportPeriodKind, date: string): Repor
 }
 
 /** The report sections that depend on the database; the application adds the period and decides on the fees section. */
-export type PracticeReportBody = Omit<PracticeReportDto, 'period'>;
+export type PracticeReportBody = Omit<PracticeReportDto, 'period' | 'workProgress'> & {
+  workProgress: Omit<PracticeReportDto['workProgress'], 'sla'>;
+};

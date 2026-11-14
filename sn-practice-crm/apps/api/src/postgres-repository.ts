@@ -2,7 +2,6 @@ import type postgres from 'postgres';
 import { DOCUMENT_CATEGORIES, DOCUMENT_MAX_BYTES, MESSAGE_PURPOSES } from '@sn/contracts';
 import type { CompanyRole } from '@sn/domain';
 import type {
-  AssignmentDto,
   ClientContactDto,
   ClientDocumentDto,
   ClientDto,
@@ -38,6 +37,7 @@ import type {
   ApplyCreditCommand,
   ClientReference,
   ConfirmDocumentCommand,
+  AssignmentRecord,
   CreateAssignmentRecord,
   CreateClientContactCommand,
   CreateClientRecord,
@@ -1259,12 +1259,12 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
 
   // --- Assignments ---
 
-  private async fetchAssignmentDto(tx: SqlClient, id: string): Promise<AssignmentDto | null> {
+  private async fetchAssignmentDto(tx: SqlClient, id: string): Promise<AssignmentRecord | null> {
     const rows = await tx`
       SELECT
         a.id, a.code, a.client_id AS "clientId",
         c.display_name AS "clientName",
-        a.service_id AS "serviceId", s.name AS "serviceName",
+        a.service_id AS "serviceId", s.name AS "serviceName", s.default_duration_days AS "serviceTurnaroundDays",
         a.title, a.description AS "description", a.owner_id AS "ownerId",
         coalesce(p.full_name, 'Unassigned') AS "ownerName",
         a.status, a.priority, a.period_start AS "periodStart", a.period_end AS "periodEnd",
@@ -1301,6 +1301,7 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
       clientName: String(row['clientName']),
       serviceId: String(row['serviceId']),
       service: String(row['serviceName']),
+      serviceTurnaroundDays: row['serviceTurnaroundDays'] === null ? null : Number(row['serviceTurnaroundDays']),
       title: String(row['title']),
       description: row['description'] ? String(row['description']) : null,
       ownerId: String(row['ownerId']),
@@ -1330,7 +1331,7 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
     };
   }
 
-  async getAssignment(ctx: RepositoryContext, id: string): Promise<AssignmentDto | null> {
+  async getAssignment(ctx: RepositoryContext, id: string): Promise<AssignmentRecord | null> {
     try {
       return await this.runner.withUserContext(ctx, async (tx) => {
         return this.fetchAssignmentDto(tx, id);
@@ -1340,14 +1341,14 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
     }
   }
 
-  async listAssignments(ctx: RepositoryContext): Promise<AssignmentDto[]> {
+  async listAssignments(ctx: RepositoryContext): Promise<AssignmentRecord[]> {
     try {
       return await this.runner.withUserContext(ctx, async (tx) => {
         const rows = await tx`
           SELECT
             a.id, a.code, a.client_id AS "clientId",
             c.display_name AS "clientName",
-            a.service_id AS "serviceId", s.name AS "serviceName",
+            a.service_id AS "serviceId", s.name AS "serviceName", s.default_duration_days AS "serviceTurnaroundDays",
             a.title, a.description AS "description", a.owner_id AS "ownerId",
             coalesce(p.full_name, 'Unassigned') AS "ownerName",
             a.status, a.priority, a.period_start AS "periodStart", a.period_end AS "periodEnd",
@@ -1401,6 +1402,7 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
           clientName: String(row['clientName']),
           serviceId: String(row['serviceId']),
           service: String(row['serviceName']),
+          serviceTurnaroundDays: row['serviceTurnaroundDays'] === null ? null : Number(row['serviceTurnaroundDays']),
           title: String(row['title']),
           description: row['description'] ? String(row['description']) : null,
           ownerId: String(row['ownerId']),
@@ -1434,7 +1436,12 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
     }
   }
 
-  async createAssignment(ctx: RepositoryContext, record: CreateAssignmentRecord): Promise<AssignmentDto> {
+  // The same Assignments the report counts: row-level security decides, as for listAssignments.
+  async listReportAssignments(ctx: RepositoryContext): Promise<AssignmentRecord[]> {
+    return this.listAssignments(ctx);
+  }
+
+  async createAssignment(ctx: RepositoryContext, record: CreateAssignmentRecord): Promise<AssignmentRecord> {
     try {
       return await this.runner.withUserContext(ctx, async (tx) => {
         await tx`
@@ -1477,7 +1484,7 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
   async updateAssignmentStatus(
     ctx: RepositoryContext,
     command: UpdateAssignmentStatusCommand,
-  ): Promise<AssignmentDto> {
+  ): Promise<AssignmentRecord> {
     try {
       return await this.runner.withUserContext(ctx, async (tx) => {
         if (!command.expectedUpdatedAt) {
@@ -1536,7 +1543,7 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
   async updateAssignment(
     ctx: RepositoryContext,
     command: UpdateAssignmentCommand,
-  ): Promise<AssignmentDto> {
+  ): Promise<AssignmentRecord> {
     try {
       return await this.runner.withUserContext(ctx, async (tx) => {
         if (!command.expectedUpdatedAt) {
@@ -1618,7 +1625,7 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
   async updateAssignmentReviewers(
     ctx: RepositoryContext,
     command: UpdateAssignmentReviewersCommand,
-  ): Promise<AssignmentDto> {
+  ): Promise<AssignmentRecord> {
     try {
       return await this.runner.withUserContext(ctx, async (tx) => {
         await tx`

@@ -52,6 +52,18 @@ export const ASSIGNMENT_TRANSITIONS = [
 ] as const;
 export type AssignmentTransition = (typeof ASSIGNMENT_TRANSITIONS)[number];
 
+export const SLA_STATUSES = ['on_track', 'at_risk', 'breached', 'met', 'late'] as const;
+export type SlaStatus = (typeof SLA_STATUSES)[number];
+
+/** Turnaround against the service's usual turnaround, in working days (Monday to Saturday). */
+export interface SlaDto {
+  readonly targetDays: number;
+  readonly deadline: string; // YYYY-MM-DD, Asia/Kolkata
+  readonly status: SlaStatus;
+  readonly workingDaysUsed: number;
+  readonly workingDaysLeft: number; // 0 once stopped or past the deadline
+}
+
 export interface AssignmentDto {
   readonly id: string; // RFC 4122 UUID
   readonly code: string; // Output-only: AS-xxxxxx
@@ -85,6 +97,7 @@ export interface AssignmentDto {
   readonly approvedById?: string | null;
   readonly closedAt?: string | null;
   readonly closedById?: string | null;
+  readonly sla: SlaDto | null; // Output-only: null when the service has no turnaround, or the Assignment is cancelled
 }
 
 export type ServiceReferenceInput =
@@ -1129,11 +1142,43 @@ export interface OverdueAssignmentRowDto {
   readonly daysOverdue: number;
 }
 
+export interface SlaReportSummaryDto {
+  readonly metInPeriod: number; // clock stopped in the period, within the target
+  readonly lateInPeriod: number; // clock stopped in the period, after the target
+  readonly atRiskNow: number; // clock running, 2 or fewer working days left
+  readonly breachedNow: number; // clock running, past the deadline
+  readonly noTarget: number; // open assignments whose service has no turnaround
+}
+
+export interface SlaByServiceRowDto {
+  readonly serviceName: string;
+  readonly targetDays: number | null;
+  readonly met: number;
+  readonly late: number;
+  readonly atRiskNow: number;
+  readonly breachedNow: number;
+}
+
+export interface SlaByOwnerRowDto {
+  readonly ownerName: string;
+  readonly met: number;
+  readonly late: number;
+  readonly atRiskNow: number;
+  readonly breachedNow: number;
+}
+
+export interface SlaReportDto {
+  readonly summary: SlaReportSummaryDto;
+  readonly byService: readonly SlaByServiceRowDto[];
+  readonly byOwner: readonly SlaByOwnerRowDto[];
+}
+
 export interface WorkProgressReportDto {
   readonly summary: WorkProgressSummaryDto;
   readonly byService: readonly WorkProgressByServiceRowDto[];
   readonly byOwner: readonly WorkProgressByOwnerRowDto[];
   readonly overdueList: readonly OverdueAssignmentRowDto[]; // at most 25, most overdue first
+  readonly sla: SlaReportDto;
 }
 
 export interface TeamActivityRowDto {

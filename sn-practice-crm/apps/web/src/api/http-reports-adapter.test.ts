@@ -19,6 +19,14 @@ const report: PracticeReportDto = {
         daysOverdue: 2,
       },
     ],
+    sla: {
+      summary: { metInPeriod: 3, lateInPeriod: 1, atRiskNow: 2, breachedNow: 1, noTarget: 4 },
+      byService: [
+        { serviceName: 'GST Compliance', targetDays: 5, met: 2, late: 1, atRiskNow: 1, breachedNow: 0 },
+        { serviceName: 'Statutory Audit, FY 2025-26', targetDays: null, met: 1, late: 0, atRiskNow: 1, breachedNow: 1 },
+      ],
+      byOwner: [{ ownerName: 'Rohan Mehta', met: 3, late: 1, atRiskNow: 2, breachedNow: 1 }],
+    },
   },
   teamActivity: [
     {
@@ -179,7 +187,13 @@ describe('parsePracticeReportDto', () => {
   it('keeps empty tables', () => {
     const empty = {
       ...report,
-      workProgress: { ...report.workProgress, byService: [], byOwner: [], overdueList: [] },
+      workProgress: {
+        ...report.workProgress,
+        byService: [],
+        byOwner: [],
+        overdueList: [],
+        sla: { ...report.workProgress.sla, byService: [], byOwner: [] },
+      },
       teamActivity: [],
       fees: { ...report.fees!, byClient: [] },
       followUps: { messagesByPurpose: [], documentsByCategory: [], needsFollowUp: [] },
@@ -188,6 +202,25 @@ describe('parsePracticeReportDto', () => {
   });
 
   it.each([
+    ['a missing SLA section', { workProgress: { ...report.workProgress, sla: undefined } }],
+    [
+      'a negative SLA count',
+      {
+        workProgress: {
+          ...report.workProgress,
+          sla: { ...report.workProgress.sla, summary: { ...report.workProgress.sla.summary, atRiskNow: -1 } },
+        },
+      },
+    ],
+    [
+      'a fractional SLA target',
+      {
+        workProgress: {
+          ...report.workProgress,
+          sla: { ...report.workProgress.sla, byService: [{ ...report.workProgress.sla.byService[0]!, targetDays: 2.5 }] },
+        },
+      },
+    ],
     ['an unknown period kind', { period: { ...report.period, kind: 'year' } }],
     ['a period date that is not YYYY-MM-DD', { period: { ...report.period, start: '09/11/2026' } }],
     ['a blank period label', { period: { ...report.period, label: ' ' } }],

@@ -1,4 +1,12 @@
-import { authorize, type Actor, type AuthorityRequest, type CompanyRole } from '@sn/domain';
+import {
+  authorize,
+  computeSla,
+  kolkataDateOf,
+  slaStoppedAt,
+  type Actor,
+  type AuthorityRequest,
+  type CompanyRole,
+} from '@sn/domain';
 import {
   DOCUMENT_ALLOWED_TYPES,
   DOCUMENT_MAX_BYTES,
@@ -36,6 +44,10 @@ import type {
   OfficeAccountsSummaryDto,
   PaymentReceiptDto,
   PracticeReportDto,
+  ReportPeriodDto,
+  SlaByOwnerRowDto,
+  SlaByServiceRowDto,
+  SlaReportDto,
   RecordClientMessageInput,
   RecordPaymentInput,
   RecordVyaparBillInput,
@@ -59,6 +71,7 @@ import type {
 } from '@sn/contracts';
 import { ApiError, forbidden, notFound } from './errors';
 import type {
+  AssignmentRecord,
   CreateAssignmentRecord,
   CreateClientRecord,
   CreateWorkItemRecord,
@@ -85,6 +98,63 @@ import {
   updateClientSchema,
   validateInput,
 } from './schemas';
+
+type SlaTally = { met: number; late: number; atRiskNow: number; breachedNow: number };
+
+/** The SLA section of the work progress report, worked out over the Assignments the actor can see. */
+function buildSlaReport(records: readonly AssignmentRecord[], period: ReportPeriodDto, now: Date): SlaReportDto {
+  const summary = { metInPeriod: 0, lateInPeriod: 0, atRiskNow: 0, breachedNow: 0, noTarget: 0 };
+  const byService = new Map<string, SlaTally & { serviceName: string; targetDays: number | null }>();
+  const byOwner = new Map<string, SlaTally & { ownerName: string }>();
+  const tally = (): SlaTally => ({ met: 0, late: 0, atRiskNow: 0, breachedNow: 0 });
+
+  for (const record of records) {
+    const stoppedAt = slaStoppedAt(record);
+    const sla = computeSla({
+      createdAt: record.createdAt,
+      stoppedAt,
+      targetDays: record.serviceTurnaroundDays,
+      cancelled: record.status === 'cancelled',
+      now,
+    });
+    if (!sla) {
+      const isOpen = record.status !== 'approved' && record.status !== 'closed' && record.status !== 'cancelled';
+      if (isOpen && record.serviceTurnaroundDays === null) summary.noTarget += 1;
+      continue;
+    }
+
+    const stoppedDate = stoppedAt === null ? null : kolkataDateOf(stoppedAt);
+    const stoppedInPeriod = stoppedDate !== null && stoppedDate >= period.start && stoppedDate < period.endExclusive;
+    const delta: SlaTally = tally();
+    if (stoppedInPeriod && sla.status === 'met') delta.met = 1;
+    if (stoppedInPeriod && sla.status === 'late') delta.late = 1;
+    if (stoppedAt === null && sla.status === 'at_risk') delta.atRiskNow = 1;
+    if (stoppedAt === null && sla.status === 'breached') delta.breachedNow = 1;
+    summary.metInPeriod += delta.met;
+    summary.lateInPeriod += delta.late;
+    summary.atRiskNow += delta.atRiskNow;
+    summary.breachedNow += delta.breachedNow;
+
+    // A row appears when the person or service has work stopped in the period or still running.
+    if (!stoppedInPeriod && stoppedAt !== null) continue;
+    const service = byService.get(record.service) ?? { serviceName: record.service, targetDays: record.serviceTurnaroundDays, ...tally() };
+    const owner = byOwner.get(record.ownerId) ?? { ownerName: record.ownerName, ...tally() };
+    for (const row of [service, owner]) {
+      row.met += delta.met;
+      row.late += delta.late;
+      row.atRiskNow += delta.atRiskNow;
+      row.breachedNow += delta.breachedNow;
+    }
+    byService.set(record.service, service);
+    byOwner.set(record.ownerId, owner);
+  }
+
+  const byName = (left: string, right: string): number =>
+    left.toLowerCase().localeCompare(right.toLowerCase()) || left.localeCompare(right);
+  const serviceRows: SlaByServiceRowDto[] = [...byService.values()].sort((a, b) => byName(a.serviceName, b.serviceName));
+  const ownerRows: SlaByOwnerRowDto[] = [...byOwner.values()].sort((a, b) => byName(a.ownerName, b.ownerName));
+  return { summary, byService: serviceRows, byOwner: ownerRows };
+}
 
 export interface ApplicationOptions {
   now?: () => Date;
@@ -179,9 +249,18 @@ export class CrmApplication {
     requireAuthority({ action: 'reports.view', actor: asActor(actor) });
     const data = validateInput(reportQuerySchema, definedOnly(query));
     const period = resolveReportPeriod(data.period, data.date ?? kolkataToday(this.now()));
-    const { fees, ...body } = await this.repository.getPracticeReport({ actorId: actor.id }, period);
+    const ctx: RepositoryContext = { actorId: actor.id };
+    const [{ fees, workProgress, ...body }, reportAssignments] = await Promise.all([
+      this.repository.getPracticeReport(ctx, period),
+      this.repository.listReportAssignments(ctx),
+    ]);
     const canSeeBills = authorize({ action: 'billing.read', actor: asActor(actor) }).allowed;
-    return { period, ...body, fees: canSeeBills ? fees : null };
+    return {
+      period,
+      workProgress: { ...workProgress, sla: buildSlaReport(reportAssignments, period, this.now()) },
+      ...body,
+      fees: canSeeBills ? fees : null,
+    };
   }
 
   // --- Vyapar bills and payments (FEE-01a) ---
@@ -786,6 +865,21 @@ export class CrmApplication {
     );
   }
 
+  // The SLA depends on the clock, so the application adds it to what the repository returns.
+  private withSla(record: AssignmentRecord): AssignmentDto {
+    const { serviceTurnaroundDays, ...assignment } = record;
+    return {
+      ...assignment,
+      sla: computeSla({
+        createdAt: record.createdAt,
+        stoppedAt: slaStoppedAt(record),
+        targetDays: serviceTurnaroundDays,
+        cancelled: record.status === 'cancelled',
+        now: this.now(),
+      }),
+    };
+  }
+
   async listAssignments(actor: SessionActor): Promise<AssignmentDto[]> {
     const ctx: RepositoryContext = { actorId: actor.id };
     const [assignments, workItems, headedServiceIds] = await Promise.all([
@@ -810,7 +904,8 @@ export class CrmApplication {
           involvedAssignmentIds.has(assignment.id) ||
           headedServiceIds.has(assignment.serviceId),
       )
-      .sort((left, right) => left.dueAt.localeCompare(right.dueAt));
+      .sort((left, right) => left.dueAt.localeCompare(right.dueAt))
+      .map((assignment) => this.withSla(assignment));
   }
 
   async createAssignment(actor: SessionActor, input: CreateAssignmentInput): Promise<AssignmentDto> {
@@ -862,7 +957,7 @@ export class CrmApplication {
       updatedAt: timestamp,
     };
 
-    return await this.repository.createAssignment(ctx, record);
+    return this.withSla(await this.repository.createAssignment(ctx, record));
   }
 
   async transitionAssignment(
@@ -948,7 +1043,7 @@ export class CrmApplication {
 
     const expectedUpdatedAt = options?.expectedUpdatedAt ?? assignment.updatedAt;
 
-    return await this.repository.updateAssignmentStatus(ctx, {
+    const updated = await this.repository.updateAssignmentStatus(ctx, {
       id: assignment.id,
       status: nextStatus,
       expectedUpdatedAt,
@@ -956,6 +1051,7 @@ export class CrmApplication {
       reviewNotes: options?.reviewNotes,
       progressPercent: options?.progressPercent,
     });
+    return this.withSla(updated);
   }
 
   async updateAssignment(
@@ -1065,7 +1161,7 @@ export class CrmApplication {
       actorId: actor.id,
     };
 
-    return await this.repository.updateAssignment(ctx, command);
+    return this.withSla(await this.repository.updateAssignment(ctx, command));
   }
 
   async listRecurringSchedules(actor: SessionActor): Promise<RecurringScheduleDto[]> {
@@ -1405,7 +1501,7 @@ export class CrmApplication {
     return employee;
   }
 
-  private async getAssignment(ctx: RepositoryContext, id: string): Promise<AssignmentDto> {
+  private async getAssignment(ctx: RepositoryContext, id: string): Promise<AssignmentRecord> {
     const assignment = await this.repository.getAssignment(ctx, id);
     if (!assignment) throw notFound('Assignment');
     return assignment;

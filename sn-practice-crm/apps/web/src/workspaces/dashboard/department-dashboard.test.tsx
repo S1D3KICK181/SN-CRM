@@ -94,7 +94,11 @@ describe('DepartmentDashboard', () => {
     renderDashboard([
       row({ id: '1', due: '13/11/2026' }),
       row({ id: '2', due: '10/11/2026', status: 'Ready for review' }),
-      row({ id: '3', due: '01/11/2026' }),
+      row({
+        id: '3',
+        due: '01/11/2026',
+        sla: { targetDays: 5, deadline: '2026-11-20', status: 'at_risk', workingDaysUsed: 4, workingDaysLeft: 1 },
+      }),
       // Not this department's work: another service, and a row with no service
       row({ id: '4', serviceId: '50000000-0000-4000-a000-000000000009', due: '01/11/2026' }),
       row({ id: '5', serviceId: undefined, due: '01/11/2026' }),
@@ -104,11 +108,13 @@ describe('DepartmentDashboard', () => {
       'Due today',
       'Overdue',
       'Waiting for review',
+      'At risk / breached',
     ]);
     expect(tile('Open assignments').querySelector('strong')?.textContent).toBe('3');
     expect(tile('Due today').querySelector('strong')?.textContent).toBe('1');
     expect(tile('Overdue').querySelector('strong')?.textContent).toBe('2');
     expect(tile('Waiting for review').querySelector('strong')?.textContent).toBe('1');
+    expect(tile('At risk / breached').querySelector('strong')?.textContent).toBe('1 / 0');
   });
 
   it('shows Coming up from the department work', () => {

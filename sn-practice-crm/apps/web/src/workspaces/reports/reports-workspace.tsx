@@ -220,8 +220,12 @@ const sum = <Row,>(rows: readonly Row[], pick: (row: Row) => number): number =>
 
 type WorkRows = PracticeReportDto['workProgress'];
 
+const SLA_NOTE = "Turnaround against each service's usual turnaround, in working days.";
+
 function WorkProgressReport({ work, period }: { work: WorkRows; period: ReportPeriodDto }) {
-  const { summary } = work;
+  const { summary, sla } = work;
+  type SlaServiceRow = WorkRows['sla']['byService'][number];
+  type SlaOwnerRow = WorkRows['sla']['byOwner'][number];
   const countsColumns = <Row extends { created: number; completed: number; openNow: number; overdueNow: number }>() => [
     countColumn<Row>('Created', (row) => row.created),
     countColumn<Row>('Completed', (row) => row.completed),
@@ -277,6 +281,51 @@ function WorkProgressReport({ work, period }: { work: WorkRows; period: ReportPe
         period={period}
         csvReport="work"
         csvTable="overdue-assignments"
+      />
+      <MetricTiles
+        label="SLA summary"
+        tiles={[
+          { label: 'Met in period', value: String(sla.summary.metInPeriod), note: IN_PERIOD },
+          { label: 'Late in period', value: String(sla.summary.lateInPeriod), note: IN_PERIOD },
+          { label: 'At risk now', value: String(sla.summary.atRiskNow), note: AS_OF_NOW, ...(sla.summary.atRiskNow > 0 ? { tone: 'warning' as const } : {}) },
+          { label: 'Breached now', value: String(sla.summary.breachedNow), note: AS_OF_NOW, ...(sla.summary.breachedNow > 0 ? { tone: 'danger' as const } : {}) },
+        ]}
+      />
+      <ReportTable
+        title="SLA by service"
+        description={SLA_NOTE}
+        columns={[
+          textColumn<SlaServiceRow>('Service', (row) => row.serviceName),
+          {
+            header: 'Target (working days)',
+            numeric: true,
+            cell: (row: SlaServiceRow) => (row.targetDays === null ? '—' : String(row.targetDays)),
+            csv: (row: SlaServiceRow) => row.targetDays,
+          },
+          countColumn<SlaServiceRow>('Met', (row) => row.met),
+          countColumn<SlaServiceRow>('Late', (row) => row.late),
+          countColumn<SlaServiceRow>('At risk now', (row) => row.atRiskNow),
+          countColumn<SlaServiceRow>('Breached now', (row) => row.breachedNow),
+        ]}
+        rows={sla.byService}
+        period={period}
+        csvReport="work"
+        csvTable="sla-by-service"
+      />
+      <ReportTable
+        title="SLA by person"
+        description={SLA_NOTE}
+        columns={[
+          textColumn<SlaOwnerRow>('Person', (row) => row.ownerName),
+          countColumn<SlaOwnerRow>('Met', (row) => row.met),
+          countColumn<SlaOwnerRow>('Late', (row) => row.late),
+          countColumn<SlaOwnerRow>('At risk now', (row) => row.atRiskNow),
+          countColumn<SlaOwnerRow>('Breached now', (row) => row.breachedNow),
+        ]}
+        rows={sla.byOwner}
+        period={period}
+        csvReport="work"
+        csvTable="sla-by-person"
       />
     </div>
   );

@@ -1,3 +1,4 @@
+import type { SlaDto } from '@sn/contracts';
 import type { CompanyRole } from '@sn/domain';
 
 export const ROLE_LABELS: Record<CompanyRole, string> = {
@@ -47,6 +48,7 @@ export interface AssignmentRow {
   recurringScheduleId?: string | null;
   engagementId?: string | null;
   engagementCode?: string | null;
+  sla?: SlaDto | null;
   milestones?: AssignmentMilestone[];
   deliveryNotes?: string | null;
   reviewNotes?: string | null;

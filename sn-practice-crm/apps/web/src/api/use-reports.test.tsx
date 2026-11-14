@@ -14,6 +14,11 @@ function reportFor(label: string, kind: ReportPeriodKind = 'week'): PracticeRepo
       byService: [],
       byOwner: [],
       overdueList: [],
+      sla: {
+        summary: { metInPeriod: 0, lateInPeriod: 0, atRiskNow: 0, breachedNow: 0, noTarget: 0 },
+        byService: [],
+        byOwner: [],
+      },
     },
     teamActivity: [],
     fees: null,
