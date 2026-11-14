@@ -237,8 +237,8 @@ describe('PostgresCrmRepository Integration Suite', () => {
     });
   });
 
-  it('IT-03 & IT-04: Assignment creation generates code, sets is_demo=false and is immune to demo cleanup', async () => {
-    await runIsolatedTest(async (repo, tx) => {
+  it('IT-03: Assignment creation generates the code and inserts reviewers', async () => {
+    await runIsolatedTest(async (repo) => {
       const ctx = { actorId: FOUNDER_ID };
       const clients = await repo.listClientReferences(ctx);
       const services = await repo.listServiceReferences(ctx);
@@ -267,16 +267,6 @@ describe('PostgresCrmRepository Integration Suite', () => {
       expect(created.id).toBe(newId);
       expect(created.code).toMatch(/^AS-\d{6}$/);
       expect(created.reviewerIds).toEqual([MANAGER_ID]);
-
-      // Raw inspection under transaction: is_demo must be false (column omitted in INSERT)
-      const rawRows = await tx`SELECT is_demo FROM public.assignments WHERE id = ${newId}::uuid`;
-      const rawRow = rawRows[0];
-      if (!rawRow) throw new Error('Raw row missing');
-      expect(rawRow['is_demo']).toBe(false);
-
-      // IT-04: Demo data immunity - demo cleanup target check
-      const demoCleanupTargets = await tx`SELECT id FROM public.assignments WHERE is_demo = true AND id = ${newId}::uuid`;
-      expect(demoCleanupTargets.length).toBe(0);
     });
   });
 
@@ -648,7 +638,7 @@ describe('PostgresCrmRepository Integration Suite', () => {
       await tx`
         INSERT INTO public.assignments (
           id, code, client_id, service_id, title, owner_id, status, due_at,
-          approved_at, approved_by, closed_at, closed_by, created_by, is_demo
+          approved_at, approved_by, closed_at, closed_by, created_by
         ) VALUES (
           '90000000-0000-4000-a000-000000000081'::uuid,
           'AS-999981',
@@ -662,15 +652,14 @@ describe('PostgresCrmRepository Integration Suite', () => {
           ${FOUNDER_ID}::uuid,
           '2026-11-20T12:00:00.000Z'::timestamptz,
           ${FOUNDER_ID}::uuid,
-          ${FOUNDER_ID}::uuid,
-          true
+          ${FOUNDER_ID}::uuid
         );
       `;
 
       // Insert 1 valid active (in_progress) assignment for Aster (owned by Founder, trainee not involved)
       await tx`
         INSERT INTO public.assignments (
-          id, code, client_id, service_id, title, owner_id, status, due_at, created_by, is_demo
+          id, code, client_id, service_id, title, owner_id, status, due_at, created_by
         ) VALUES (
           '90000000-0000-4000-a000-000000000082'::uuid,
           'AS-999982',
@@ -680,8 +669,7 @@ describe('PostgresCrmRepository Integration Suite', () => {
           ${FOUNDER_ID}::uuid,
           'in_progress'::public.assignment_status,
           '2026-11-20T12:00:00.000Z'::timestamptz,
-          ${FOUNDER_ID}::uuid,
-          true
+          ${FOUNDER_ID}::uuid
         );
       `;
 
@@ -725,15 +713,14 @@ describe('PostgresCrmRepository Integration Suite', () => {
       expect(created.activeAssignmentsCount).toBe(0);
       expect(created.createdById).toBe(FOUNDER_ID);
 
-      // Verify raw database row has plaintext stored securely and is_demo = false (read as the owner role;
+      // Verify raw database row has plaintext stored securely (read as the owner role;
       // the authenticated role cannot select pan or gstin)
       await tx`RESET ROLE`;
-      const rawRows = await tx`SELECT pan, gstin, code, created_by, is_demo FROM public.clients WHERE id = ${newClientId}::uuid`;
+      const rawRows = await tx`SELECT pan, gstin, code, created_by FROM public.clients WHERE id = ${newClientId}::uuid`;
       expect(rawRows.length).toBe(1);
       expect(rawRows[0]!['pan']).toBe('ABCDE1234F');
       expect(rawRows[0]!['gstin']).toBe('27ABCDE1234F1Z5');
       expect(rawRows[0]!['created_by']).toBe(FOUNDER_ID);
-      expect(rawRows[0]!['is_demo']).toBe(false);
 
       // Verify real database trigger validate_client_relationship_owner rejects trainee ownership with 422
       await expect(
@@ -875,94 +862,6 @@ describe('PostgresCrmRepository Integration Suite', () => {
         `;
         expect(receipts).toHaveLength(1);
         expect(receipts[0]?.['operation_type']).toBe('createDraft');
-
-        const rawLineage = await tx`
-          SELECT e.is_demo AS engagement_demo, ev.is_demo AS version_demo, r.is_demo AS receipt_demo
-          FROM public.engagements e
-          JOIN public.engagement_versions ev ON ev.engagement_id = e.id
-          JOIN public.operation_receipts r ON r.actor_id = ${FOUNDER_ID}::uuid
-            AND r.idempotency_key = 'it-create-draft-1'
-          WHERE e.id = ${created.id}::uuid AND ev.version_number = 1;
-        `;
-        expect(rawLineage[0]).toMatchObject({ engagement_demo: false, version_demo: false, receipt_demo: false });
-
-        const demoClient = (await tx`SELECT id FROM public.clients WHERE is_demo = true LIMIT 1`)[0];
-        expect(demoClient).toBeDefined();
-        const realClientRaw = await tx`SELECT is_demo FROM public.clients WHERE id = ${realClient.id}::uuid`;
-        expect(realClientRaw[0]?.['is_demo']).toBe(false);
-        const demo = await repo.mutateEngagement(ctx, {
-          kind: 'createDraft', idempotencyKey: 'it-create-demo-lineage', clientId: String(demoClient!['id']),
-          serviceId: firstService.id, title: 'Demo lineage', scope: 'Demo scope',
-          responsiblePartnerId: FOUNDER_ID, deliveryManagerId: MANAGER_ID, feeModel: 'fixed',
-          agreedFeePaise: 1000000, billingTerms: 'Terms', startDate: '2026-04-01',
-        });
-        const demoLineage = await tx`
-          SELECT e.is_demo AS engagement_demo, ev.is_demo AS version_demo, r.is_demo AS receipt_demo
-          FROM public.engagements e JOIN public.engagement_versions ev ON ev.engagement_id = e.id
-          JOIN public.operation_receipts r ON r.actor_id = ${FOUNDER_ID}::uuid AND r.idempotency_key = 'it-create-demo-lineage'
-          WHERE e.id = ${demo.id}::uuid AND ev.version_number = 1;
-        `;
-        expect(demoLineage[0]).toMatchObject({ engagement_demo: true, version_demo: true, receipt_demo: true });
-      });
-    });
-
-    it('IT-15b: preserves real and demo is_demo lineage through amendment', async () => {
-      await runIsolatedTest(async (repo, tx) => {
-        const ctx = { actorId: FOUNDER_ID };
-        const service = (await repo.listServiceReferences(ctx))[0];
-        if (!service) throw new Error('Service missing');
-        const realClient = await repo.createClient(ctx, {
-          id: '90000000-0000-4000-a000-00000000015b',
-          displayName: 'IT-15b Real Client',
-          relationshipOwnerId: MANAGER_ID,
-          createdAt: '2026-04-02T00:00:00.000Z',
-          updatedAt: '2026-04-02T00:00:00.000Z',
-        });
-        const demoClient = (await tx`SELECT id FROM public.clients WHERE is_demo = true LIMIT 1`)[0];
-        if (!demoClient) throw new Error('Demo client missing');
-
-        const createAndAmend = async (clientId: string, prefix: string) => {
-          const draft = await repo.mutateEngagement(ctx, {
-            kind: 'createDraft', idempotencyKey: `${prefix}-create`, clientId, serviceId: service.id,
-            title: `${prefix} engagement`, scope: `${prefix} scope`, responsiblePartnerId: FOUNDER_ID,
-            deliveryManagerId: MANAGER_ID, feeModel: 'fixed', agreedFeePaise: 1000000,
-            billingTerms: 'Terms', startDate: '2026-04-02',
-          });
-          const version = (await repo.listEngagementVersions(ctx, draft.id))[0];
-          if (!version) throw new Error('Version missing');
-          const activated = await repo.mutateEngagement(ctx, {
-            kind: 'activate', idempotencyKey: `${prefix}-activate`, engagementId: draft.id,
-            versionId: version.id, expectedUpdatedAt: draft.updatedAt,
-          });
-          const amended = await repo.mutateEngagement(ctx, {
-            kind: 'amend', idempotencyKey: `${prefix}-amend`, engagementId: draft.id,
-            title: `${prefix} amended`, scope: `${prefix} amended scope`, responsiblePartnerId: FOUNDER_ID,
-            deliveryManagerId: MANAGER_ID, feeModel: 'fixed', agreedFeePaise: 2000000,
-            billingTerms: 'Updated terms', startDate: '2026-04-02', expectedUpdatedAt: activated.updatedAt,
-          });
-          return { id: draft.id, amendedVersionId: amended.approvedVersion?.id };
-        };
-
-        const real = await createAndAmend(realClient.id, 'it-15b-real');
-        const demo = await createAndAmend(String(demoClient['id']), 'it-15b-demo');
-        const lineage = await tx`
-          SELECT e.id, e.is_demo AS engagement_demo, ev.version_number, ev.is_demo AS version_demo
-          FROM public.engagements e
-          JOIN public.engagement_versions ev ON ev.engagement_id = e.id
-          WHERE e.id IN (${real.id}::uuid, ${demo.id}::uuid)
-          ORDER BY e.id, ev.version_number;
-        `;
-        expect(lineage.filter((row) => row['id'] === real.id).map((row) => [row['engagement_demo'], row['version_number'], row['version_demo']])).toEqual([[false, 1, false], [false, 2, false]]);
-        expect(lineage.filter((row) => row['id'] === demo.id).map((row) => [row['engagement_demo'], row['version_number'], row['version_demo']])).toEqual([[true, 1, true], [true, 2, true]]);
-        const receipts = await tx`
-          SELECT idempotency_key, is_demo FROM public.operation_receipts
-          WHERE idempotency_key IN ('it-15b-real-create', 'it-15b-real-amend', 'it-15b-demo-create', 'it-15b-demo-amend')
-          ORDER BY idempotency_key;
-        `;
-        expect(receipts.map((row) => [row['idempotency_key'], row['is_demo']])).toEqual([
-          ['it-15b-demo-amend', true], ['it-15b-demo-create', true],
-          ['it-15b-real-amend', false], ['it-15b-real-create', false],
-        ]);
       });
     });
 
@@ -1254,12 +1153,11 @@ describe('PostgresCrmRepository Integration Suite', () => {
           const cleanupEngagementId = createdEngagementId;
           await rootClient.begin(async (tx) => {
             await tx`SELECT set_config('request.jwt.claim.sub', ${FOUNDER_ID}, true)`;
-            await tx`SELECT set_config('app.demo_cleanup', 'on', true)`;
-            await tx`SELECT set_config('app.demo_cleanup_actor', ${FOUNDER_ID}, true)`;
+            // Test fixtures are committed on a real connection, so remove them with triggers off
+            await tx`SET LOCAL session_replication_role = replica`;
             await tx`
               DELETE FROM public.audit_log
-              WHERE is_demo = true
-                AND (
+              WHERE (
                   (table_name = 'engagements' AND record_pk = ${cleanupEngagementId})
                   OR (table_name = 'engagement_versions' AND record_pk IN (
                     SELECT id::text FROM public.engagement_versions WHERE engagement_id = ${cleanupEngagementId}::uuid
@@ -1276,8 +1174,6 @@ describe('PostgresCrmRepository Integration Suite', () => {
             `;
             await tx`DELETE FROM public.engagement_versions WHERE engagement_id = ${cleanupEngagementId}::uuid`;
             await tx`DELETE FROM public.engagements WHERE id = ${cleanupEngagementId}::uuid`;
-            await tx`SELECT set_config('app.demo_cleanup', 'off', true)`;
-            await tx`SELECT set_config('app.demo_cleanup_actor', '', true)`;
           });
         }
       }
@@ -2111,10 +2007,8 @@ describe('PostgresCrmRepository Integration Suite', () => {
         expect(listed?.vyaparBillNumber).toBe('VYP-IT-36');
 
         await asServerRole(tx);
-        const raw = await tx`SELECT is_demo, created_by, status FROM public.invoices WHERE id = ${bill.id}::uuid`;
-        expect(raw[0]).toMatchObject({ is_demo: false, created_by: FOUNDER_ID, status: 'issued' });
-        const items = await tx`SELECT is_demo FROM public.invoice_items WHERE invoice_id = ${bill.id}::uuid`;
-        expect(items.map((row) => row['is_demo'])).toEqual([false]);
+        const raw = await tx`SELECT created_by, status FROM public.invoices WHERE id = ${bill.id}::uuid`;
+        expect(raw[0]).toMatchObject({ created_by: FOUNDER_ID, status: 'issued' });
       });
     });
 
@@ -2186,8 +2080,8 @@ describe('PostgresCrmRepository Integration Suite', () => {
         expect(current.payments).toHaveLength(2);
 
         await asServerRole(tx);
-        const raw = await tx`SELECT created_by, is_demo FROM public.payment_receipts WHERE id = ${first.id}::uuid`;
-        expect(raw[0]).toMatchObject({ created_by: STAFF_ID, is_demo: false });
+        const raw = await tx`SELECT created_by FROM public.payment_receipts WHERE id = ${first.id}::uuid`;
+        expect(raw[0]).toMatchObject({ created_by: STAFF_ID });
         const allocation = await tx`SELECT created_by FROM public.payment_allocations WHERE receipt_id = ${first.id}::uuid`;
         expect(allocation[0]?.['created_by']).toBe(STAFF_ID);
         const invoiceRow = await tx`SELECT amount_received::text AS received FROM public.invoices WHERE id = ${bill.id}::uuid`;
@@ -2576,12 +2470,12 @@ describe('PostgresCrmRepository Integration Suite', () => {
     });
 
     it('IT-49: two applications of one client credit to different bills in parallel never spend more than the credit', async () => {
-      // Needs two real connections, so the fixture is committed on a throwaway demo client and then removed
+      // Needs two real connections, so the fixture is committed on a throwaway client and then removed
       const runKey = crypto.randomUUID();
       const startedAt = (await rootClient`SELECT clock_timestamp() AS now`)[0]!['now'] as Date;
       const clientRows = await rootClient`
-        INSERT INTO public.clients (display_name, relationship_owner_id, created_by, is_demo)
-        VALUES ('FEE-02 Concurrency Client', ${STAFF_ID}::uuid, ${FOUNDER_ID}::uuid, true)
+        INSERT INTO public.clients (display_name, relationship_owner_id, created_by)
+        VALUES ('FEE-02 Concurrency Client', ${STAFF_ID}::uuid, ${FOUNDER_ID}::uuid)
         RETURNING id`;
       const clientId = String(clientRows[0]!['id']);
       const repo = new PostgresCrmRepository(pool);
@@ -2615,8 +2509,7 @@ describe('PostgresCrmRepository Integration Suite', () => {
       } finally {
         await rootClient.begin(async (tx) => {
           await tx`SELECT set_config('request.jwt.claim.sub', ${FOUNDER_ID}, true)`;
-          await tx`SELECT set_config('app.demo_cleanup', 'on', true)`;
-          await tx`SELECT set_config('app.demo_cleanup_actor', ${FOUNDER_ID}, true)`;
+          await tx`SET LOCAL session_replication_role = replica`;
           // Collect this test's own fixture ids first, so the audit cleanup below touches nothing else.
           const fixtureInvoiceIds = (
             await tx`SELECT id::text AS id FROM public.invoices WHERE client_id = ${clientId}::uuid`
@@ -2634,8 +2527,7 @@ describe('PostgresCrmRepository Integration Suite', () => {
           await tx`DELETE FROM public.clients WHERE id = ${clientId}::uuid`;
           await tx`
             DELETE FROM public.audit_log a
-            WHERE a.is_demo = true
-              AND a.occurred_at >= ${startedAt}
+            WHERE a.occurred_at >= ${startedAt}
               AND (
                 (a.table_name = 'clients' AND a.record_pk = ${clientId})
                 OR (a.table_name IN ('invoices', 'payment_receipts')
@@ -2647,8 +2539,6 @@ describe('PostgresCrmRepository Integration Suite', () => {
                 OR (a.table_name = 'operation_receipts'
                     AND coalesce(a.new_row, a.old_row)->>'idempotency_key' LIKE ${`${runKey}-%`})
               )`;
-          await tx`SELECT set_config('app.demo_cleanup', 'off', true)`;
-          await tx`SELECT set_config('app.demo_cleanup_actor', '', true)`;
         });
       }
     });
@@ -2718,12 +2608,11 @@ describe('PostgresCrmRepository Integration Suite', () => {
 
         await tx`RESET ROLE`;
         const raw = await tx`
-          SELECT default_duration_days, is_statutory, is_demo, created_by
+          SELECT default_duration_days, is_statutory, created_by
           FROM public.service_catalog WHERE id = ${created.id}::uuid`;
         expect(raw[0]).toMatchObject({
           default_duration_days: null,
           is_statutory: true,
-          is_demo: false,
           created_by: FOUNDER_ID,
         });
       });
@@ -2996,10 +2885,9 @@ describe('PostgresCrmRepository Integration Suite', () => {
 
         await tx`RESET ROLE`;
         const raw = await tx`
-          SELECT is_demo, created_by, code, incorporation_date::text AS incorporation_date
+          SELECT created_by, code, incorporation_date::text AS incorporation_date
           FROM public.clients WHERE id = ${ASTER}::uuid`;
         expect(raw[0]).toMatchObject({
-          is_demo: true,
           created_by: FOUNDER_ID,
           code: 'CL-001001',
           incorporation_date: '2015-04-01',
@@ -3370,54 +3258,6 @@ describe('PostgresCrmRepository Integration Suite', () => {
         expect(receipts).toHaveLength(2);
         const editReceipt = receipts.find((row) => row['operation_type'] === 'updateClient');
         expect(editReceipt?.['result']).not.toMatch(/AABCA1234A|27AABCA1234A1Z5/);
-      });
-    });
-
-    it('IT-66: contacts inherit is_demo from their client, and removing demo data still works with contacts present', async () => {
-      await runIsolatedTest(async (repo, tx) => {
-        // Aster is demo data; a client created through the repository is not
-        const demoContact = await repo.createClientContact(founderCtx, {
-          clientId: ASTER,
-          name: 'Demo Contact',
-          phone: '98200 66666',
-          idempotencyKey: key(),
-        });
-        const liveClientId = crypto.randomUUID();
-        const now = new Date().toISOString();
-        await repo.createClient(founderCtx, { id: liveClientId, displayName: 'Live Contact Client', createdAt: now, updatedAt: now });
-        const liveContact = await repo.createClientContact(founderCtx, {
-          clientId: liveClientId,
-          name: 'Live Contact',
-          phone: '98200 77777',
-          idempotencyKey: key(),
-        });
-
-        await tx`RESET ROLE`;
-        const flags = await tx`
-          SELECT id::text AS id, is_demo FROM public.client_contacts
-          WHERE id IN (${demoContact.id}::uuid, ${liveContact.id}::uuid)`;
-        expect(flags.find((row) => row['id'] === demoContact.id)?.['is_demo']).toBe(true);
-        expect(flags.find((row) => row['id'] === liveContact.id)?.['is_demo']).toBe(false);
-
-        // The flag cannot be changed afterwards
-        await expect(
-          tx.savepoint(async (sp) => {
-            await sp`UPDATE public.client_contacts SET is_demo = false WHERE id = ${demoContact.id}::uuid`;
-          }),
-        ).rejects.toMatchObject({ code: '23514' });
-
-        await tx`SELECT set_config('request.jwt.claim.sub', ${FOUNDER_ID}, true)`;
-        await tx`SELECT set_config('role', 'authenticated', true)`;
-        const removal = await tx`SELECT public.remove_demo_data() AS result`;
-        expect(removal[0]!['result']).toMatchObject({ ok: true });
-
-        await tx`RESET ROLE`;
-        const demoLeft = await tx`SELECT count(*)::int AS c FROM public.client_contacts WHERE id = ${demoContact.id}::uuid`;
-        const liveLeft = await tx`SELECT count(*)::int AS c FROM public.client_contacts WHERE id = ${liveContact.id}::uuid`;
-        expect(demoLeft[0]!['c']).toBe(0);
-        expect(liveLeft[0]!['c']).toBe(1);
-        const demoContactsAnywhere = await tx`SELECT count(*)::int AS c FROM public.client_contacts WHERE is_demo = true`;
-        expect(demoContactsAnywhere[0]!['c']).toBe(0);
       });
     });
 
@@ -3909,48 +3749,6 @@ describe('PostgresCrmRepository Integration Suite', () => {
         expect(await repo.removeClientDocument(managerCtx, { id: first.id, reason: 'Duplicate upload', idempotencyKey: removeKey })).toEqual(removed);
       });
     });
-
-    it('IT-79: documents inherit is_demo from their client, and removing demo data still works with documents present', async () => {
-      await runIsolatedTest(async (repo, tx) => {
-        // Aster is demo data; a client created through the repository is not
-        const demoDocument = await availableDocument(repo, tx, founderCtx, { clientId: ASTER });
-        const liveClientId = crypto.randomUUID();
-        const now = new Date().toISOString();
-        await repo.createClient(founderCtx, { id: liveClientId, displayName: 'Live Document Client', createdAt: now, updatedAt: now });
-        const liveDocument = await availableDocument(repo, tx, founderCtx, { clientId: liveClientId });
-
-        await tx`RESET ROLE`;
-        const flags = await tx`
-          SELECT id::text AS id, is_demo FROM public.client_documents
-          WHERE id IN (${demoDocument.id}::uuid, ${liveDocument.id}::uuid)`;
-        expect(flags.find((row) => row['id'] === demoDocument.id)?.['is_demo']).toBe(true);
-        expect(flags.find((row) => row['id'] === liveDocument.id)?.['is_demo']).toBe(false);
-
-        // The flag cannot be changed afterwards
-        await expect(
-          tx.savepoint(async (sp) => {
-            await sp`UPDATE public.client_documents SET is_demo = false WHERE id = ${demoDocument.id}::uuid`;
-          }),
-        ).rejects.toMatchObject({ code: '23514' });
-
-        await tx`SELECT set_config('request.jwt.claim.sub', ${FOUNDER_ID}, true)`;
-        await tx`SELECT set_config('role', 'authenticated', true)`;
-        const removal = await tx`SELECT public.remove_demo_data() AS result`;
-        expect(removal[0]!['result']).toMatchObject({ ok: true });
-        expect((removal[0]!['result'] as { deleted: Record<string, number> }).deleted['client_documents']).toBeGreaterThanOrEqual(1);
-
-        await tx`RESET ROLE`;
-        const demoLeft = await tx`SELECT count(*)::int AS c FROM public.client_documents WHERE id = ${demoDocument.id}::uuid`;
-        const liveLeft = await tx`SELECT count(*)::int AS c FROM public.client_documents WHERE id = ${liveDocument.id}::uuid`;
-        expect(demoLeft[0]!['c']).toBe(0);
-        expect(liveLeft[0]!['c']).toBe(1);
-        const demoDocumentsAnywhere = await tx`SELECT count(*)::int AS c FROM public.client_documents WHERE is_demo = true`;
-        expect(demoDocumentsAnywhere[0]!['c']).toBe(0);
-        // Demo documents' stored files may stay
-        const file = await tx`SELECT count(*)::int AS c FROM storage.objects WHERE bucket_id = 'client-documents' AND name = ${demoDocument.storagePath}`;
-        expect(file[0]!['c']).toBe(1);
-      });
-    });
   });
 
   describe('MSG-01 client messages', () => {
@@ -4215,7 +4013,6 @@ describe('PostgresCrmRepository Integration Suite', () => {
           ['status', 'opened'],
           ['created_by', MANAGER_ID],
           ['created_at', '2020-01-01T00:00:00Z'],
-          ['is_demo', 'false'],
         ] as const) {
           await expect(
             tx.savepoint(async (sp) => {
@@ -4239,38 +4036,6 @@ describe('PostgresCrmRepository Integration Suite', () => {
         await tx`RESET ROLE`;
         const counted = await tx`SELECT count(*)::int AS c FROM public.client_messages WHERE body = ${command.body}`;
         expect(counted[0]!['c']).toBe(1);
-      });
-    });
-
-    it('IT-85: messages inherit is_demo from their client, and removing demo data clears demo messages only', async () => {
-      await runIsolatedTest(async (repo, tx) => {
-        // Aster is demo data; a client created through the repository is not
-        const demoMessage = await repo.recordClientMessage(founderCtx, messageCommand({ clientId: ASTER }));
-        const liveClientId = crypto.randomUUID();
-        const now = new Date().toISOString();
-        await repo.createClient(founderCtx, { id: liveClientId, displayName: 'Live Message Client', createdAt: now, updatedAt: now });
-        const liveMessage = await repo.recordClientMessage(founderCtx, messageCommand({ clientId: liveClientId }));
-
-        await tx`RESET ROLE`;
-        const flags = await tx`
-          SELECT id::text AS id, is_demo FROM public.client_messages
-          WHERE id IN (${demoMessage.id}::uuid, ${liveMessage.id}::uuid)`;
-        expect(flags.find((row) => row['id'] === demoMessage.id)?.['is_demo']).toBe(true);
-        expect(flags.find((row) => row['id'] === liveMessage.id)?.['is_demo']).toBe(false);
-
-        await tx`SELECT set_config('request.jwt.claim.sub', ${FOUNDER_ID}, true)`;
-        await tx`SELECT set_config('role', 'authenticated', true)`;
-        const removal = await tx`SELECT public.remove_demo_data() AS result`;
-        expect(removal[0]!['result']).toMatchObject({ ok: true });
-        expect((removal[0]!['result'] as { deleted: Record<string, number> }).deleted['client_messages']).toBeGreaterThanOrEqual(1);
-
-        await tx`RESET ROLE`;
-        const demoLeft = await tx`SELECT count(*)::int AS c FROM public.client_messages WHERE id = ${demoMessage.id}::uuid`;
-        const liveLeft = await tx`SELECT count(*)::int AS c FROM public.client_messages WHERE id = ${liveMessage.id}::uuid`;
-        expect(demoLeft[0]!['c']).toBe(0);
-        expect(liveLeft[0]!['c']).toBe(1);
-        const demoMessagesAnywhere = await tx`SELECT count(*)::int AS c FROM public.client_messages WHERE is_demo = true`;
-        expect(demoMessagesAnywhere[0]!['c']).toBe(0);
       });
     });
   });

@@ -24,19 +24,13 @@ begin
       using errcode = '55000';
   end if;
 
-  -- 4. Data-Presence Protection (Abort if non-demo clients exist)
-  if exists (select 1 from public.clients where is_demo = false) then
-    raise exception 'CRITICAL SEED REJECTION: Non-demo clients detected in public.clients. Aborting seed.'
-      using errcode = '55000';
-  end if;
-
-  -- 5. Verified-Empty Table State
+  -- 4. Verified-Empty Table State
   if exists (select 1 from public.clients) or exists (select 1 from public.cash_accounts) then
     raise exception 'CRITICAL SEED REJECTION: Database tables are not clean. Reset first via npx supabase db reset --local --no-seed.'
       using errcode = '55000';
   end if;
 
-  -- 6. Network Interface Check (Loopback, Docker bridge, or local socket)
+  -- 5. Network Interface Check (Loopback, Docker bridge, or local socket)
   if v_client_addr is not null and not (
        v_client_addr <<= '127.0.0.0/8'::cidr
     or v_client_addr = '::1'::inet
@@ -83,7 +77,7 @@ insert into auth.users (
   now(),
   '', '', '', '', '', '', '', '',
   '{"provider": "email", "providers": ["email"]}'::jsonb,
-  '{"full_name": "S. Narayanan", "is_demo": true}'::jsonb,
+  '{"full_name": "S. Narayanan"}'::jsonb,
   now(),
   now(),
   false,
@@ -99,7 +93,7 @@ insert into auth.users (
   now(),
   '', '', '', '', '', '', '', '',
   '{"provider": "email", "providers": ["email"]}'::jsonb,
-  '{"full_name": "Priya Desai", "is_demo": true}'::jsonb,
+  '{"full_name": "Priya Desai"}'::jsonb,
   now(),
   now(),
   false,
@@ -115,7 +109,7 @@ insert into auth.users (
   now(),
   '', '', '', '', '', '', '', '',
   '{"provider": "email", "providers": ["email"]}'::jsonb,
-  '{"full_name": "Ananya Rao", "is_demo": true}'::jsonb,
+  '{"full_name": "Ananya Rao"}'::jsonb,
   now(),
   now(),
   false,
@@ -131,7 +125,7 @@ insert into auth.users (
   now(),
   '', '', '', '', '', '', '', '',
   '{"provider": "email", "providers": ["email"]}'::jsonb,
-  '{"full_name": "Rohan Mehta", "is_demo": true}'::jsonb,
+  '{"full_name": "Rohan Mehta"}'::jsonb,
   now(),
   now(),
   false,
@@ -147,7 +141,7 @@ insert into auth.users (
   now(),
   '', '', '', '', '', '', '', '',
   '{"provider": "email", "providers": ["email"]}'::jsonb,
-  '{"full_name": "Neha Kapoor", "is_demo": true}'::jsonb,
+  '{"full_name": "Neha Kapoor"}'::jsonb,
   now(),
   now(),
   false,
@@ -216,22 +210,22 @@ insert into auth.identities (
   now()
 );
 
--- Note: public.profiles are automatically created by handle_new_auth_user() with is_demo = true.
+-- Note: public.profiles are automatically created by handle_new_auth_user().
 
 -- 3. User Roles (5 personas)
-insert into public.user_roles (user_id, role, assigned_by, is_demo) values
-('00000000-0000-4000-a000-000000000001', 'founder', '00000000-0000-4000-a000-000000000001', true),
-('00000000-0000-4000-a000-000000000002', 'manager', '00000000-0000-4000-a000-000000000001', true),
-('00000000-0000-4000-a000-000000000003', 'senior_staff', '00000000-0000-4000-a000-000000000001', true),
-('00000000-0000-4000-a000-000000000004', 'staff', '00000000-0000-4000-a000-000000000001', true),
-('00000000-0000-4000-a000-000000000005', 'trainee', '00000000-0000-4000-a000-000000000001', true);
+insert into public.user_roles (user_id, role, assigned_by) values
+('00000000-0000-4000-a000-000000000001', 'founder', '00000000-0000-4000-a000-000000000001'),
+('00000000-0000-4000-a000-000000000002', 'manager', '00000000-0000-4000-a000-000000000001'),
+('00000000-0000-4000-a000-000000000003', 'senior_staff', '00000000-0000-4000-a000-000000000001'),
+('00000000-0000-4000-a000-000000000004', 'staff', '00000000-0000-4000-a000-000000000001'),
+('00000000-0000-4000-a000-000000000005', 'trainee', '00000000-0000-4000-a000-000000000001');
 
 -- 4. Staff Reporting Lines (4 lines)
-insert into public.staff_reporting_lines (employee_id, supervisor_id, is_demo) values
-('00000000-0000-4000-a000-000000000002', '00000000-0000-4000-a000-000000000001', true),
-('00000000-0000-4000-a000-000000000003', '00000000-0000-4000-a000-000000000002', true),
-('00000000-0000-4000-a000-000000000004', '00000000-0000-4000-a000-000000000002', true),
-('00000000-0000-4000-a000-000000000005', '00000000-0000-4000-a000-000000000002', true);
+insert into public.staff_reporting_lines (employee_id, supervisor_id) values
+('00000000-0000-4000-a000-000000000002', '00000000-0000-4000-a000-000000000001'),
+('00000000-0000-4000-a000-000000000003', '00000000-0000-4000-a000-000000000002'),
+('00000000-0000-4000-a000-000000000004', '00000000-0000-4000-a000-000000000002'),
+('00000000-0000-4000-a000-000000000005', '00000000-0000-4000-a000-000000000002');
 
 -- 5. Clients (6 clients)
 insert into public.clients (
@@ -245,8 +239,7 @@ insert into public.clients (
   phone,
   relationship_owner_id,
   status,
-  created_by,
-  is_demo
+  created_by
 ) values
 (
   '10000000-0000-4000-a000-000000000001',
@@ -259,8 +252,7 @@ insert into public.clients (
   '+91 98200 11001',
   '00000000-0000-4000-a000-000000000002',
   'active',
-  '00000000-0000-4000-a000-000000000001',
-  true
+  '00000000-0000-4000-a000-000000000001'
 ),
 (
   '10000000-0000-4000-a000-000000000002',
@@ -273,8 +265,7 @@ insert into public.clients (
   '+91 98200 11002',
   '00000000-0000-4000-a000-000000000004',
   'active',
-  '00000000-0000-4000-a000-000000000001',
-  true
+  '00000000-0000-4000-a000-000000000001'
 ),
 (
   '10000000-0000-4000-a000-000000000003',
@@ -287,8 +278,7 @@ insert into public.clients (
   '+91 98200 11003',
   '00000000-0000-4000-a000-000000000002',
   'active',
-  '00000000-0000-4000-a000-000000000001',
-  true
+  '00000000-0000-4000-a000-000000000001'
 ),
 (
   '10000000-0000-4000-a000-000000000004',
@@ -301,8 +291,7 @@ insert into public.clients (
   '+91 98200 11004',
   '00000000-0000-4000-a000-000000000004',
   'active',
-  '00000000-0000-4000-a000-000000000001',
-  true
+  '00000000-0000-4000-a000-000000000001'
 ),
 (
   '10000000-0000-4000-a000-000000000005',
@@ -315,8 +304,7 @@ insert into public.clients (
   '+91 98200 11005',
   '00000000-0000-4000-a000-000000000003',
   'active',
-  '00000000-0000-4000-a000-000000000001',
-  true
+  '00000000-0000-4000-a000-000000000001'
 ),
 (
   '10000000-0000-4000-a000-000000000006',
@@ -329,8 +317,7 @@ insert into public.clients (
   '+91 98200 11006',
   '00000000-0000-4000-a000-000000000003',
   'active',
-  '00000000-0000-4000-a000-000000000001',
-  true
+  '00000000-0000-4000-a000-000000000001'
 );
 
 -- 6. Service Catalog (6 services)
@@ -341,8 +328,7 @@ insert into public.service_catalog (
   default_duration_days,
   is_statutory,
   is_active,
-  created_by,
-  is_demo
+  created_by
 ) values
 (
   '50000000-0000-4000-a000-000000000001',
@@ -351,8 +337,7 @@ insert into public.service_catalog (
   10,
   true,
   true,
-  '00000000-0000-4000-a000-000000000001',
-  true
+  '00000000-0000-4000-a000-000000000001'
 ),
 (
   '50000000-0000-4000-a000-000000000002',
@@ -361,8 +346,7 @@ insert into public.service_catalog (
   30,
   false,
   true,
-  '00000000-0000-4000-a000-000000000001',
-  true
+  '00000000-0000-4000-a000-000000000001'
 ),
 (
   '50000000-0000-4000-a000-000000000003',
@@ -371,8 +355,7 @@ insert into public.service_catalog (
   15,
   true,
   true,
-  '00000000-0000-4000-a000-000000000001',
-  true
+  '00000000-0000-4000-a000-000000000001'
 ),
 (
   '50000000-0000-4000-a000-000000000004',
@@ -381,8 +364,7 @@ insert into public.service_catalog (
   12,
   false,
   true,
-  '00000000-0000-4000-a000-000000000001',
-  true
+  '00000000-0000-4000-a000-000000000001'
 ),
 (
   '50000000-0000-4000-a000-000000000005',
@@ -391,8 +373,7 @@ insert into public.service_catalog (
   45,
   true,
   true,
-  '00000000-0000-4000-a000-000000000001',
-  true
+  '00000000-0000-4000-a000-000000000001'
 ),
 (
   '50000000-0000-4000-a000-000000000006',
@@ -401,8 +382,7 @@ insert into public.service_catalog (
   20,
   false,
   true,
-  '00000000-0000-4000-a000-000000000001',
-  true
+  '00000000-0000-4000-a000-000000000001'
 );
 
 -- 7. Recurring Schedules (9 schedules)
@@ -420,8 +400,7 @@ insert into public.recurring_schedules (
   default_owner_id,
   priority,
   is_active,
-  created_by,
-  is_demo
+  created_by
 ) values
 (
   '20000000-0000-4000-a000-000000000001',
@@ -437,8 +416,7 @@ insert into public.recurring_schedules (
   '00000000-0000-4000-a000-000000000002',
   'normal',
   true,
-  '00000000-0000-4000-a000-000000000001',
-  true
+  '00000000-0000-4000-a000-000000000001'
 ),
 (
   '20000000-0000-4000-a000-000000000002',
@@ -454,8 +432,7 @@ insert into public.recurring_schedules (
   '00000000-0000-4000-a000-000000000004',
   'normal',
   true,
-  '00000000-0000-4000-a000-000000000001',
-  true
+  '00000000-0000-4000-a000-000000000001'
 ),
 (
   '20000000-0000-4000-a000-000000000003',
@@ -471,8 +448,7 @@ insert into public.recurring_schedules (
   '00000000-0000-4000-a000-000000000004',
   'normal',
   true,
-  '00000000-0000-4000-a000-000000000001',
-  true
+  '00000000-0000-4000-a000-000000000001'
 ),
 (
   '20000000-0000-4000-a000-000000000004',
@@ -488,8 +464,7 @@ insert into public.recurring_schedules (
   '00000000-0000-4000-a000-000000000003',
   'normal',
   true,
-  '00000000-0000-4000-a000-000000000001',
-  true
+  '00000000-0000-4000-a000-000000000001'
 ),
 (
   '20000000-0000-4000-a000-000000000005',
@@ -505,8 +480,7 @@ insert into public.recurring_schedules (
   '00000000-0000-4000-a000-000000000002',
   'normal',
   true,
-  '00000000-0000-4000-a000-000000000001',
-  true
+  '00000000-0000-4000-a000-000000000001'
 ),
 (
   '20000000-0000-4000-a000-000000000006',
@@ -522,8 +496,7 @@ insert into public.recurring_schedules (
   '00000000-0000-4000-a000-000000000003',
   'normal',
   true,
-  '00000000-0000-4000-a000-000000000001',
-  true
+  '00000000-0000-4000-a000-000000000001'
 ),
 (
   '20000000-0000-4000-a000-000000000007',
@@ -539,8 +512,7 @@ insert into public.recurring_schedules (
   '00000000-0000-4000-a000-000000000002',
   'normal',
   true,
-  '00000000-0000-4000-a000-000000000001',
-  true
+  '00000000-0000-4000-a000-000000000001'
 ),
 (
   '20000000-0000-4000-a000-000000000008',
@@ -556,8 +528,7 @@ insert into public.recurring_schedules (
   '00000000-0000-4000-a000-000000000004',
   'normal',
   true,
-  '00000000-0000-4000-a000-000000000001',
-  true
+  '00000000-0000-4000-a000-000000000001'
 ),
 (
   '20000000-0000-4000-a000-000000000009',
@@ -573,8 +544,7 @@ insert into public.recurring_schedules (
   '00000000-0000-4000-a000-000000000004',
   'normal',
   true,
-  '00000000-0000-4000-a000-000000000001',
-  true
+  '00000000-0000-4000-a000-000000000001'
 );
 
 -- 8. Assignments (6 assignments)
@@ -591,8 +561,7 @@ insert into public.assignments (
   period_start,
   period_end,
   due_at,
-  created_by,
-  is_demo
+  created_by
 ) values
 (
   '30000000-0000-4000-a000-000000000001',
@@ -607,8 +576,7 @@ insert into public.assignments (
   date_trunc('month', current_date - interval '1 month')::date,
   (date_trunc('month', current_date) - interval '1 day')::date,
   current_date + interval '5 days' + time '18:00',
-  '00000000-0000-4000-a000-000000000001',
-  true
+  '00000000-0000-4000-a000-000000000001'
 ),
 (
   '30000000-0000-4000-a000-000000000002',
@@ -623,8 +591,7 @@ insert into public.assignments (
   null,
   null,
   current_date + interval '8 days' + time '18:00',
-  '00000000-0000-4000-a000-000000000001',
-  true
+  '00000000-0000-4000-a000-000000000001'
 ),
 (
   '30000000-0000-4000-a000-000000000003',
@@ -639,8 +606,7 @@ insert into public.assignments (
   date_trunc('quarter', current_date - interval '3 months')::date,
   (date_trunc('quarter', current_date) - interval '1 day')::date,
   current_date + interval '12 days' + time '18:00',
-  '00000000-0000-4000-a000-000000000001',
-  true
+  '00000000-0000-4000-a000-000000000001'
 ),
 (
   '30000000-0000-4000-a000-000000000004',
@@ -655,8 +621,7 @@ insert into public.assignments (
   date_trunc('month', current_date - interval '1 month')::date,
   (date_trunc('month', current_date) - interval '1 day')::date,
   current_date + interval '6 days' + time '18:00',
-  '00000000-0000-4000-a000-000000000001',
-  true
+  '00000000-0000-4000-a000-000000000001'
 ),
 (
   '30000000-0000-4000-a000-000000000005',
@@ -671,8 +636,7 @@ insert into public.assignments (
   null,
   null,
   current_date + interval '20 days' + time '18:00',
-  '00000000-0000-4000-a000-000000000001',
-  true
+  '00000000-0000-4000-a000-000000000001'
 ),
 (
   '30000000-0000-4000-a000-000000000006',
@@ -687,23 +651,21 @@ insert into public.assignments (
   null,
   null,
   current_date + interval '15 days' + time '18:00',
-  '00000000-0000-4000-a000-000000000001',
-  true
+  '00000000-0000-4000-a000-000000000001'
 );
 
 -- 9. Assignment Reviewers (6 reviewers)
 insert into public.assignment_reviewers (
   assignment_id,
   reviewer_id,
-  assigned_by,
-  is_demo
+  assigned_by
 ) values
-('30000000-0000-4000-a000-000000000001', '00000000-0000-4000-a000-000000000003', '00000000-0000-4000-a000-000000000001', true),
-('30000000-0000-4000-a000-000000000002', '00000000-0000-4000-a000-000000000002', '00000000-0000-4000-a000-000000000001', true),
-('30000000-0000-4000-a000-000000000003', '00000000-0000-4000-a000-000000000003', '00000000-0000-4000-a000-000000000001', true),
-('30000000-0000-4000-a000-000000000004', '00000000-0000-4000-a000-000000000003', '00000000-0000-4000-a000-000000000001', true),
-('30000000-0000-4000-a000-000000000005', '00000000-0000-4000-a000-000000000001', '00000000-0000-4000-a000-000000000001', true),
-('30000000-0000-4000-a000-000000000006', '00000000-0000-4000-a000-000000000001', '00000000-0000-4000-a000-000000000001', true);
+('30000000-0000-4000-a000-000000000001', '00000000-0000-4000-a000-000000000003', '00000000-0000-4000-a000-000000000001'),
+('30000000-0000-4000-a000-000000000002', '00000000-0000-4000-a000-000000000002', '00000000-0000-4000-a000-000000000001'),
+('30000000-0000-4000-a000-000000000003', '00000000-0000-4000-a000-000000000003', '00000000-0000-4000-a000-000000000001'),
+('30000000-0000-4000-a000-000000000004', '00000000-0000-4000-a000-000000000003', '00000000-0000-4000-a000-000000000001'),
+('30000000-0000-4000-a000-000000000005', '00000000-0000-4000-a000-000000000001', '00000000-0000-4000-a000-000000000001'),
+('30000000-0000-4000-a000-000000000006', '00000000-0000-4000-a000-000000000001', '00000000-0000-4000-a000-000000000001');
 
 -- 10. Work Items (6 items)
 insert into public.work_items (
@@ -720,8 +682,7 @@ insert into public.work_items (
   due_at,
   reminder_at,
   completed_at,
-  completion_note,
-  is_demo
+  completion_note
 ) values
 (
   '40000000-0000-4000-a000-000000000001',
@@ -737,8 +698,7 @@ insert into public.work_items (
   current_date + time '18:00',
   current_date + time '10:00',
   null,
-  null,
-  true
+  null
 ),
 (
   '40000000-0000-4000-a000-000000000002',
@@ -754,8 +714,7 @@ insert into public.work_items (
   current_date + interval '1 day' + time '18:00',
   current_date + interval '1 day' + time '09:00',
   null,
-  null,
-  true
+  null
 ),
 (
   '40000000-0000-4000-a000-000000000003',
@@ -771,8 +730,7 @@ insert into public.work_items (
   current_date + interval '2 days' + time '18:00',
   null,
   null,
-  null,
-  true
+  null
 ),
 (
   '40000000-0000-4000-a000-000000000004',
@@ -788,8 +746,7 @@ insert into public.work_items (
   current_date + time '11:30',
   null,
   null,
-  null,
-  true
+  null
 ),
 (
   '40000000-0000-4000-a000-000000000005',
@@ -805,8 +762,7 @@ insert into public.work_items (
   current_date + time '15:00',
   null,
   null,
-  null,
-  true
+  null
 ),
 (
   '40000000-0000-4000-a000-000000000006',
@@ -822,8 +778,7 @@ insert into public.work_items (
   current_date - interval '1 day' + time '17:00',
   null,
   current_date - interval '1 day' + time '17:15',
-  'Filing reorganized and tagged by client FY.',
-  true
+  'Filing reorganized and tagged by client FY.'
 );
 
 -- 11. Cash Accounts (2 accounts)
@@ -834,8 +789,7 @@ insert into public.cash_accounts (
   opening_balance,
   opening_balance_on,
   is_active,
-  created_by,
-  is_demo
+  created_by
 ) values
 (
   '60000000-0000-4000-a000-000000000001',
@@ -844,8 +798,7 @@ insert into public.cash_accounts (
   125000.00,
   current_date - 90,
   true,
-  '00000000-0000-4000-a000-000000000001',
-  true
+  '00000000-0000-4000-a000-000000000001'
 ),
 (
   '60000000-0000-4000-a000-000000000002',
@@ -854,8 +807,7 @@ insert into public.cash_accounts (
   36300.00,
   current_date - 90,
   true,
-  '00000000-0000-4000-a000-000000000001',
-  true
+  '00000000-0000-4000-a000-000000000001'
 );
 
 -- 12. Invoices Phase 1: Insert 9 empty invoices in draft status
@@ -871,8 +823,7 @@ insert into public.invoices (
   total_amount,
   amount_received,
   status,
-  created_by,
-  is_demo
+  created_by
 ) values
 (
   '70000000-0000-4000-a000-000000000001',
@@ -886,8 +837,7 @@ insert into public.invoices (
   0.00,
   0.00,
   'draft',
-  '00000000-0000-4000-a000-000000000001',
-  true
+  '00000000-0000-4000-a000-000000000001'
 ),
 (
   '70000000-0000-4000-a000-000000000002',
@@ -901,8 +851,7 @@ insert into public.invoices (
   0.00,
   0.00,
   'draft',
-  '00000000-0000-4000-a000-000000000001',
-  true
+  '00000000-0000-4000-a000-000000000001'
 ),
 (
   '70000000-0000-4000-a000-000000000003',
@@ -916,8 +865,7 @@ insert into public.invoices (
   0.00,
   0.00,
   'draft',
-  '00000000-0000-4000-a000-000000000001',
-  true
+  '00000000-0000-4000-a000-000000000001'
 ),
 (
   '70000000-0000-4000-a000-000000000004',
@@ -931,8 +879,7 @@ insert into public.invoices (
   0.00,
   0.00,
   'draft',
-  '00000000-0000-4000-a000-000000000001',
-  true
+  '00000000-0000-4000-a000-000000000001'
 ),
 (
   '70000000-0000-4000-a000-000000000005',
@@ -946,8 +893,7 @@ insert into public.invoices (
   0.00,
   0.00,
   'draft',
-  '00000000-0000-4000-a000-000000000001',
-  true
+  '00000000-0000-4000-a000-000000000001'
 ),
 (
   '70000000-0000-4000-a000-000000000006',
@@ -961,8 +907,7 @@ insert into public.invoices (
   0.00,
   0.00,
   'draft',
-  '00000000-0000-4000-a000-000000000001',
-  true
+  '00000000-0000-4000-a000-000000000001'
 ),
 (
   '70000000-0000-4000-a000-000000000007',
@@ -976,8 +921,7 @@ insert into public.invoices (
   0.00,
   0.00,
   'draft',
-  '00000000-0000-4000-a000-000000000001',
-  true
+  '00000000-0000-4000-a000-000000000001'
 ),
 (
   '70000000-0000-4000-a000-000000000008',
@@ -991,8 +935,7 @@ insert into public.invoices (
   0.00,
   0.00,
   'draft',
-  '00000000-0000-4000-a000-000000000001',
-  true
+  '00000000-0000-4000-a000-000000000001'
 ),
 (
   '70000000-0000-4000-a000-000000000009',
@@ -1006,8 +949,7 @@ insert into public.invoices (
   0.00,
   0.00,
   'draft',
-  '00000000-0000-4000-a000-000000000001',
-  true
+  '00000000-0000-4000-a000-000000000001'
 );
 
 -- 13. Invoices Phase 2: Insert 9 invoice items (triggers recompute totals automatically)
@@ -1018,8 +960,7 @@ insert into public.invoice_items (
   quantity,
   unit_price,
   tax_rate,
-  sort_order,
-  is_demo
+  sort_order
 ) values
 (
   '71000000-0000-4000-a000-000000000001',
@@ -1028,8 +969,7 @@ insert into public.invoice_items (
   1,
   75000.00,
   18.00,
-  1,
-  true
+  1
 ),
 (
   '71000000-0000-4000-a000-000000000002',
@@ -1038,8 +978,7 @@ insert into public.invoice_items (
   1,
   14500.00,
   0.00,
-  1,
-  true
+  1
 ),
 (
   '71000000-0000-4000-a000-000000000003',
@@ -1048,8 +987,7 @@ insert into public.invoice_items (
   1,
   15000.00,
   0.00,
-  1,
-  true
+  1
 ),
 (
   '71000000-0000-4000-a000-000000000004',
@@ -1058,8 +996,7 @@ insert into public.invoice_items (
   1,
   20000.00,
   0.00,
-  1,
-  true
+  1
 ),
 (
   '71000000-0000-4000-a000-000000000005',
@@ -1068,8 +1005,7 @@ insert into public.invoice_items (
   1,
   35000.00,
   0.00,
-  1,
-  true
+  1
 ),
 (
   '71000000-0000-4000-a000-000000000006',
@@ -1078,8 +1014,7 @@ insert into public.invoice_items (
   1,
   75000.00,
   0.00,
-  1,
-  true
+  1
 ),
 (
   '71000000-0000-4000-a000-000000000007',
@@ -1088,8 +1023,7 @@ insert into public.invoice_items (
   1,
   14500.00,
   0.00,
-  1,
-  true
+  1
 ),
 (
   '71000000-0000-4000-a000-000000000008',
@@ -1098,8 +1032,7 @@ insert into public.invoice_items (
   1,
   35000.00,
   0.00,
-  1,
-  true
+  1
 ),
 (
   '71000000-0000-4000-a000-000000000009',
@@ -1108,8 +1041,7 @@ insert into public.invoice_items (
   1,
   15000.00,
   0.00,
-  1,
-  true
+  1
 );
 
 -- 14. Invoices Phase 3: Transition INV-0001001 to INV-0001008 to status 'issued'
@@ -1135,8 +1067,7 @@ insert into public.cash_ledger_entries (
   narration,
   reference,
   status,
-  created_by,
-  is_demo
+  created_by
 ) values
 (
   '80000000-0000-4000-a000-000000000001',
@@ -1149,8 +1080,7 @@ insert into public.cash_ledger_entries (
   'Payment received from Aster Foods - Inv INV-0001002',
   'NEFT-AST-01002',
   'posted',
-  '00000000-0000-4000-a000-000000000001',
-  true
+  '00000000-0000-4000-a000-000000000001'
 ),
 (
   '80000000-0000-4000-a000-000000000002',
@@ -1163,8 +1093,7 @@ insert into public.cash_ledger_entries (
   'Payment received from Sharma Retail - Inv INV-0001003',
   'UPI-SHR-01003',
   'posted',
-  '00000000-0000-4000-a000-000000000001',
-  true
+  '00000000-0000-4000-a000-000000000001'
 ),
 (
   '80000000-0000-4000-a000-000000000003',
@@ -1177,8 +1106,7 @@ insert into public.cash_ledger_entries (
   'Part-payment received from Kedia Holdings - Inv INV-0001004',
   'RTGS-KED-01004',
   'posted',
-  '00000000-0000-4000-a000-000000000001',
-  true
+  '00000000-0000-4000-a000-000000000001'
 ),
 (
   '80000000-0000-4000-a000-000000000004',
@@ -1191,8 +1119,7 @@ insert into public.cash_ledger_entries (
   'Part-payment received from Northstar Exports - Inv INV-0001005',
   'NEFT-NOR-01005',
   'posted',
-  '00000000-0000-4000-a000-000000000001',
-  true
+  '00000000-0000-4000-a000-000000000001'
 ),
 (
   '80000000-0000-4000-a000-000000000005',
@@ -1205,8 +1132,7 @@ insert into public.cash_ledger_entries (
   'Payment received from Apex Logistics - Inv INV-0001006',
   'RTGS-APX-01006',
   'posted',
-  '00000000-0000-4000-a000-000000000001',
-  true
+  '00000000-0000-4000-a000-000000000001'
 ),
 (
   '80000000-0000-4000-a000-000000000006',
@@ -1219,8 +1145,7 @@ insert into public.cash_ledger_entries (
   'Cash withdrawal from bank for petty cash float',
   'CHQ-WDL-1006',
   'posted',
-  '00000000-0000-4000-a000-000000000001',
-  true
+  '00000000-0000-4000-a000-000000000001'
 ),
 (
   '80000000-0000-4000-a000-000000000007',
@@ -1233,8 +1158,7 @@ insert into public.cash_ledger_entries (
   'Office stationery & filing supplies',
   'VCH-STN-1007',
   'posted',
-  '00000000-0000-4000-a000-000000000001',
-  true
+  '00000000-0000-4000-a000-000000000001'
 ),
 (
   '80000000-0000-4000-a000-000000000008',
@@ -1247,8 +1171,7 @@ insert into public.cash_ledger_entries (
   'Travel reimbursement · Rohan Mehta',
   'VCH-TRV-1008',
   'posted',
-  '00000000-0000-4000-a000-000000000001',
-  true
+  '00000000-0000-4000-a000-000000000001'
 );
 
 -- 16. Payment Receipts Phase 5: Insert 5 receipts linked to ledger entries
@@ -1262,8 +1185,7 @@ insert into public.payment_receipts (
   method,
   reference,
   status,
-  created_by,
-  is_demo
+  created_by
 ) values
 (
   '90000000-0000-4000-a000-000000000001',
@@ -1275,8 +1197,7 @@ insert into public.payment_receipts (
   'bank_transfer',
   'NEFT-AST-01002',
   'received',
-  '00000000-0000-4000-a000-000000000001',
-  true
+  '00000000-0000-4000-a000-000000000001'
 ),
 (
   '90000000-0000-4000-a000-000000000002',
@@ -1288,8 +1209,7 @@ insert into public.payment_receipts (
   'upi',
   'UPI-SHR-01003',
   'received',
-  '00000000-0000-4000-a000-000000000001',
-  true
+  '00000000-0000-4000-a000-000000000001'
 ),
 (
   '90000000-0000-4000-a000-000000000003',
@@ -1301,8 +1221,7 @@ insert into public.payment_receipts (
   'bank_transfer',
   'RTGS-KED-01004',
   'received',
-  '00000000-0000-4000-a000-000000000001',
-  true
+  '00000000-0000-4000-a000-000000000001'
 ),
 (
   '90000000-0000-4000-a000-000000000004',
@@ -1314,8 +1233,7 @@ insert into public.payment_receipts (
   'bank_transfer',
   'NEFT-NOR-01005',
   'received',
-  '00000000-0000-4000-a000-000000000001',
-  true
+  '00000000-0000-4000-a000-000000000001'
 ),
 (
   '90000000-0000-4000-a000-000000000005',
@@ -1327,8 +1245,7 @@ insert into public.payment_receipts (
   'bank_transfer',
   'RTGS-APX-01006',
   'received',
-  '00000000-0000-4000-a000-000000000001',
-  true
+  '00000000-0000-4000-a000-000000000001'
 );
 
 -- 17. Payment Allocations Phase 6: Insert 5 allocations (triggers derive invoice amount_received & status)
@@ -1337,48 +1254,42 @@ insert into public.payment_allocations (
   receipt_id,
   invoice_id,
   amount,
-  created_by,
-  is_demo
+  created_by
 ) values
 (
   '91000000-0000-4000-a000-000000000001',
   '90000000-0000-4000-a000-000000000001',
   '70000000-0000-4000-a000-000000000002',
   14500.00,
-  '00000000-0000-4000-a000-000000000001',
-  true
+  '00000000-0000-4000-a000-000000000001'
 ),
 (
   '91000000-0000-4000-a000-000000000002',
   '90000000-0000-4000-a000-000000000002',
   '70000000-0000-4000-a000-000000000003',
   15000.00,
-  '00000000-0000-4000-a000-000000000001',
-  true
+  '00000000-0000-4000-a000-000000000001'
 ),
 (
   '91000000-0000-4000-a000-000000000003',
   '90000000-0000-4000-a000-000000000003',
   '70000000-0000-4000-a000-000000000004',
   13250.00,
-  '00000000-0000-4000-a000-000000000001',
-  true
+  '00000000-0000-4000-a000-000000000001'
 ),
 (
   '91000000-0000-4000-a000-000000000004',
   '90000000-0000-4000-a000-000000000004',
   '70000000-0000-4000-a000-000000000005',
   23000.00,
-  '00000000-0000-4000-a000-000000000001',
-  true
+  '00000000-0000-4000-a000-000000000001'
 ),
 (
   '91000000-0000-4000-a000-000000000005',
   '90000000-0000-4000-a000-000000000005',
   '70000000-0000-4000-a000-000000000006',
   75000.00,
-  '00000000-0000-4000-a000-000000000001',
-  true
+  '00000000-0000-4000-a000-000000000001'
 );
 
 -- 18. Exact Sequence Synchronization (Zero Off-by-One)

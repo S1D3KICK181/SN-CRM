@@ -119,9 +119,6 @@ test('seed.sql includes complete fail-closed preflight guards with SQLSTATE 5500
   // Guard: non-demo users
   assert.match(seed, /exists\s*\(\s*select\s+1\s+from\s+auth\.users\s+where\s+email\s+not\s+like\s+'%@sn-demo\.local'\s*\)/i);
 
-  // Guard: non-demo clients
-  assert.match(seed, /exists\s*\(\s*select\s+1\s+from\s+public\.clients\s+where\s+is_demo\s*=\s*false\s*\)/i);
-
   // Guard: clean public tables
   assert.match(seed, /exists\s*\(\s*select\s+1\s+from\s+public\.clients\s*\)/i);
   assert.match(seed, /exists\s*\(\s*select\s+1\s+from\s+public\.cash_accounts\s*\)/i);

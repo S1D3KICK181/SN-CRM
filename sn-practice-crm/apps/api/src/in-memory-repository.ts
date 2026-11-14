@@ -101,7 +101,6 @@ export interface StoredOperationReceipt {
   readonly operationType: string;
   readonly requestHash: string;
   readonly result: unknown;
-  readonly isDemo: boolean;
   readonly createdAt: string;
 }
 
@@ -149,7 +148,6 @@ export type ClientSeedRecord = Omit<
     pan: string | null;
     gstin: string | null;
     contacts?: ContactRecord[];
-    isDemo?: boolean;
   };
 
 export interface InvoiceSeedRecord {
@@ -291,7 +289,6 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
   private readonly documents: DocumentRecord[] = [];
   private readonly messages: MessageRecord[] = [];
   private readonly uploadedObjects = new Map<string, number>(); // Simulated Storage: path to size in bytes
-  private readonly engagementIsDemo = new Map<string, boolean>();
   private readonly invoiceSeeds: InvoiceSeedRecord[];
   private readonly paymentReceipts: PaymentReceiptSeedRecord[];
   private readonly now: () => Date;
@@ -623,7 +620,6 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
       createdById: actor.id,
       createdAt: record.createdAt,
       updatedAt: record.updatedAt,
-      isDemo: false,
     };
 
     this.clients.set(seedRecord.id, copy(seedRecord));
@@ -707,7 +703,7 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
         updatedAt: this.now().toISOString(),
       };
       this.clients.set(updated.id, updated);
-      return { result: { id: updated.id }, isDemo: client.isDemo === true };
+      return { result: { id: updated.id } };
     });
     const actor = this.getActor(ctx);
     const stored = this.clients.get(id);
@@ -742,7 +738,7 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
       };
       contacts.push(contact);
       match.client.contacts = contacts;
-      return { result: contact, isDemo: match.client.isDemo === true };
+      return { result: contact };
     });
   }
 
@@ -767,7 +763,7 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
       if (command.isPrimary !== undefined) contact.isPrimary = command.isPrimary;
       if (command.notes !== undefined) contact.notes = command.notes;
       contact.updatedAt = this.now().toISOString();
-      return { result: copy(contact), isDemo: match.client.isDemo === true };
+      return { result: copy(contact) };
     });
   }
 
@@ -882,7 +878,7 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
         updatedAt: nowIso,
       };
       this.services.set(record.id, record);
-      return { result: this.toServiceDto(record), isDemo: false };
+      return { result: this.toServiceDto(record) };
     });
   }
 
@@ -907,7 +903,7 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
         updatedAt: new Date(nowMs).toISOString(),
       };
       this.services.set(updated.id, updated);
-      return { result: this.toServiceDto(updated), isDemo: false };
+      return { result: this.toServiceDto(updated) };
     });
   }
 
@@ -1550,7 +1546,7 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
     idempotencyKey: string,
     operationType: string,
     payload: unknown,
-    work: () => { result: T; isDemo: boolean },
+    work: () => { result: T },
   ): T {
     const trimmedKey = idempotencyKey.trim();
     if (trimmedKey.length < 1 || trimmedKey.length > 255) {
@@ -1570,14 +1566,13 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
       return copy(existing.result as T);
     }
 
-    const { result, isDemo } = work();
+    const { result } = work();
     this.operationReceipts.set(receiptKey, {
       actorId: ctx.actorId,
       idempotencyKey: trimmedKey,
       operationType,
       requestHash,
       result: copy(result),
-      isDemo,
       createdAt: this.now().toISOString(),
     });
     return copy(result);
@@ -1636,7 +1631,6 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
       if (command.applyCredit === true) this.spendClientCredit(invoice);
       return {
         result: this.toInvoiceDto(invoice, kolkataToday(this.now())),
-        isDemo: visible.client.isDemo ?? false,
       };
     });
   }
@@ -1676,7 +1670,6 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
       this.recomputeInvoiceStatus(invoice);
       return {
         result: this.toReceiptDto(receipt),
-        isDemo: this.clients.get(invoice.clientId)?.isDemo ?? false,
       };
     });
   }
@@ -1699,7 +1692,6 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
       invoice.updatedAt = nowIso;
       return {
         result: this.toInvoiceDto(invoice, today),
-        isDemo: this.clients.get(invoice.clientId)?.isDemo ?? false,
       };
     });
   }
@@ -1722,7 +1714,6 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
       }
       return {
         result: this.toReceiptDto(receipt),
-        isDemo: this.clients.get(receipt.clientId)?.isDemo ?? false,
       };
     });
   }
@@ -1830,7 +1821,7 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
         removedAt: null,
       };
       this.documents.push(record);
-      return { result: this.toDocumentDto(record), isDemo: client.isDemo === true };
+      return { result: this.toDocumentDto(record) };
     });
   }
 
@@ -1849,7 +1840,7 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
 
       record.status = 'available';
       record.sizeBytes = size;
-      return { result: this.toDocumentDto(record), isDemo: this.clients.get(record.clientId)?.isDemo === true };
+      return { result: this.toDocumentDto(record) };
     });
   }
 
@@ -1866,7 +1857,7 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
       record.status = 'removed';
       record.removedReason = command.reason;
       record.removedAt = this.now().toISOString();
-      return { result: this.toDocumentDto(record), isDemo: this.clients.get(record.clientId)?.isDemo === true };
+      return { result: this.toDocumentDto(record) };
     });
   }
 
@@ -1939,7 +1930,7 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
         createdAt: this.now().toISOString(),
       };
       this.messages.push(record);
-      return { result: this.toMessageDto(record), isDemo: client.isDemo === true };
+      return { result: this.toMessageDto(record) };
     });
   }
 
@@ -1954,7 +1945,6 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
       if (this.spendClientCredit(invoice) <= 0) throw noCreditAvailable();
       return {
         result: this.toInvoiceDto(invoice, kolkataToday(this.now())),
-        isDemo: this.clients.get(invoice.clientId)?.isDemo ?? false,
       };
     });
   }
@@ -1979,7 +1969,6 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
       this.recomputeInvoiceStatus(invoice);
       return {
         result: this.toInvoiceDto(invoice, kolkataToday(this.now())),
-        isDemo: this.clients.get(receipt.clientId)?.isDemo ?? false,
       };
     });
   }
@@ -2105,7 +2094,6 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
         const code = `ENG-${String(this.engagementCounter).padStart(6, '0')}`;
         const engagementId = crypto.randomUUID();
         const versionId = crypto.randomUUID();
-        const isDemo = client.isDemo ?? false;
         const now = new Date().toISOString();
 
         const versionDto: EngagementVersionDto = this.enrichEngagementVersionDto({
@@ -2151,7 +2139,6 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
 
         this.engagements.set(engagementId, copy(engagementDto));
         this.engagementVersions.set(engagementId, [copy(versionDto)]);
-        this.engagementIsDemo.set(engagementId, isDemo);
         result = copy(engagementDto);
         break;
       }
@@ -2374,21 +2361,12 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
       }
     }
 
-    const receiptIsDemo = command.kind === 'createDraft'
-      ? (this.clients.get(command.clientId)?.isDemo ?? false)
-      : (this.engagementIsDemo.get(
-          command.kind === 'reviseDraft' || command.kind === 'activate' || command.kind === 'amend' || command.kind === 'end'
-            ? command.engagementId
-            : ''
-        ) ?? false);
-
     const storedReceipt: StoredOperationReceipt = {
       actorId: ctx.actorId,
       idempotencyKey: trimmedKey,
       operationType: command.kind,
       requestHash,
       result: copy(result),
-      isDemo: receiptIsDemo,
       createdAt: new Date().toISOString(),
     };
     this.operationReceipts.set(receiptKey, storedReceipt);

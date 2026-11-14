@@ -306,7 +306,7 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
   async createClient(ctx: RepositoryContext, record: CreateClientRecord): Promise<ClientDto> {
     try {
       return await this.runner.withUserContext(ctx, async (tx) => {
-        // Live write: omit code to use client_code_seq default, omit is_demo to default false
+        // Live write: omit code to use the client_code_seq default
         await tx`
           INSERT INTO public.clients (
             id, display_name, legal_name, gstin, pan, email, phone,
@@ -381,7 +381,6 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
 
             const currentRows = await tx`
               SELECT
-                is_demo,
                 date_trunc('milliseconds', updated_at) = date_trunc('milliseconds', ${command.expectedUpdatedAt}::timestamptz) AS fresh
               FROM public.clients
               WHERE id = ${command.id}::uuid
@@ -416,7 +415,7 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
                   incorporation_date = CASE WHEN ${has(command.incorporationDate)}::boolean THEN ${command.incorporationDate ?? null}::date ELSE incorporation_date END
               WHERE id = ${command.id}::uuid;
             `;
-            return { result: { id: command.id }, isDemo: Boolean(current['is_demo']) };
+            return { result: { id: command.id } };
           },
         );
         const updated = (await this.queryClientDtos(tx, id))[0];
@@ -457,9 +456,9 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
 
   // Checks the client is visible and editable by the actor, then takes its row lock so that
   // changing which contact is primary cannot race with another change to the same client.
-  private async lockEditableClient(tx: SqlClient, clientId: string): Promise<boolean> {
+  private async lockEditableClient(tx: SqlClient, clientId: string): Promise<void> {
     const rows = await tx`
-      SELECT is_demo, public.can_edit_client(id) AS can_edit
+      SELECT public.can_edit_client(id) AS can_edit
       FROM public.clients
       WHERE id = ${clientId}::uuid;
     `;
@@ -467,7 +466,6 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
     if (!client) throw notFound('Client');
     if (client['can_edit'] !== true) throw this.forbiddenOperation();
     await tx`SELECT 1 FROM public.clients WHERE id = ${clientId}::uuid FOR UPDATE;`;
-    return Boolean(client['is_demo']);
   }
 
   async createClientContact(ctx: RepositoryContext, command: CreateClientContactCommand): Promise<ClientContactDto> {
@@ -481,7 +479,7 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
           'createClientContact',
           payload,
           async () => {
-            const isDemo = await this.lockEditableClient(tx, command.clientId);
+            await this.lockEditableClient(tx, command.clientId);
             if (command.isPrimary === true) {
               await tx`
                 UPDATE public.client_contacts SET is_primary = false
@@ -489,7 +487,6 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
               `;
             }
             const contactId = crypto.randomUUID();
-            // is_demo is inherited from the client by the contact's insert trigger
             await tx`
               INSERT INTO public.client_contacts (
                 id, client_id, name, designation, email, phone, whatsapp, is_primary, notes, created_by
@@ -506,7 +503,7 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
                 ${ctx.actorId}::uuid
               );
             `;
-            return { result: { id: contactId }, isDemo };
+            return { result: { id: contactId } };
           },
         );
         return await this.fetchContactDto(tx, id);
@@ -533,7 +530,7 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
             const owner = ownerRows[0];
             if (!owner) throw notFound('Contact');
             const clientId = String(owner['client_id']);
-            const isDemo = await this.lockEditableClient(tx, clientId);
+            await this.lockEditableClient(tx, clientId);
 
             const currentRows = await tx`
               SELECT
@@ -564,7 +561,7 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
                   notes = CASE WHEN ${has(command.notes)}::boolean THEN ${command.notes ?? null}::text ELSE notes END
               WHERE id = ${command.id}::uuid;
             `;
-            return { result: { id: command.id }, isDemo };
+            return { result: { id: command.id } };
           },
         );
         return await this.fetchContactDto(tx, id);
@@ -776,8 +773,7 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
           if (!created) {
             throw new ApiError(500, 'internal_error', 'Created service could not be retrieved.');
           }
-          // Services belong to no client, so a new one is never demo data
-          return { result: created, isDemo: false };
+          return { result: created };
         }),
       );
     } catch (error) {
@@ -796,7 +792,6 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
         this.runIdempotent<ServiceDto>(tx, ctx, idempotencyKey, 'updateService', payload, async () => {
           const currentRows = await tx`
             SELECT
-              is_demo,
               date_trunc('milliseconds', updated_at) = date_trunc('milliseconds', ${command.expectedUpdatedAt}::timestamptz) AS fresh
             FROM public.service_catalog
             WHERE id = ${command.id}::uuid
@@ -822,7 +817,7 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
           if (!updated) {
             throw new ApiError(500, 'internal_error', 'Updated service could not be retrieved.');
           }
-          return { result: updated, isDemo: Boolean(current['is_demo']) };
+          return { result: updated };
         }),
       );
     } catch (error) {
@@ -981,7 +976,6 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
       FROM public.profiles p
       LEFT JOIN public.staff_reporting_lines srl ON srl.employee_id = p.user_id
       WHERE p.user_id = ${resolvedId}::uuid
-        AND p.is_demo = true
         AND p.is_active = true;
     `;
     const row = rows[0];
@@ -1010,8 +1004,7 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
         srl.supervisor_id AS "reportsToId"
       FROM public.profiles p
       LEFT JOIN public.staff_reporting_lines srl ON srl.employee_id = p.user_id
-      WHERE p.is_demo = true
-        AND p.is_active = true
+      WHERE p.is_active = true
       ORDER BY p.full_name ASC;
     `;
     return rows.map((row) => ({
@@ -1204,7 +1197,6 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
   async createAssignment(ctx: RepositoryContext, record: CreateAssignmentRecord): Promise<AssignmentDto> {
     try {
       return await this.runner.withUserContext(ctx, async (tx) => {
-        // Live write: omit is_demo column completely (PostgreSQL defaults is_demo = false)
         await tx`
           INSERT INTO public.assignments (
             id, client_id, service_id, title, description, owner_id,
@@ -1513,7 +1505,6 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
   async createWorkItem(ctx: RepositoryContext, record: CreateWorkItemRecord): Promise<WorkItemDto> {
     try {
       return await this.runner.withUserContext(ctx, async (tx) => {
-        // Live write: omit is_demo column completely (PostgreSQL defaults is_demo = false)
         await tx`
           INSERT INTO public.work_items (
             id, kind, assignment_id, context_client_id, title, description,
@@ -2210,7 +2201,7 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
     idempotencyKey: string,
     operationType: string,
     payload: unknown,
-    work: () => Promise<{ result: T; isDemo: boolean }>,
+    work: () => Promise<{ result: T }>,
   ): Promise<T> {
     const trimmedKey = idempotencyKey.trim();
     if (trimmedKey.length < 1 || trimmedKey.length > 255) {
@@ -2239,18 +2230,17 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
       return receipt['result'] as T;
     }
 
-    const { result, isDemo } = await work();
+    const { result } = await work();
 
     await tx`
       INSERT INTO public.operation_receipts (
-        actor_id, idempotency_key, operation_type, request_hash, result, is_demo
+        actor_id, idempotency_key, operation_type, request_hash, result
       ) VALUES (
         ${ctx.actorId}::uuid,
         ${trimmedKey},
         ${operationType},
         ${requestHash},
-        ${tx.json(result as unknown as postgres.JSONValue)},
-        ${isDemo}
+        ${tx.json(result as unknown as postgres.JSONValue)}
       );
     `;
     return result;
@@ -2263,11 +2253,9 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
       return await this.runner.withUserContext(ctx, (tx) =>
         this.runIdempotent<InvoiceDto>(tx, ctx, idempotencyKey, 'recordVyaparBill', payload, async () => {
           const clientRows = await tx`
-            SELECT is_demo FROM public.clients WHERE id = ${command.clientId}::uuid;
+            SELECT 1 FROM public.clients WHERE id = ${command.clientId}::uuid;
           `;
           if (clientRows.length === 0) throw notFound('Client');
-          // Records inherit is_demo from their client
-          const isDemo = Boolean(clientRows[0]!['is_demo']);
 
           // Two writes must never spend the same credit, so take the client's credit lock first
           if (command.applyCredit === true) await this.lockClientCredit(tx, command.clientId);
@@ -2285,27 +2273,25 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
           const invoiceId = crypto.randomUUID();
           await tx`
             INSERT INTO public.invoices (
-              id, client_id, issue_date, due_date, vyapar_bill_number, created_by, is_demo
+              id, client_id, issue_date, due_date, vyapar_bill_number, created_by
             ) VALUES (
               ${invoiceId}::uuid,
               ${command.clientId}::uuid,
               ${command.billDate}::date,
               ${command.dueDate}::date,
               ${vyaparBillNumber},
-              ${ctx.actorId}::uuid,
-              ${isDemo}
+              ${ctx.actorId}::uuid
             );
           `;
           await tx`
             INSERT INTO public.invoice_items (
-              invoice_id, description, quantity, unit_price, tax_rate, is_demo
+              invoice_id, description, quantity, unit_price, tax_rate
             ) VALUES (
               ${invoiceId}::uuid,
               ${command.description.trim()},
               1,
               ${command.amountPaise}::bigint::numeric / 100,
-              0,
-              ${isDemo}
+              0
             );
           `;
           await tx`
@@ -2313,14 +2299,14 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
             WHERE id = ${invoiceId}::uuid;
           `;
           if (command.applyCredit === true) {
-            await this.spendClientCredit(tx, ctx, invoiceId, command.clientId, isDemo);
+            await this.spendClientCredit(tx, ctx, invoiceId, command.clientId);
           }
 
           const created = (await this.queryInvoiceDtos(tx, invoiceId))[0];
           if (!created) {
             throw new ApiError(500, 'internal_error', 'Recorded bill could not be retrieved.');
           }
-          return { result: created, isDemo };
+          return { result: created };
         }),
       );
     } catch (error) {
@@ -2342,7 +2328,6 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
             SELECT
               i.client_id,
               i.status,
-              i.is_demo,
               round((i.total_amount - i.amount_received) * 100)::bigint AS balance_paise
             FROM public.invoices i
             WHERE i.id = ${command.invoiceId}::uuid;
@@ -2354,11 +2339,10 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
           // An overpayment is kept: the receipt is for the full amount, the rest stays as client credit
           const allocatedPaise = Math.min(command.amountPaise, balancePaise);
 
-          const isDemo = Boolean(invoice['is_demo']);
           const receiptId = crypto.randomUUID();
           await tx`
             INSERT INTO public.payment_receipts (
-              id, client_id, received_on, amount, method, reference, notes, created_by, is_demo
+              id, client_id, received_on, amount, method, reference, notes, created_by
             ) VALUES (
               ${receiptId}::uuid,
               ${String(invoice['client_id'])}::uuid,
@@ -2367,19 +2351,17 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
               ${command.method}::public.payment_method,
               ${command.reference?.trim() || null},
               ${command.notes?.trim() || null},
-              ${ctx.actorId}::uuid,
-              ${isDemo}
+              ${ctx.actorId}::uuid
             );
           `;
           await tx`
             INSERT INTO public.payment_allocations (
-              receipt_id, invoice_id, amount, created_by, is_demo
+              receipt_id, invoice_id, amount, created_by
             ) VALUES (
               ${receiptId}::uuid,
               ${command.invoiceId}::uuid,
               ${allocatedPaise}::bigint::numeric / 100,
-              ${ctx.actorId}::uuid,
-              ${isDemo}
+              ${ctx.actorId}::uuid
             );
           `;
 
@@ -2387,7 +2369,7 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
           if (!created) {
             throw new ApiError(500, 'internal_error', 'Recorded payment could not be retrieved.');
           }
-          return { result: created, isDemo };
+          return { result: created };
         }),
       );
     } catch (error) {
@@ -2402,7 +2384,7 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
         this.runIdempotent<InvoiceDto>(tx, ctx, idempotencyKey, 'voidInvoice', payload, async () => {
           await tx`SELECT pg_advisory_xact_lock(hashtext(${`invoice:${command.id}`}))`;
           const rows = await tx`
-            SELECT status, is_demo, round(amount_received * 100)::bigint AS received_paise
+            SELECT status, round(amount_received * 100)::bigint AS received_paise
             FROM public.invoices
             WHERE id = ${command.id}::uuid;
           `;
@@ -2424,7 +2406,7 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
           if (!voided) {
             throw new ApiError(500, 'internal_error', 'Cancelled bill could not be retrieved.');
           }
-          return { result: voided, isDemo: Boolean(invoice['is_demo']) };
+          return { result: voided };
         }),
       );
     } catch (error) {
@@ -2438,7 +2420,7 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
       return await this.runner.withUserContext(ctx, (tx) =>
         this.runIdempotent<PaymentReceiptDto>(tx, ctx, idempotencyKey, 'voidPaymentReceipt', payload, async () => {
           const rows = await tx`
-            SELECT status, is_demo FROM public.payment_receipts WHERE id = ${command.id}::uuid;
+            SELECT status FROM public.payment_receipts WHERE id = ${command.id}::uuid;
           `;
           const receipt = rows[0];
           if (!receipt) throw notFound('Payment receipt');
@@ -2467,7 +2449,7 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
           if (!voided) {
             throw new ApiError(500, 'internal_error', 'Cancelled payment could not be retrieved.');
           }
-          return { result: voided, isDemo: Boolean(receipt['is_demo']) };
+          return { result: voided };
         }),
       );
     } catch (error) {
@@ -2549,7 +2531,7 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
       return await this.runner.withUserContext(ctx, (tx) =>
         this.runIdempotent<ClientDocumentDto>(tx, ctx, idempotencyKey, 'createClientDocument', payload, async () => {
           const clientRows = await tx`
-            SELECT is_demo, public.looks_after_client(id) AS looks_after
+            SELECT public.looks_after_client(id) AS looks_after
             FROM public.clients
             WHERE id = ${command.clientId}::uuid;
           `;
@@ -2558,7 +2540,6 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
 
           const documentId = crypto.randomUUID();
           const storagePath = documentStoragePath(command.clientId, documentId, command.fileName);
-          // is_demo is inherited from the client by the document's insert trigger
           await tx`
             INSERT INTO public.client_documents (
               id, client_id, title, category, financial_year_start, file_name, mime_type,
@@ -2580,7 +2561,7 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
           if (!created) {
             throw new ApiError(500, 'internal_error', 'Created document could not be retrieved.');
           }
-          return { result: created, isDemo: Boolean(client['is_demo']) };
+          return { result: created };
         }),
       );
     } catch (error) {
@@ -2594,7 +2575,7 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
       return await this.runner.withUserContext(ctx, (tx) =>
         this.runIdempotent<ClientDocumentDto>(tx, ctx, idempotencyKey, 'confirmClientDocument', payload, async () => {
           const rows = await tx`
-            SELECT status, created_by, is_demo
+            SELECT status, created_by
             FROM public.client_documents
             WHERE id = ${command.id}::uuid
             FOR UPDATE;
@@ -2622,7 +2603,7 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
           if (!confirmed) {
             throw new ApiError(500, 'internal_error', 'Confirmed document could not be retrieved.');
           }
-          return { result: confirmed, isDemo: Boolean(document['is_demo']) };
+          return { result: confirmed };
         }),
       );
     } catch (error) {
@@ -2636,7 +2617,7 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
       return await this.runner.withUserContext(ctx, (tx) =>
         this.runIdempotent<ClientDocumentDto>(tx, ctx, idempotencyKey, 'removeClientDocument', payload, async () => {
           const rows = await tx`
-            SELECT status, is_demo
+            SELECT status
             FROM public.client_documents
             WHERE id = ${command.id}::uuid
             FOR UPDATE;
@@ -2658,7 +2639,7 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
           if (!removed) {
             throw new ApiError(500, 'internal_error', 'Removed document could not be retrieved.');
           }
-          return { result: removed, isDemo: Boolean(document['is_demo']) };
+          return { result: removed };
         }),
       );
     } catch (error) {
@@ -2668,7 +2649,7 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
 
   // --- Client messages (MSG-01) ---
   // Row-level security limits reads and writes to clients the actor looks after. Messages are
-  // append-only; the insert trigger inherits is_demo from the client.
+  // append-only.
 
   private async queryMessageDtos(
     tx: SqlClient,
@@ -2741,7 +2722,7 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
       return await this.runner.withUserContext(ctx, (tx) =>
         this.runIdempotent<ClientMessageDto>(tx, ctx, idempotencyKey, 'recordClientMessage', payload, async () => {
           const clientRows = await tx`
-            SELECT is_demo, public.looks_after_client(id) AS looks_after
+            SELECT public.looks_after_client(id) AS looks_after
             FROM public.clients
             WHERE id = ${command.clientId}::uuid;
           `;
@@ -2762,7 +2743,6 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
           }
 
           const messageId = crypto.randomUUID();
-          // is_demo is inherited from the client by the message's insert trigger
           await tx`
             INSERT INTO public.client_messages (
               id, client_id, contact_id, recipient_name, recipient_number, channel, purpose,
@@ -2786,7 +2766,7 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
           if (!created) {
             throw new ApiError(500, 'internal_error', 'Recorded message could not be retrieved.');
           }
-          return { result: created, isDemo: Boolean(client['is_demo']) };
+          return { result: created };
         }),
       );
     } catch (error) {
@@ -2805,7 +2785,6 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
     ctx: RepositoryContext,
     invoiceId: string,
     clientId: string,
-    isDemo: boolean,
   ): Promise<number> {
     const invoiceRows = await tx`
       SELECT round((i.total_amount - i.amount_received) * 100)::bigint AS pending_paise
@@ -2839,14 +2818,13 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
       const takePaise = Math.min(pendingPaise, toSafePaise(receipt['unallocated_paise'], 'unallocated_paise'));
       await tx`
         INSERT INTO public.payment_allocations (
-          receipt_id, invoice_id, amount, source, created_by, is_demo
+          receipt_id, invoice_id, amount, source, created_by
         ) VALUES (
           ${String(receipt['id'])}::uuid,
           ${invoiceId}::uuid,
           ${takePaise}::bigint::numeric / 100,
           'credit',
-          ${ctx.actorId}::uuid,
-          ${isDemo}
+          ${ctx.actorId}::uuid
         );
       `;
       pendingPaise -= takePaise;
@@ -2861,7 +2839,7 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
       return await this.runner.withUserContext(ctx, (tx) =>
         this.runIdempotent<InvoiceDto>(tx, ctx, idempotencyKey, 'applyCredit', payload, async () => {
           const found = await tx`
-            SELECT client_id, is_demo FROM public.invoices WHERE id = ${command.invoiceId}::uuid;
+            SELECT client_id FROM public.invoices WHERE id = ${command.invoiceId}::uuid;
           `;
           const invoice = found[0];
           if (!invoice) throw notFound('Invoice');
@@ -2876,15 +2854,14 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
           const status = current[0]?.['status'];
           if (status !== 'issued' && status !== 'part_paid') throw billNotOpen();
 
-          const isDemo = Boolean(invoice['is_demo']);
-          const appliedPaise = await this.spendClientCredit(tx, ctx, command.invoiceId, clientId, isDemo);
+          const appliedPaise = await this.spendClientCredit(tx, ctx, command.invoiceId, clientId);
           if (appliedPaise <= 0) throw noCreditAvailable();
 
           const updated = (await this.queryInvoiceDtos(tx, command.invoiceId))[0];
           if (!updated) {
             throw new ApiError(500, 'internal_error', 'Bill could not be retrieved after using credit.');
           }
-          return { result: updated, isDemo };
+          return { result: updated };
         }),
       );
     } catch (error) {
@@ -2898,7 +2875,7 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
       return await this.runner.withUserContext(ctx, (tx) =>
         this.runIdempotent<InvoiceDto>(tx, ctx, idempotencyKey, 'removeCreditAllocation', payload, async () => {
           const found = await tx`
-            SELECT pa.source, pa.invoice_id, pa.is_demo, pr.client_id
+            SELECT pa.source, pa.invoice_id, pr.client_id
             FROM public.payment_allocations pa
             JOIN public.payment_receipts pr ON pr.id = pa.receipt_id
             WHERE pa.id = ${command.allocationId}::uuid;
@@ -2930,7 +2907,7 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
           if (!updated) {
             throw new ApiError(500, 'internal_error', 'Bill could not be retrieved after removing credit.');
           }
-          return { result: updated, isDemo: Boolean(allocation['is_demo']) };
+          return { result: updated };
         }),
       );
     } catch (error) {
@@ -3142,21 +3119,14 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
             const engId = crypto.randomUUID();
             const verId = crypto.randomUUID();
 
-            // Derive is_demo from the client row — real clients are false, demo clients are true
-            const clientDemoRows = await tx`
-              SELECT is_demo FROM public.clients WHERE id = ${command.clientId}::uuid;
-            `;
-            const clientIsDemo = clientDemoRows.length > 0 ? Boolean(clientDemoRows[0]!['is_demo']) : false;
-
             await tx`
               INSERT INTO public.engagements (
-                id, client_id, service_id, status, is_demo
+                id, client_id, service_id, status
               ) VALUES (
                 ${engId}::uuid,
                 ${command.clientId}::uuid,
                 ${command.serviceId}::uuid,
-                'draft'::public.engagement_status,
-                ${clientIsDemo}
+                'draft'::public.engagement_status
               );
             `;
 
@@ -3164,7 +3134,7 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
               INSERT INTO public.engagement_versions (
                 id, engagement_id, version_number, title, scope, exclusions,
                 responsible_partner_id, delivery_manager_id, fee_model,
-                agreed_fee_paise, billing_terms, start_date, end_date, is_demo
+                agreed_fee_paise, billing_terms, start_date, end_date
               ) VALUES (
                 ${verId}::uuid,
                 ${engId}::uuid,
@@ -3178,8 +3148,7 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
                 ${command.agreedFeePaise},
                 ${command.billingTerms.trim()},
                 ${command.startDate}::date,
-                ${command.endDate ? command.endDate : null}::date,
-                ${clientIsDemo}
+                ${command.endDate ? command.endDate : null}::date
               );
             `;
 
@@ -3298,7 +3267,7 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
 
           case 'amend': {
             const parentLock = await tx`
-              SELECT id, status, is_demo
+              SELECT id, status
               FROM public.engagements
               WHERE id = ${command.engagementId}::uuid
                 AND date_trunc('milliseconds', updated_at) = date_trunc('milliseconds', ${command.expectedUpdatedAt}::timestamptz)
@@ -3337,7 +3306,7 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
                 id, engagement_id, version_number, title, scope, exclusions,
                 responsible_partner_id, delivery_manager_id, fee_model,
                 agreed_fee_paise, billing_terms, start_date, end_date,
-                approved_at, approved_by, is_demo
+                approved_at, approved_by
               ) VALUES (
                 ${newVersionId}::uuid,
                 ${command.engagementId}::uuid,
@@ -3353,8 +3322,7 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
                 ${command.startDate}::date,
                 ${command.endDate ? command.endDate : null}::date,
                 now(),
-                ${ctx.actorId}::uuid,
-                ${Boolean(parentRow['is_demo'])}
+                ${ctx.actorId}::uuid
               );
             `;
 
@@ -3413,18 +3381,13 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
         // Atomically store operation receipt within the same transaction
         await tx`
           INSERT INTO public.operation_receipts (
-            actor_id, idempotency_key, operation_type, request_hash, result, is_demo
+            actor_id, idempotency_key, operation_type, request_hash, result
           ) VALUES (
             ${ctx.actorId}::uuid,
             ${trimmedKey},
             ${command.kind},
             ${requestHash},
-            ${tx.json(result as unknown as import('postgres').JSONValue)},
-            (
-              SELECT e.is_demo
-              FROM public.engagements e
-              WHERE e.id = ${result.id}::uuid
-            )
+            ${tx.json(result as unknown as import('postgres').JSONValue)}
           );
         `;
 

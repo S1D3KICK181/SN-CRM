@@ -1187,3 +1187,92 @@ test('migration 0017 removes demo messages before the bills, work and contacts t
   assert.match(removeDemo, /Unauthorized: remove_demo_data may only be executed by a Founder\./i);
   expectSql(sql0017, /revoke all on function public\.remove_demo_data\(\) from public, anon;\s+grant execute on function public\.remove_demo_data\(\) to authenticated;/i, 'demo removal grants');
 });
+
+test('migration 0018 (CLEAN-01) removes the is_demo label, its tamper guard and the demo-removal routine', () => {
+  const migration0018Path = new URL('../../supabase/migrations/20261114090000_clean01_remove_demo_label.sql', import.meta.url);
+  const sql0018 = readMigration(migration0018Path, 'Migration 0018');
+  assert.match(sql0018, /^begin;$/im, 'one transaction');
+  assert.match(sql0018, /^commit;$/im, 'one transaction');
+
+  const labelTables = [
+    'assignment_reviewers', 'assignments', 'audit_log', 'cash_accounts', 'cash_ledger_entries',
+    'client_contacts', 'client_documents', 'client_messages', 'clients', 'engagement_versions',
+    'engagements', 'invoice_items', 'invoices', 'operation_receipts', 'payment_allocations',
+    'payment_receipts', 'profiles', 'recurring_schedule_reviewers', 'recurring_schedules',
+    'service_catalog', 'staff_reporting_lines', 'user_roles', 'work_items',
+  ];
+  assert.equal(labelTables.length, 23);
+  for (const table of labelTables) {
+    expectSql(sql0018, new RegExp(`alter table public\.${table} drop column is_demo;`, 'i'), `is_demo is dropped from ${table}`);
+  }
+  assert.equal((sql0018.match(/drop column is_demo;/gi) ?? []).length, 23, 'exactly the 23 labelled tables');
+
+  // The 22 tamper triggers (every labelled table except audit_log), then the function and the routine
+  const triggerTables = labelTables.filter((table) => table !== 'audit_log');
+  for (const table of triggerTables) {
+    expectSql(sql0018, new RegExp(`drop trigger if exists prevent_demo_flag_tampering on public\.${table};`, 'i'), `tamper trigger dropped on ${table}`);
+  }
+  assert.equal((sql0018.match(/drop trigger if exists prevent_demo_flag_tampering/gi) ?? []).length, 22);
+  expectSql(sql0018, /drop function if exists public\.prevent_demo_flag_tampering\(\);/i, 'tamper function dropped');
+  expectSql(sql0018, /drop function if exists public\.remove_demo_data\(\);/i, 'demo removal dropped');
+  const lastTriggerDrop = sql0018.lastIndexOf('drop trigger if exists prevent_demo_flag_tampering');
+  assert.ok(lastTriggerDrop < sql0018.indexOf('drop function if exists public.prevent_demo_flag_tampering();'), 'triggers go before their function');
+  assert.ok(
+    sql0018.indexOf('drop function if exists public.remove_demo_data();') < sql0018.indexOf('drop column is_demo;'),
+    'routines go before the columns',
+  );
+
+  // Every function that mentioned the label is redefined, and none still does
+  const redefined = [
+    'audit_row_change', 'guard_client_contact_write', 'guard_client_document_write', 'guard_client_message_write',
+    'guard_engagement_version_write', 'guard_engagement_write', 'guard_invoice_item_write',
+    'guard_recurring_schedule_reviewer_write', 'guard_user_role_write', 'handle_new_auth_user',
+    'materialize_due_recurring_assignments', 'prevent_audit_mutation', 'prevent_cash_ledger_delete',
+    'prevent_financial_document_delete',
+  ];
+  const body = (name) => {
+    const marker = `create or replace function public.${name}(`;
+    const start = sql0018.indexOf(marker);
+    assert.notEqual(start, -1, `Missing function ${name}`);
+    const end = sql0018.indexOf('$function$;', start);
+    assert.notEqual(end, -1, `Function ${name} has no closing delimiter`);
+    return sql0018.slice(start, end + '$function$;'.length);
+  };
+  for (const name of redefined) {
+    const func = body(name);
+    assert.doesNotMatch(func, /is_demo|demo_cleanup/i, `${name} no longer mentions the label or demo cleanup`);
+    assert.match(func, /security definer/i, `${name} stays security definer`);
+    assert.match(func, /set search_path to 'public'/i, `${name} keeps its pinned search_path`);
+  }
+
+  // The audit trail, ledger and bills lose their demo-cleanup bypass: nothing may delete them
+  assert.match(body('prevent_audit_mutation'), /raise exception 'The audit trail is immutable\.'/i);
+  assert.match(body('prevent_cash_ledger_delete'), /raise exception 'Ledger Entries are append-and-void records and cannot be deleted\.'/i);
+  assert.match(body('prevent_financial_document_delete'), /raise exception 'Financial documents are voided, never deleted\.'/i);
+  for (const name of ['prevent_audit_mutation', 'prevent_cash_ledger_delete', 'prevent_financial_document_delete']) {
+    assert.doesNotMatch(body(name), /\breturn old\b/i, `${name} has no delete bypass`);
+  }
+
+  // Other rules are kept
+  assert.match(body('audit_row_change'), /v_old := v_old - 'title' - 'description' - 'completion_note';/i);
+  assert.doesNotMatch(body('audit_row_change'), /app\.demo_cleanup/i);
+  assert.match(body('guard_engagement_write'), /Engagements cannot be deleted\./i);
+  assert.match(body('guard_engagement_version_write'), /Engagement versions cannot be deleted\./i);
+  assert.match(body('guard_user_role_write'), /The Founder role is immutable\./i);
+  assert.match(body('guard_invoice_item_write'), /Invoice Items are immutable after issue/i);
+  assert.match(body('guard_recurring_schedule_reviewer_write'), /Only the Founder or Manager may remove recurring schedule reviewers\./i);
+  assert.match(body('guard_client_message_write'), /A recorded message cannot be changed\./i);
+  assert.match(body('handle_new_auth_user'), /insert into public\.profiles \(user_id, full_name, email\)/i);
+  const materialize = body('materialize_due_recurring_assignments');
+  assert.match(materialize, /#variable_conflict use_column/i);
+  assert.match(materialize, /e\.status = 'active'/i, 'engagement rule is kept');
+  assert.match(materialize, /insert into public\.assignment_reviewers \(\s*assignment_id,\s*reviewer_id,\s*assigned_by,\s*assigned_at\s*\)/i);
+
+  // The migration proves its own result, and the identifier privileges stay as they were
+  assert.match(sql0018, /column_name = 'is_demo'/i, 'final check for leftover columns');
+  assert.match(sql0018, /p\.prosrc ilike '%is_demo%'/i, 'final check for leftover function bodies');
+  assert.match(sql0018, /demo_cleanup/i);
+  assert.match(sql0018, /pan and gstin must stay ungranted/i);
+  assert.doesNotMatch(sql0018, /grant\s+select\s*\([^)]*\bpan\b/i, 'pan is never granted');
+  assert.doesNotMatch(sql0018, /grant\s+select\s*\([^)]*\bgstin\b/i, 'gstin is never granted');
+});

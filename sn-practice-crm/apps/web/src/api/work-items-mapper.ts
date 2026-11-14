@@ -290,8 +290,8 @@ export function resolveParentLabel(
     }
     return matched.client ? `${matched.title} (${matched.client})` : matched.title;
   }
-  const isDemoCode = !isValidUuid(assignmentId);
-  const displayPrefix = isDemoCode ? assignmentId : 'Linked Assignment';
+  const isCodeId = !isValidUuid(assignmentId);
+  const displayPrefix = isCodeId ? assignmentId : 'Linked Assignment';
 
   if (fallbackPartyName?.trim() && !isValidUuid(fallbackPartyName.trim())) {
     return `${displayPrefix} · ${fallbackPartyName.trim()}`;

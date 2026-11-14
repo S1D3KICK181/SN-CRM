@@ -1,5 +1,5 @@
 -- Run against seeded database.
--- Validates exact row counts, 100% demo tagging, cash balances, collections snapshot,
+-- Validates exact row counts, cash balances, collections snapshot,
 -- invoice derived statuses, and next sequence numbers.
 
 begin;
@@ -21,98 +21,52 @@ begin
   select count(*) into v_count from auth.users where email like '%@sn-demo.local';
   if v_count <> 5 then raise exception 'Expected 5 demo users, found %', v_count; end if;
 
-  select count(*) into v_count from public.profiles where is_demo = true;
+  select count(*) into v_count from public.profiles;
   if v_count <> 5 then raise exception 'Expected 5 demo profiles, found %', v_count; end if;
 
-  select count(*) into v_count from public.user_roles where is_demo = true;
+  select count(*) into v_count from public.user_roles;
   if v_count <> 5 then raise exception 'Expected 5 demo user_roles, found %', v_count; end if;
 
-  select count(*) into v_count from public.staff_reporting_lines where is_demo = true;
+  select count(*) into v_count from public.staff_reporting_lines;
   if v_count <> 4 then raise exception 'Expected 4 demo reporting lines, found %', v_count; end if;
 
-  select count(*) into v_count from public.clients where is_demo = true;
+  select count(*) into v_count from public.clients;
   if v_count <> 6 then raise exception 'Expected 6 demo clients, found %', v_count; end if;
 
-  select count(*) into v_count from public.service_catalog where is_demo = true;
+  select count(*) into v_count from public.service_catalog;
   if v_count <> 6 then raise exception 'Expected 6 demo services, found %', v_count; end if;
 
-  select count(*) into v_count from public.recurring_schedules where is_demo = true;
+  select count(*) into v_count from public.recurring_schedules;
   if v_count <> 9 then raise exception 'Expected 9 demo schedules, found %', v_count; end if;
 
-  select count(*) into v_count from public.assignments where is_demo = true;
+  select count(*) into v_count from public.assignments;
   if v_count <> 6 then raise exception 'Expected 6 demo assignments, found %', v_count; end if;
 
-  select count(*) into v_count from public.assignment_reviewers where is_demo = true;
+  select count(*) into v_count from public.assignment_reviewers;
   if v_count <> 6 then raise exception 'Expected 6 demo reviewers, found %', v_count; end if;
 
-  select count(*) into v_count from public.work_items where is_demo = true;
+  select count(*) into v_count from public.work_items;
   if v_count <> 6 then raise exception 'Expected 6 demo work items, found %', v_count; end if;
 
-  select count(*) into v_count from public.cash_accounts where is_demo = true;
+  select count(*) into v_count from public.cash_accounts;
   if v_count <> 2 then raise exception 'Expected 2 demo cash accounts, found %', v_count; end if;
 
-  select count(*) into v_count from public.cash_ledger_entries where is_demo = true;
+  select count(*) into v_count from public.cash_ledger_entries;
   if v_count <> 8 then raise exception 'Expected 8 demo ledger entries, found %', v_count; end if;
 
-  select count(*) into v_count from public.invoices where is_demo = true;
+  select count(*) into v_count from public.invoices;
   if v_count <> 9 then raise exception 'Expected 9 demo invoices, found %', v_count; end if;
 
-  select count(*) into v_count from public.invoice_items where is_demo = true;
+  select count(*) into v_count from public.invoice_items;
   if v_count <> 9 then raise exception 'Expected 9 demo invoice items, found %', v_count; end if;
 
-  select count(*) into v_count from public.payment_receipts where is_demo = true;
+  select count(*) into v_count from public.payment_receipts;
   if v_count <> 5 then raise exception 'Expected 5 demo receipts, found %', v_count; end if;
 
-  select count(*) into v_count from public.payment_allocations where is_demo = true;
+  select count(*) into v_count from public.payment_allocations;
   if v_count <> 5 then raise exception 'Expected 5 demo allocations, found %', v_count; end if;
 
-  -- 2. 100% demo tagging (zero non-demo rows in seeded tables)
-  select count(*) into v_count from public.profiles where is_demo = false;
-  if v_count <> 0 then raise exception 'Found non-demo profiles: %', v_count; end if;
-
-  select count(*) into v_count from public.user_roles where is_demo = false;
-  if v_count <> 0 then raise exception 'Found non-demo user_roles: %', v_count; end if;
-
-  select count(*) into v_count from public.staff_reporting_lines where is_demo = false;
-  if v_count <> 0 then raise exception 'Found non-demo staff_reporting_lines: %', v_count; end if;
-
-  select count(*) into v_count from public.clients where is_demo = false;
-  if v_count <> 0 then raise exception 'Found non-demo clients: %', v_count; end if;
-
-  select count(*) into v_count from public.service_catalog where is_demo = false;
-  if v_count <> 0 then raise exception 'Found non-demo service_catalog: %', v_count; end if;
-
-  select count(*) into v_count from public.recurring_schedules where is_demo = false;
-  if v_count <> 0 then raise exception 'Found non-demo recurring_schedules: %', v_count; end if;
-
-  select count(*) into v_count from public.assignments where is_demo = false;
-  if v_count <> 0 then raise exception 'Found non-demo assignments: %', v_count; end if;
-
-  select count(*) into v_count from public.assignment_reviewers where is_demo = false;
-  if v_count <> 0 then raise exception 'Found non-demo assignment_reviewers: %', v_count; end if;
-
-  select count(*) into v_count from public.work_items where is_demo = false;
-  if v_count <> 0 then raise exception 'Found non-demo work_items: %', v_count; end if;
-
-  select count(*) into v_count from public.cash_accounts where is_demo = false;
-  if v_count <> 0 then raise exception 'Found non-demo cash_accounts: %', v_count; end if;
-
-  select count(*) into v_count from public.cash_ledger_entries where is_demo = false;
-  if v_count <> 0 then raise exception 'Found non-demo cash_ledger_entries: %', v_count; end if;
-
-  select count(*) into v_count from public.invoices where is_demo = false;
-  if v_count <> 0 then raise exception 'Found non-demo invoices: %', v_count; end if;
-
-  select count(*) into v_count from public.invoice_items where is_demo = false;
-  if v_count <> 0 then raise exception 'Found non-demo invoice_items: %', v_count; end if;
-
-  select count(*) into v_count from public.payment_receipts where is_demo = false;
-  if v_count <> 0 then raise exception 'Found non-demo payment_receipts: %', v_count; end if;
-
-  select count(*) into v_count from public.payment_allocations where is_demo = false;
-  if v_count <> 0 then raise exception 'Found non-demo payment_allocations: %', v_count; end if;
-
-  -- 3. Exact Cash Balances
+  -- 2. Exact Cash Balances
   select current_balance into v_hdfc_balance from public.cash_account_balances where name = 'HDFC Current Account';
   if v_hdfc_balance <> 265750.00 then
     raise exception 'HDFC Current Account expected balance 265750.00, found %', v_hdfc_balance;
@@ -123,7 +77,7 @@ begin
     raise exception 'Office Petty Cash expected balance 42680.00, found %', v_petty_balance;
   end if;
 
-  -- 4. Collections Snapshot Exact Arithmetic
+  -- 3. Collections Snapshot Exact Arithmetic
   select
     coalesce(sum(total_outstanding), 0),
     coalesce(sum(current_amount), 0),
@@ -141,7 +95,7 @@ begin
   if v_od_61_90 <> 88500.00 then raise exception 'overdue_61_90 expected 88500.00, found %', v_od_61_90; end if;
   if v_od_90_plus <> 0.00 then raise exception 'overdue_90_plus expected 0.00, found %', v_od_90_plus; end if;
 
-  -- 5. Invoice Status and Derived State Checks
+  -- 4. Invoice Status and Derived State Checks
   if not exists (select 1 from public.invoices where code = 'INV-0001001' and status = 'issued' and total_amount = 88500.00 and amount_received = 0.00) then
     raise exception 'INV-0001001 invariant failed';
   end if;
@@ -170,7 +124,7 @@ begin
     raise exception 'INV-0001009 invariant failed';
   end if;
 
-  -- 6. Sequence Synchronization Verification (nextval must match expected)
+  -- 5. Sequence Synchronization Verification (nextval must match expected)
   v_next_val := nextval('public.client_code_seq');
   if v_next_val <> 1007 then raise exception 'client_code_seq next expected 1007, found %', v_next_val; end if;
 
