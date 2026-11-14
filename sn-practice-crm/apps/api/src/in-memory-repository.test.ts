@@ -6,6 +6,7 @@ import type {
   CreateClientRecord,
   CreateDocumentCommand,
   CreateWorkItemRecord,
+  RecordClientMessageCommand,
   RecordPaymentCommand,
   RecordVyaparBillCommand,
   RepositoryContext,
@@ -2016,5 +2017,152 @@ describe('InMemoryCrmRepository client documents (DOC-01a)', () => {
     const [listed] = await repository.listClientDocuments(staffCtx);
     (listed as { title: string }).title = 'Changed';
     expect((await repository.listClientDocuments(staffCtx))[0]?.title).toBe('Board resolution');
+  });
+});
+
+describe('InMemoryCrmRepository client messages (MSG-01)', () => {
+  const ASTER = '10000000-0000-4000-a000-000000000001'; // looked after by Founder, Manager and Senior Staff
+  const BLUEPEAK = '10000000-0000-4000-a000-000000000002'; // looked after by Founder, Manager and Staff
+  const ASTER_BILL = '70000000-0000-4000-a000-000000000001'; // Aster, Vyapar bill VYP-118
+  const BLUEPEAK_ASSIGNMENT = '30000000-0000-4000-a000-000000000002'; // BluePeak, AS-001002
+  const ASTER_ASSIGNMENT = '30000000-0000-4000-a000-000000000001'; // Aster, AS-001001
+  const founderCtx: RepositoryContext = { actorId: DEMO_ACTOR_IDS.founder };
+  const managerCtx: RepositoryContext = { actorId: DEMO_ACTOR_IDS.manager };
+  const seniorCtx: RepositoryContext = { actorId: DEMO_ACTOR_IDS.senior };
+  const staffCtx: RepositoryContext = { actorId: DEMO_ACTOR_IDS.staff };
+  const traineeCtx: RepositoryContext = { actorId: DEMO_ACTOR_IDS.trainee };
+
+  const command = (overrides: Partial<RecordClientMessageCommand> = {}): RecordClientMessageCommand => ({
+    clientId: BLUEPEAK,
+    recipientName: 'Rahul Shah',
+    recipientNumber: '919820012345',
+    purpose: 'general',
+    body: 'Dear Rahul, ',
+    idempotencyKey: 'msg-1',
+    ...overrides,
+  });
+
+  it('records a message with the work it is about and the sender, newest first', async () => {
+    let tick = 0;
+    const repository = new InMemoryCrmRepository(createDemoSeed(), {
+      now: () => new Date(Date.UTC(2026, 10, 13, 10, 0, tick++)),
+    });
+    const contact = await repository.createClientContact(staffCtx, {
+      clientId: BLUEPEAK,
+      name: 'Rahul Shah',
+      whatsapp: '98200 12345',
+      idempotencyKey: 'c1',
+    });
+    const first = await repository.recordClientMessage(
+      staffCtx,
+      command({ contactId: contact.id, purpose: 'deadline_reminder', assignmentId: BLUEPEAK_ASSIGNMENT }),
+    );
+    expect(first).toMatchObject({
+      clientId: BLUEPEAK,
+      clientCode: 'CL-001002',
+      clientName: 'BluePeak Tech',
+      contactId: contact.id,
+      recipientName: 'Rahul Shah',
+      recipientNumber: '919820012345',
+      channel: 'whatsapp',
+      purpose: 'deadline_reminder',
+      assignmentId: BLUEPEAK_ASSIGNMENT,
+      assignmentCode: 'AS-001002',
+      invoiceId: null,
+      invoiceLabel: null,
+      body: 'Dear Rahul, ',
+      status: 'opened',
+      sentById: DEMO_ACTOR_IDS.staff,
+      sentByName: 'Rohan Mehta',
+    });
+    const second = await repository.recordClientMessage(
+      founderCtx,
+      command({ clientId: ASTER, purpose: 'payment_reminder', invoiceId: ASTER_BILL, idempotencyKey: 'msg-2' }),
+    );
+    expect(second).toMatchObject({ contactId: null, invoiceLabel: 'VYP-118', assignmentCode: null });
+    expect((await repository.listClientMessages(founderCtx)).map((message) => message.id)).toEqual([second.id, first.id]);
+  });
+
+  it('lets Founder, Manager and the staff on the client record and see, and nobody else', async () => {
+    const repository = new InMemoryCrmRepository(createDemoSeed());
+    await expect(repository.recordClientMessage(seniorCtx, command())).rejects.toMatchObject({ status: 404 });
+    await expect(repository.recordClientMessage(traineeCtx, command({ idempotencyKey: 'msg-t' }))).rejects.toMatchObject({ status: 404 });
+    await expect(
+      repository.recordClientMessage(staffCtx, command({ clientId: ASTER, idempotencyKey: 'msg-a' })),
+    ).rejects.toMatchObject({ status: 404 });
+    await expect(
+      repository.recordClientMessage(founderCtx, command({ clientId: '10000000-0000-4000-a000-0000000000ff', idempotencyKey: 'msg-x' })),
+    ).rejects.toMatchObject({ status: 404 });
+
+    const owned = await repository.recordClientMessage(staffCtx, command({ idempotencyKey: 'msg-4' }));
+    const reviewed = await repository.recordClientMessage(seniorCtx, command({ clientId: ASTER, idempotencyKey: 'msg-5' }));
+    const byManager = await repository.recordClientMessage(managerCtx, command({ idempotencyKey: 'msg-6' }));
+
+    const ids = async (ctx: RepositoryContext, clientId?: string) =>
+      (await repository.listClientMessages(ctx, clientId)).map((message) => message.id);
+    expect((await ids(founderCtx)).sort()).toEqual([owned.id, reviewed.id, byManager.id].sort());
+    expect((await ids(managerCtx)).sort()).toEqual([owned.id, reviewed.id, byManager.id].sort());
+    expect((await ids(staffCtx)).sort()).toEqual([owned.id, byManager.id].sort());
+    expect(await ids(seniorCtx)).toEqual([reviewed.id]);
+    expect(await ids(traineeCtx)).toEqual([]);
+    expect(await ids(founderCtx, ASTER)).toEqual([reviewed.id]);
+    expect(await ids(staffCtx, ASTER)).toEqual([]);
+  });
+
+  it('refuses a contact, assignment or bill that belongs to another client', async () => {
+    const repository = new InMemoryCrmRepository(createDemoSeed());
+    const asterContact = await repository.createClientContact(founderCtx, {
+      clientId: ASTER,
+      name: 'Aster Contact',
+      whatsapp: '98200 44444',
+      idempotencyKey: 'c1',
+    });
+    await expect(
+      repository.recordClientMessage(staffCtx, command({ contactId: asterContact.id, idempotencyKey: 'm1' })),
+    ).rejects.toMatchObject({ status: 422, message: 'The contact does not belong to this client.' });
+    const linked = { status: 422, message: 'The linked work does not belong to this client.' };
+    await expect(
+      repository.recordClientMessage(staffCtx, command({ assignmentId: ASTER_ASSIGNMENT, idempotencyKey: 'm2' })),
+    ).rejects.toMatchObject(linked);
+    await expect(
+      repository.recordClientMessage(staffCtx, command({ invoiceId: ASTER_BILL, idempotencyKey: 'm3' })),
+    ).rejects.toMatchObject(linked);
+    await expect(
+      repository.recordClientMessage(staffCtx, command({ assignmentId: '30000000-0000-4000-a000-0000000000ff', idempotencyKey: 'm4' })),
+    ).rejects.toMatchObject(linked);
+    expect(await repository.listClientMessages(founderCtx)).toEqual([]);
+  });
+
+  it('keeps the recipient snapshot and drops only the contact link when the contact is deleted', async () => {
+    const repository = new InMemoryCrmRepository(createDemoSeed());
+    const contact = await repository.createClientContact(staffCtx, {
+      clientId: BLUEPEAK,
+      name: 'Rahul Shah',
+      whatsapp: '98200 12345',
+      idempotencyKey: 'c1',
+    });
+    const message = await repository.recordClientMessage(staffCtx, command({ contactId: contact.id }));
+    await repository.deleteClientContact(staffCtx, contact.id);
+    const [listed] = await repository.listClientMessages(staffCtx);
+    expect(listed).toEqual({ ...message, contactId: null });
+  });
+
+  it('replays a write with the same key and refuses the key for a different payload', async () => {
+    const repository = new InMemoryCrmRepository(createDemoSeed());
+    const first = await repository.recordClientMessage(staffCtx, command());
+    expect(await repository.recordClientMessage(staffCtx, command())).toEqual(first);
+    expect(await repository.listClientMessages(staffCtx)).toHaveLength(1);
+    await expect(
+      repository.recordClientMessage(staffCtx, command({ body: 'Different text' })),
+    ).rejects.toMatchObject({ status: 409, code: 'conflict' });
+    expect(await repository.recordClientMessage(staffCtx, command({ idempotencyKey: 'msg-2' }))).not.toEqual(first);
+  });
+
+  it('returns copies, so a caller cannot change a recorded message', async () => {
+    const repository = new InMemoryCrmRepository(createDemoSeed());
+    await repository.recordClientMessage(staffCtx, command());
+    const [listed] = await repository.listClientMessages(staffCtx);
+    (listed as { body: string }).body = 'Changed';
+    expect((await repository.listClientMessages(staffCtx))[0]?.body).toBe('Dear Rahul, ');
   });
 });

@@ -5,7 +5,7 @@ import { CrmApplication } from './application';
 import { maskGstinForRoutineRead, maskPanForRoutineRead } from './client-privacy';
 import { createApiServer } from './http';
 import { PostgresCrmRepository } from './postgres-repository';
-import type { CreateDocumentCommand } from './repository';
+import type { CreateDocumentCommand, RecordClientMessageCommand } from './repository';
 
 const DATABASE_URL = process.env['DATABASE_URL'] ?? 'postgresql://postgres:postgres@127.0.0.1:54322/postgres';
 const GOTRUE_URL = process.env['SUPABASE_URL'] ? `${process.env['SUPABASE_URL']}/auth/v1` : 'http://127.0.0.1:54321/auth/v1';
@@ -3949,6 +3949,328 @@ describe('PostgresCrmRepository Integration Suite', () => {
         // Demo documents' stored files may stay
         const file = await tx`SELECT count(*)::int AS c FROM storage.objects WHERE bucket_id = 'client-documents' AND name = ${demoDocument.storagePath}`;
         expect(file[0]!['c']).toBe(1);
+      });
+    });
+  });
+
+  describe('MSG-01 client messages', () => {
+    const founderCtx = { actorId: FOUNDER_ID };
+    const managerCtx = { actorId: MANAGER_ID };
+    const seniorCtx = { actorId: SENIOR_ID };
+    const staffCtx = { actorId: STAFF_ID };
+    const traineeCtx = { actorId: TRAINEE_ID };
+    const ASTER = '10000000-0000-4000-a000-000000000001'; // looked after by Founder, Manager, Senior Staff
+    const BLUEPEAK = '10000000-0000-4000-a000-000000000002'; // looked after by Founder, Manager, Staff
+
+    function key() {
+      return `it-msg-${crypto.randomUUID()}`;
+    }
+
+    function messageCommand(overrides: Partial<RecordClientMessageCommand> = {}): RecordClientMessageCommand {
+      return {
+        clientId: BLUEPEAK,
+        recipientName: 'Rahul Shah',
+        recipientNumber: '919820012345',
+        purpose: 'general',
+        body: `Dear Rahul, ${crypto.randomUUID()}`,
+        idempotencyKey: key(),
+        ...overrides,
+      };
+    }
+
+    async function asRole(tx: postgres.TransactionSql, actorId: string) {
+      await tx`SELECT set_config('request.jwt.claim.sub', ${actorId}, true)`;
+      await tx`SELECT set_config('request.jwt.claim.role', 'authenticated', true)`;
+      await tx`SELECT set_config('role', 'authenticated', true)`;
+    }
+
+    // Runs a statement under the user's own role inside a savepoint, then restores the server role
+    async function mutate(tx: postgres.TransactionSql, actorId: string, statement: (sp: postgres.TransactionSql) => Promise<unknown>) {
+      try {
+        await tx.savepoint(async (sp) => {
+          await asRole(sp, actorId);
+          await statement(sp);
+        });
+      } finally {
+        await tx`RESET ROLE`;
+      }
+    }
+
+    // An assignment and a bill that exist in the local data; the bill is created by the test and rolled back
+    async function workFor(tx: postgres.TransactionSql, clientId: string) {
+      const assignment = (await tx`SELECT id::text AS id, code FROM public.assignments WHERE client_id = ${clientId}::uuid ORDER BY code LIMIT 1`)[0];
+      if (!assignment) throw new Error('The local database has no assignment for this client.');
+      const code = `INV-9${String(Math.floor(Math.random() * 900000) + 100000)}`;
+      const invoice = (
+        await tx`
+          INSERT INTO public.invoices (code, client_id, issue_date, due_date, created_by)
+          VALUES (${code}, ${clientId}::uuid, (now() AT TIME ZONE 'Asia/Kolkata')::date - 5, (now() AT TIME ZONE 'Asia/Kolkata')::date + 5, ${FOUNDER_ID}::uuid)
+          RETURNING id::text AS id, code`
+      )[0]!;
+      return { assignmentId: String(assignment['id']), assignmentCode: String(assignment['code']), invoiceId: String(invoice['id']), invoiceCode: String(invoice['code']) };
+    }
+
+    it('IT-80: Founder, Manager and staff on the client record and see messages; other staff and trainees cannot and see none', async () => {
+      await runIsolatedTest(async (repo, tx) => {
+        const byFounder = await repo.recordClientMessage(founderCtx, messageCommand());
+        const byManager = await repo.recordClientMessage(managerCtx, messageCommand());
+        const byStaff = await repo.recordClientMessage(staffCtx, messageCommand());
+        const byStaffOnClient = await repo.recordClientMessage(founderCtx, messageCommand({ clientId: ASTER }));
+        const bySenior = await repo.recordClientMessage(seniorCtx, messageCommand({ clientId: ASTER }));
+
+        await expect(repo.recordClientMessage(seniorCtx, messageCommand())).rejects.toMatchObject({ status: 404 });
+        await expect(repo.recordClientMessage(traineeCtx, messageCommand())).rejects.toMatchObject({ status: 404 });
+        await expect(repo.recordClientMessage(staffCtx, messageCommand({ clientId: ASTER }))).rejects.toMatchObject({ status: 404 });
+        await expect(
+          repo.recordClientMessage(founderCtx, messageCommand({ clientId: '10000000-0000-4000-a000-0000000000ff' })),
+        ).rejects.toMatchObject({ status: 404 });
+
+        // Lists are checked by this test's own messages only, so messages already in the local database don't matter.
+        const ids = async (ctx: { actorId: string }, clientId?: string) =>
+          (await repo.listClientMessages(ctx, clientId)).map((message) => message.id);
+        const all = [byFounder.id, byManager.id, byStaff.id, byStaffOnClient.id, bySenior.id];
+        expect(await ids(founderCtx)).toEqual(expect.arrayContaining(all));
+        expect(await ids(managerCtx)).toEqual(expect.arrayContaining(all));
+        const staffIds = await ids(staffCtx);
+        expect(staffIds).toEqual(expect.arrayContaining([byFounder.id, byManager.id, byStaff.id]));
+        expect(staffIds).not.toContain(byStaffOnClient.id);
+        expect(staffIds).not.toContain(bySenior.id);
+        const seniorIds = await ids(seniorCtx);
+        expect(seniorIds).toEqual(expect.arrayContaining([byStaffOnClient.id, bySenior.id]));
+        expect(seniorIds).not.toContain(byStaff.id);
+        expect(await ids(traineeCtx)).toEqual([]);
+        expect(await ids(traineeCtx, BLUEPEAK)).toEqual([]);
+        expect(await ids(staffCtx, ASTER)).toEqual([]);
+        expect(await ids(founderCtx, ASTER)).toEqual(expect.arrayContaining([byStaffOnClient.id, bySenior.id]));
+        expect(await ids(founderCtx, ASTER)).not.toContain(byStaff.id);
+
+        // The table itself says the same, whatever the application does
+        for (const [actorId, clientId] of [
+          [TRAINEE_ID, BLUEPEAK],
+          [SENIOR_ID, BLUEPEAK],
+          [STAFF_ID, ASTER],
+        ] as const) {
+          await expect(
+            mutate(tx, actorId, (sp) => sp`
+              INSERT INTO public.client_messages (client_id, recipient_name, recipient_number, channel, purpose, body, status, created_by)
+              VALUES (${clientId}::uuid, 'Direct', '919820012345', 'whatsapp', 'general', 'Direct insert', 'opened', ${actorId}::uuid)`),
+          ).rejects.toMatchObject({ code: '42501' });
+        }
+        // Nobody records a message in someone else's name: the sender is always the signed-in user
+        const spoofBody = `Spoofed sender ${crypto.randomUUID()}`;
+        await mutate(tx, STAFF_ID, (sp) => sp`
+          INSERT INTO public.client_messages (client_id, recipient_name, recipient_number, channel, purpose, body, status, created_by)
+          VALUES (${BLUEPEAK}::uuid, 'Direct', '919820012345', 'whatsapp', 'general', ${spoofBody}, 'opened', ${MANAGER_ID}::uuid)`);
+        const spoofed = await tx`SELECT created_by::text AS created_by FROM public.client_messages WHERE body = ${spoofBody}`;
+        expect(spoofed.map((row) => row['created_by'])).toEqual([STAFF_ID]);
+        const traineeRows = await tx.savepoint(async (sp) => {
+          await asRole(sp, TRAINEE_ID);
+          return sp`SELECT id FROM public.client_messages`;
+        });
+        await tx`RESET ROLE`;
+        expect(traineeRows.length).toBe(0);
+      });
+    });
+
+    it('IT-81: a message records the recipient snapshot, the work it is about and the sender, newest first', async () => {
+      await runIsolatedTest(async (repo, tx) => {
+        const work = await workFor(tx, BLUEPEAK);
+        const contact = await repo.createClientContact(staffCtx, {
+          clientId: BLUEPEAK,
+          name: 'Rahul Shah',
+          designation: 'Accounts Manager',
+          whatsapp: '98200 12345',
+          idempotencyKey: key(),
+        });
+        const first = await repo.recordClientMessage(
+          staffCtx,
+          messageCommand({ contactId: contact.id, purpose: 'deadline_reminder', assignmentId: work.assignmentId }),
+        );
+        expect(first).toMatchObject({
+          clientId: BLUEPEAK,
+          clientCode: 'CL-001002',
+          clientName: 'BluePeak Tech',
+          contactId: contact.id,
+          recipientName: 'Rahul Shah',
+          recipientNumber: '919820012345',
+          channel: 'whatsapp',
+          purpose: 'deadline_reminder',
+          assignmentId: work.assignmentId,
+          assignmentCode: work.assignmentCode,
+          invoiceId: null,
+          invoiceLabel: null,
+          status: 'opened',
+          sentById: STAFF_ID,
+        });
+        expect(first.sentByName.length).toBeGreaterThan(0);
+        expect(Number.isNaN(Date.parse(first.createdAt))).toBe(false);
+
+        const second = await repo.recordClientMessage(
+          managerCtx,
+          messageCommand({ purpose: 'payment_reminder', invoiceId: work.invoiceId }),
+        );
+        expect(second).toMatchObject({ contactId: null, invoiceId: work.invoiceId, invoiceLabel: work.invoiceCode, assignmentCode: null });
+
+        const listed = (await repo.listClientMessages(founderCtx, BLUEPEAK)).filter((message) =>
+          [first.id, second.id].includes(message.id),
+        );
+        // Both are recorded in this one test transaction, so they share a timestamp and the order between them is not asserted
+        expect(listed.map((message) => message.id).sort()).toEqual([first.id, second.id].sort());
+        expect(listed.find((message) => message.id === first.id)).toEqual(first);
+
+        // Deleting the contact keeps the recipient snapshot and drops only the link
+        await tx`RESET ROLE`;
+        await tx`DELETE FROM public.client_contacts WHERE id = ${contact.id}::uuid`;
+        const kept = (await repo.listClientMessages(founderCtx, BLUEPEAK)).find((message) => message.id === first.id);
+        expect(kept).toEqual({ ...first, contactId: null });
+      });
+    });
+
+    it('IT-82: a contact, assignment or bill of another client is refused by the repository and by the table', async () => {
+      await runIsolatedTest(async (repo, tx) => {
+        const aster = await workFor(tx, ASTER);
+        const asterContact = await repo.createClientContact(founderCtx, {
+          clientId: ASTER,
+          name: 'Aster Contact',
+          whatsapp: '98200 44444',
+          idempotencyKey: key(),
+        });
+        const linked = { status: 422, message: 'The linked work does not belong to this client.' };
+        await expect(repo.recordClientMessage(staffCtx, messageCommand({ assignmentId: aster.assignmentId }))).rejects.toMatchObject(linked);
+        await expect(repo.recordClientMessage(staffCtx, messageCommand({ invoiceId: aster.invoiceId }))).rejects.toMatchObject(linked);
+        await expect(
+          repo.recordClientMessage(staffCtx, messageCommand({ assignmentId: '30000000-0000-4000-a000-0000000000ff' })),
+        ).rejects.toMatchObject(linked);
+        await expect(repo.recordClientMessage(staffCtx, messageCommand({ contactId: asterContact.id }))).rejects.toMatchObject({
+          status: 422,
+          message: 'The contact does not belong to this client.',
+        });
+
+        // The insert trigger says the same to anyone who writes the table directly
+        await expect(
+          mutate(tx, FOUNDER_ID, (sp) => sp`
+            INSERT INTO public.client_messages (client_id, recipient_name, recipient_number, channel, purpose, assignment_id, body, status, created_by)
+            VALUES (${BLUEPEAK}::uuid, 'Direct', '919820012345', 'whatsapp', 'general', ${aster.assignmentId}::uuid, 'Wrong assignment', 'opened', ${FOUNDER_ID}::uuid)`),
+        ).rejects.toMatchObject({ code: '23514', message: 'The linked work does not belong to this client.' });
+        await expect(
+          mutate(tx, FOUNDER_ID, (sp) => sp`
+            INSERT INTO public.client_messages (client_id, recipient_name, recipient_number, channel, purpose, invoice_id, body, status, created_by)
+            VALUES (${BLUEPEAK}::uuid, 'Direct', '919820012345', 'whatsapp', 'general', ${aster.invoiceId}::uuid, 'Wrong bill', 'opened', ${FOUNDER_ID}::uuid)`),
+        ).rejects.toMatchObject({ code: '23514', message: 'The linked work does not belong to this client.' });
+        await expect(
+          mutate(tx, FOUNDER_ID, (sp) => sp`
+            INSERT INTO public.client_messages (client_id, contact_id, recipient_name, recipient_number, channel, purpose, body, status, created_by)
+            VALUES (${BLUEPEAK}::uuid, ${asterContact.id}::uuid, 'Direct', '919820012345', 'whatsapp', 'general', 'Wrong contact', 'opened', ${FOUNDER_ID}::uuid)`),
+        ).rejects.toMatchObject({ code: '23514', message: 'The contact does not belong to this client.' });
+      });
+    });
+
+    it('IT-83: the table checks the number, channel, purpose, status and body, and is append-only', async () => {
+      await runIsolatedTest(async (repo, tx) => {
+        const message = await repo.recordClientMessage(staffCtx, messageCommand());
+
+        const insert = (overrides: Record<string, string>) => {
+          const row = {
+            recipient_name: 'Direct',
+            recipient_number: '919820012345',
+            channel: 'whatsapp',
+            purpose: 'general',
+            body: 'Direct insert',
+            status: 'opened',
+            ...overrides,
+          };
+          return mutate(tx, FOUNDER_ID, (sp) => sp`
+            INSERT INTO public.client_messages (client_id, recipient_name, recipient_number, channel, purpose, body, status, created_by)
+            VALUES (${BLUEPEAK}::uuid, ${row.recipient_name}, ${row.recipient_number}, ${row.channel}, ${row.purpose}, ${row.body}, ${row.status}, ${FOUNDER_ID}::uuid)`);
+        };
+        await expect(insert({ recipient_number: '98200 12345' })).rejects.toMatchObject({ code: '23514' });
+        await expect(insert({ recipient_number: '123456789' })).rejects.toMatchObject({ code: '23514' });
+        await expect(insert({ recipient_number: '1234567890123456' })).rejects.toMatchObject({ code: '23514' });
+        await expect(insert({ channel: 'sms' })).rejects.toMatchObject({ code: '23514' });
+        await expect(insert({ purpose: 'chat' })).rejects.toMatchObject({ code: '23514' });
+        await expect(insert({ status: 'sent' })).rejects.toMatchObject({ code: '23514' });
+        await expect(insert({ body: '   ' })).rejects.toMatchObject({ code: '23514' });
+        await expect(insert({ body: 'x'.repeat(2001) })).rejects.toMatchObject({ code: '23514' });
+        await expect(insert({ recipient_name: 'n'.repeat(121) })).rejects.toMatchObject({ code: '23514' });
+        await insert({ body: 'x'.repeat(2000), recipient_number: '447911123456' });
+
+        // Users have no update or delete right at all
+        for (const actorId of [FOUNDER_ID, MANAGER_ID, STAFF_ID]) {
+          await expect(
+            mutate(tx, actorId, (sp) => sp`UPDATE public.client_messages SET body = 'Changed' WHERE id = ${message.id}::uuid`),
+          ).rejects.toMatchObject({ code: '42501' });
+          await expect(
+            mutate(tx, actorId, (sp) => sp`DELETE FROM public.client_messages WHERE id = ${message.id}::uuid`),
+          ).rejects.toMatchObject({ code: '42501' });
+        }
+
+        // Even the server role cannot change any column after insert
+        for (const [column, value] of [
+          ['client_id', ASTER],
+          ['recipient_name', 'Someone Else'],
+          ['recipient_number', '919820099999'],
+          ['channel', 'whatsapp'],
+          ['purpose', 'payment_reminder'],
+          ['body', 'Changed'],
+          ['status', 'opened'],
+          ['created_by', MANAGER_ID],
+          ['created_at', '2020-01-01T00:00:00Z'],
+          ['is_demo', 'false'],
+        ] as const) {
+          await expect(
+            tx.savepoint(async (sp) => {
+              await sp`UPDATE public.client_messages SET ${sp(column)} = ${value} WHERE id = ${message.id}::uuid`;
+            }),
+          ).rejects.toMatchObject({ code: expect.stringMatching(/^(23514|22P02)$/) });
+        }
+        const untouched = await tx`SELECT body, recipient_number FROM public.client_messages WHERE id = ${message.id}::uuid`;
+        expect(untouched[0]).toEqual({ body: message.body, recipient_number: message.recipientNumber });
+      });
+    });
+
+    it('IT-84: an idempotent replay records one message, and a changed payload on the key is a 409', async () => {
+      await runIsolatedTest(async (repo, tx) => {
+        const command = messageCommand();
+        const first = await repo.recordClientMessage(staffCtx, command);
+        expect(await repo.recordClientMessage(staffCtx, command)).toEqual(first);
+        await expect(
+          repo.recordClientMessage(staffCtx, { ...command, body: 'A different text' }),
+        ).rejects.toMatchObject({ status: 409, code: 'conflict' });
+        await tx`RESET ROLE`;
+        const counted = await tx`SELECT count(*)::int AS c FROM public.client_messages WHERE body = ${command.body}`;
+        expect(counted[0]!['c']).toBe(1);
+      });
+    });
+
+    it('IT-85: messages inherit is_demo from their client, and removing demo data clears demo messages only', async () => {
+      await runIsolatedTest(async (repo, tx) => {
+        // Aster is demo data; a client created through the repository is not
+        const demoMessage = await repo.recordClientMessage(founderCtx, messageCommand({ clientId: ASTER }));
+        const liveClientId = crypto.randomUUID();
+        const now = new Date().toISOString();
+        await repo.createClient(founderCtx, { id: liveClientId, displayName: 'Live Message Client', createdAt: now, updatedAt: now });
+        const liveMessage = await repo.recordClientMessage(founderCtx, messageCommand({ clientId: liveClientId }));
+
+        await tx`RESET ROLE`;
+        const flags = await tx`
+          SELECT id::text AS id, is_demo FROM public.client_messages
+          WHERE id IN (${demoMessage.id}::uuid, ${liveMessage.id}::uuid)`;
+        expect(flags.find((row) => row['id'] === demoMessage.id)?.['is_demo']).toBe(true);
+        expect(flags.find((row) => row['id'] === liveMessage.id)?.['is_demo']).toBe(false);
+
+        await tx`SELECT set_config('request.jwt.claim.sub', ${FOUNDER_ID}, true)`;
+        await tx`SELECT set_config('role', 'authenticated', true)`;
+        const removal = await tx`SELECT public.remove_demo_data() AS result`;
+        expect(removal[0]!['result']).toMatchObject({ ok: true });
+        expect((removal[0]!['result'] as { deleted: Record<string, number> }).deleted['client_messages']).toBeGreaterThanOrEqual(1);
+
+        await tx`RESET ROLE`;
+        const demoLeft = await tx`SELECT count(*)::int AS c FROM public.client_messages WHERE id = ${demoMessage.id}::uuid`;
+        const liveLeft = await tx`SELECT count(*)::int AS c FROM public.client_messages WHERE id = ${liveMessage.id}::uuid`;
+        expect(demoLeft[0]!['c']).toBe(0);
+        expect(liveLeft[0]!['c']).toBe(1);
+        const demoMessagesAnywhere = await tx`SELECT count(*)::int AS c FROM public.client_messages WHERE is_demo = true`;
+        expect(demoMessagesAnywhere[0]!['c']).toBe(0);
       });
     });
   });

@@ -23,6 +23,7 @@ import {
   createServiceSchema,
   createWorkItemSchema,
   entityUuid,
+  recordClientMessageSchema,
   recordPaymentSchema,
   recordVyaparBillSchema,
   removeDocumentSchema,
@@ -475,6 +476,19 @@ export function createApiServer(application: CrmApplication, options: ApiServerO
         const key = idempotencyKey(request);
         const body = await readJson(request, removeDocumentSchema);
         sendData(response, context, allowedOrigins, 200, await application.removeDocument(actor, documentRemoveId, body, key));
+        return;
+      }
+
+      if (request.method === 'GET' && pathname === '/api/v1/client-messages') {
+        const clientId = url.searchParams.get('clientId');
+        if (clientId !== null && !entityUuid.safeParse(clientId).success) invalidIdentifier();
+        sendData(response, context, allowedOrigins, 200, await application.listClientMessages(actor, clientId ?? undefined));
+        return;
+      }
+      if (request.method === 'POST' && pathname === '/api/v1/client-messages') {
+        const key = idempotencyKey(request);
+        const body = await readJson(request, recordClientMessageSchema);
+        sendData(response, context, allowedOrigins, 201, await application.recordClientMessage(actor, body, key));
         return;
       }
 

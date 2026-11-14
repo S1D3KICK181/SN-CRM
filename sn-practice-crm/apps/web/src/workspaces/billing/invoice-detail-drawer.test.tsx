@@ -4,6 +4,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { BillingOperationError } from '../../api/billing-types';
 import { InvoiceDetailDrawer } from './invoice-detail-drawer';
 import type { InvoiceRecord } from '../../data';
+import { MessageComposerContextProvider, type MessageComposer } from '../messages/message-composer';
 
 afterEach(() => {
   cleanup();
@@ -297,5 +298,89 @@ describe('InvoiceDetailDrawer', () => {
       const { drawer } = renderDrawer(createInvoice());
       expect(within(drawer).queryByRole('button', { name: /Remove credit/ })).toBeNull();
     });
+  });
+});
+
+describe('InvoiceDetailDrawer payment reminder (MSG-01)', () => {
+  function stubComposer(overrides: Partial<MessageComposer> = {}): MessageComposer {
+    return { canMessage: true, open: vi.fn(), recentFor: () => [], showAll: vi.fn(), ...overrides };
+  }
+
+  function renderWithComposer(invoice: InvoiceRecord, composer: MessageComposer | null) {
+    const drawer = (
+      <InvoiceDetailDrawer
+        invoice={invoice}
+        canCancel
+        canRecordPayment
+        onRecordPayment={vi.fn()}
+        onCancelBill={vi.fn()}
+        onCancelPayment={vi.fn()}
+        creditPaise={0}
+        onUseCredit={vi.fn().mockResolvedValue(undefined)}
+        onRemoveCredit={vi.fn().mockResolvedValue(undefined)}
+        onClose={vi.fn()}
+      />
+    );
+    render(composer ? <MessageComposerContextProvider value={composer}>{drawer}</MessageComposerContextProvider> : drawer);
+    return screen.getByLabelText('Invoice details');
+  }
+
+  it('opens a payment reminder with the bill linked and what is pending', () => {
+    const composer = stubComposer();
+    const drawer = renderWithComposer(createInvoice(), composer);
+    const button = within(drawer).getByRole('button', { name: 'Payment reminder' });
+    fireEvent.click(button);
+    expect(composer.open).toHaveBeenCalledWith(
+      {
+        clientId: '10000000-0000-4000-a000-000000000001',
+        purpose: 'payment_reminder',
+        bill: {
+          id: '70000000-0000-4000-a000-000000000002',
+          label: 'VYP-140',
+          billDate: '24/10/2026',
+          dueDate: '23/11/2026',
+          pendingPaise: 3306000,
+          overdue: false,
+        },
+      },
+      button,
+    );
+  });
+
+  it('marks an overdue bill as overdue, and names the bill by its CRM code when it has no Vyapar number', () => {
+    const composer = stubComposer();
+    const invoice = createInvoice({ status: 'Overdue', daysOverdue: 12 });
+    delete invoice.vyaparBillNumber;
+    const drawer = renderWithComposer(invoice, composer);
+    fireEvent.click(within(drawer).getByRole('button', { name: 'Payment reminder' }));
+    expect(vi.mocked(composer.open).mock.calls[0]?.[0].bill).toMatchObject({ label: 'INV-0001002', overdue: true });
+  });
+
+  it.each(['Pending', 'Partly Paid', 'Overdue'] as const)('offers a payment reminder on a %s bill', (status) => {
+    const drawer = renderWithComposer(createInvoice({ status }), stubComposer());
+    expect(within(drawer).getByRole('button', { name: 'Payment reminder' })).toBeTruthy();
+  });
+
+  it.each(['Paid', 'Draft', 'Cancelled'] as const)('has no payment reminder on a %s bill', (status) => {
+    const drawer = renderWithComposer(createInvoice({ status, balance: 0, balancePaise: 0 }), stubComposer());
+    expect(within(drawer).queryByRole('button', { name: 'Payment reminder' })).toBeNull();
+  });
+
+  it('has no payment reminder when nothing is pending', () => {
+    const drawer = renderWithComposer(createInvoice({ balance: 0, balancePaise: 0 }), stubComposer());
+    expect(within(drawer).queryByRole('button', { name: 'Payment reminder' })).toBeNull();
+  });
+
+  it('has no payment reminder for someone who may not message clients, or without a composer', () => {
+    const drawer = renderWithComposer(createInvoice(), stubComposer({ canMessage: false }));
+    expect(within(drawer).queryByRole('button', { name: 'Payment reminder' })).toBeNull();
+    cleanup();
+    const plain = renderWithComposer(createInvoice(), null);
+    expect(within(plain).queryByRole('button', { name: 'Payment reminder' })).toBeNull();
+  });
+
+  it('has no payment reminder for a bill that is not a live record', () => {
+    const drawer = renderWithComposer(createInvoice({ clientId: 'CLI-0001' }), stubComposer());
+    expect(within(drawer).queryByRole('button', { name: 'Payment reminder' })).toBeNull();
   });
 });

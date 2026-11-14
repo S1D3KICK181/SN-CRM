@@ -10,6 +10,7 @@ import type {
   ClientContactDto,
   ClientDocumentDto,
   ClientDto,
+  ClientMessageDto,
   CreateAssignmentInput,
   CreateClientContactInput,
   CreateClientInput,
@@ -32,6 +33,7 @@ import type {
   LedgerEntryDto,
   OfficeAccountsSummaryDto,
   PaymentReceiptDto,
+  RecordClientMessageInput,
   RecordPaymentInput,
   RecordVyaparBillInput,
   RecurringScheduleDto,
@@ -68,8 +70,11 @@ import {
   createClientSchema,
   createDocumentSchema,
   entityUuid,
+  normalizeWhatsAppNumber,
   parseIsoInstant,
+  recordClientMessageSchema,
   updateClientContactSchema,
+  WHATSAPP_NUMBER_MESSAGE,
   removeDocumentSchema,
   updateClientSchema,
   validateInput,
@@ -292,6 +297,34 @@ export class CrmApplication {
     return this.repository.removeClientDocument(
       { actorId: actor.id },
       { id: documentId, reason: data.reason, idempotencyKey: normalizeIdempotencyKey(idempotencyKey) },
+    );
+  }
+
+  // --- Client messages (MSG-01) ---
+  // Who may see or record a message for a client is decided in Postgres by "looks after the client".
+  // Trainees never look after a client, so recording is refused for them here first.
+
+  async listClientMessages(actor: SessionActor, clientId?: string): Promise<ClientMessageDto[]> {
+    if (clientId !== undefined) {
+      validateInput(entityUuid, clientId);
+    }
+    return this.repository.listClientMessages({ actorId: actor.id }, clientId);
+  }
+
+  async recordClientMessage(
+    actor: SessionActor,
+    input: RecordClientMessageInput,
+    idempotencyKey: string,
+  ): Promise<ClientMessageDto> {
+    requireAuthority({ action: 'message.send', actor: asActor(actor) });
+    const data = validateInput(recordClientMessageSchema, input);
+    const recipientNumber = normalizeWhatsAppNumber(data.recipientNumber);
+    if (recipientNumber === null) {
+      throw new ApiError(422, 'validation_failed', WHATSAPP_NUMBER_MESSAGE);
+    }
+    return this.repository.recordClientMessage(
+      { actorId: actor.id },
+      { ...definedOnly(data), recipientNumber, idempotencyKey: normalizeIdempotencyKey(idempotencyKey) },
     );
   }
 

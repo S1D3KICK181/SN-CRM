@@ -10,6 +10,7 @@ import {
   DOCUMENT_CATEGORIES,
   DOCUMENT_MAX_BYTES,
   DOCUMENT_ALLOWED_TYPES,
+  MESSAGE_PURPOSES,
   ENGAGEMENT_STATUSES,
   ENGAGEMENT_FEE_MODELS,
   ENGAGEMENT_END_OUTCOMES,
@@ -32,6 +33,9 @@ import {
   type CreateDocumentInput,
   type RemoveDocumentInput,
   type DocumentCategory,
+  type ClientMessageDto,
+  type RecordClientMessageInput,
+  type MessagePurpose,
   type UpdateClientContactInput,
   type WorkItemDto,
   type CreateAssignmentInput,
@@ -615,5 +619,23 @@ describe('Client document contracts (DOC-01a)', () => {
     expectTypeOf<CreateDocumentInput>().toHaveProperty('financialYearStart').toEqualTypeOf<number | null | undefined>();
     expectTypeOf<CreateDocumentInput>().toHaveProperty('sizeBytes').toBeNumber();
     expectTypeOf<RemoveDocumentInput>().toHaveProperty('reason').toBeString();
+  });
+});
+
+describe('Client message contracts (MSG-01)', () => {
+  it('exports the message purposes', () => {
+    expect(MESSAGE_PURPOSES).toEqual(['document_request', 'deadline_reminder', 'payment_reminder', 'general']);
+  });
+
+  it('verifies the message type shapes at compile time', () => {
+    expectTypeOf<ClientMessageDto>().toHaveProperty('purpose').toEqualTypeOf<MessagePurpose>();
+    expectTypeOf<ClientMessageDto>().toHaveProperty('channel').toEqualTypeOf<'whatsapp'>();
+    expectTypeOf<ClientMessageDto>().toHaveProperty('status').toEqualTypeOf<'opened'>();
+    expectTypeOf<ClientMessageDto>().toHaveProperty('contactId').toEqualTypeOf<string | null>();
+    expectTypeOf<ClientMessageDto>().toHaveProperty('assignmentCode').toEqualTypeOf<string | null>();
+    expectTypeOf<ClientMessageDto>().toHaveProperty('invoiceLabel').toEqualTypeOf<string | null>();
+    expectTypeOf<RecordClientMessageInput>().toHaveProperty('contactId').toEqualTypeOf<string | null | undefined>();
+    expectTypeOf<RecordClientMessageInput>().toHaveProperty('assignmentId').toEqualTypeOf<string | null | undefined>();
+    expectTypeOf<RecordClientMessageInput>().toHaveProperty('body').toBeString();
   });
 });

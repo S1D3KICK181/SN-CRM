@@ -2837,3 +2837,103 @@ describe('DOC-01a client document routes', () => {
     expect(missing.status).toBe(404);
   });
 });
+
+describe('MSG-01 client message routes', () => {
+  const BLUEPEAK = '10000000-0000-4000-a000-000000000002'; // looked after by Staff
+  const ASTER = '10000000-0000-4000-a000-000000000001';
+  const input = {
+    clientId: BLUEPEAK,
+    recipientName: 'Rahul Shah',
+    recipientNumber: '98200 12345',
+    purpose: 'deadline_reminder',
+    assignmentId: '30000000-0000-4000-a000-000000000002',
+    body: 'Dear Rahul, a reminder from SN & Associates.',
+  };
+
+  async function call(
+    baseUrl: string,
+    method: 'GET' | 'POST',
+    path: string,
+    options: { actor?: string; body?: unknown; key?: string | null } = {},
+  ) {
+    const headers: Record<string, string> = { 'x-demo-user-id': options.actor ?? DEMO_ACTOR_IDS.staff };
+    if (options.body !== undefined) headers['content-type'] = 'application/json';
+    if (options.key !== null && method !== 'GET') headers['Idempotency-Key'] = options.key ?? `key-${Math.random()}`;
+    const response = await fetch(`${baseUrl}${path}`, {
+      method,
+      headers,
+      ...(options.body !== undefined ? { body: JSON.stringify(options.body) } : {}),
+    });
+    return { status: response.status, body: await response.json() };
+  }
+
+  it('records a message with 201, replays it, and lists it', async () => {
+    const baseUrl = await startServer();
+    const created = await call(baseUrl, 'POST', '/api/v1/client-messages', { body: input, key: 'msg-1' });
+    expect(created.status).toBe(201);
+    expect(created.body.data).toMatchObject({
+      clientCode: 'CL-001002',
+      recipientNumber: '919820012345',
+      channel: 'whatsapp',
+      purpose: 'deadline_reminder',
+      assignmentCode: 'AS-001002',
+      status: 'opened',
+      sentByName: 'Rohan Mehta',
+    });
+
+    const replay = await call(baseUrl, 'POST', '/api/v1/client-messages', { body: input, key: 'msg-1' });
+    expect(replay.status).toBe(201);
+    expect(replay.body.data).toEqual(created.body.data);
+
+    const listed = await call(baseUrl, 'GET', `/api/v1/client-messages?clientId=${BLUEPEAK}`);
+    expect(listed.status).toBe(200);
+    expect(listed.body.data.map((message: { id: string }) => message.id)).toEqual([created.body.data.id]);
+    expect((await call(baseUrl, 'GET', `/api/v1/client-messages?clientId=${ASTER}`)).body.data).toEqual([]);
+    expect((await call(baseUrl, 'GET', '/api/v1/client-messages', { actor: DEMO_ACTOR_IDS.founder })).body.data).toHaveLength(1);
+  });
+
+  it('returns the number error with its message', async () => {
+    const baseUrl = await startServer();
+    const response = await call(baseUrl, 'POST', '/api/v1/client-messages', { body: { ...input, recipientNumber: '12345' } });
+    expect(response.status).toBe(422);
+    expect(response.body.error).toMatchObject({
+      code: 'validation_failed',
+      message: 'Enter a WhatsApp number with 10 digits, or with the country code.',
+    });
+  });
+
+  it('requires the Idempotency-Key header', async () => {
+    const baseUrl = await startServer();
+    const response = await call(baseUrl, 'POST', '/api/v1/client-messages', { body: input, key: null });
+    expect(response.status).toBe(400);
+    expect(response.body.error.code).toBe('idempotency_key_required');
+  });
+
+  it('rejects malformed identifiers, unknown fields and a missing body', async () => {
+    const baseUrl = await startServer();
+    expect((await call(baseUrl, 'GET', '/api/v1/client-messages?clientId=nope')).body.error.code).toBe('invalid_identifier');
+    const extra = await call(baseUrl, 'POST', '/api/v1/client-messages', { body: { ...input, status: 'sent' } });
+    expect(extra.status).toBe(422);
+    expect(extra.body.error.code).toBe('validation_failed');
+    expect((await call(baseUrl, 'POST', '/api/v1/client-messages')).status).toBe(415);
+  });
+
+  it('refuses a trainee with 403, and keeps messages from staff who do not look after the client', async () => {
+    const baseUrl = await startServer();
+    const trainee = await call(baseUrl, 'POST', '/api/v1/client-messages', { actor: DEMO_ACTOR_IDS.trainee, body: input });
+    expect(trainee.status).toBe(403);
+    expect(trainee.body.error).toMatchObject({ code: 'role_not_permitted', message: 'Trainees cannot message clients.' });
+    const senior = await call(baseUrl, 'POST', '/api/v1/client-messages', { actor: DEMO_ACTOR_IDS.senior, body: input });
+    expect(senior.status).toBe(404);
+    expect((await call(baseUrl, 'GET', '/api/v1/client-messages', { actor: DEMO_ACTOR_IDS.trainee })).body.data).toEqual([]);
+  });
+
+  it('refuses work that belongs to another client', async () => {
+    const baseUrl = await startServer();
+    const response = await call(baseUrl, 'POST', '/api/v1/client-messages', {
+      body: { ...input, assignmentId: '30000000-0000-4000-a000-000000000001' },
+    });
+    expect(response.status).toBe(422);
+    expect(response.body.error.message).toBe('The linked work does not belong to this client.');
+  });
+});

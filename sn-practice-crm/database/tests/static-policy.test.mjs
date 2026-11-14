@@ -1118,3 +1118,72 @@ test('migration 0015 lets staff who look after a client remove its documents, an
   assert.doesNotMatch(guard, /is_management/i);
   assert.doesNotMatch(sql0015, /\b(create|drop|alter) policy\b/i, 'no policy changes');
 });
+
+test('migration 0016 records client messages append-only for whoever looks after the client', () => {
+  const migration0016Path = new URL('../../supabase/migrations/20261113220000_msg01_client_messages.sql', import.meta.url);
+  const sql0016 = readMigration(migration0016Path, 'Migration 0016');
+
+  // 1. The message record
+  const table = sql0016.match(/create table public\.client_messages \(([\s\S]*?)\n\);/i)?.[1] ?? '';
+  assert.match(table, /client_id uuid not null references public\.clients\(id\) on delete restrict/i);
+  assert.match(table, /contact_id uuid references public\.client_contacts\(id\) on delete set null/i);
+  assert.match(table, /recipient_name text not null check \(char_length\(btrim\(recipient_name\)\) between 1 and 120\)/i);
+  assert.match(table, /recipient_number text not null check \(recipient_number ~ '\^\[0-9\]\{10,15\}\$'\)/i);
+  assert.match(table, /channel text not null check \(channel in \('whatsapp'\)\)/i);
+  assert.match(table, /purpose text not null check \(purpose in \('document_request', 'deadline_reminder', 'payment_reminder', 'general'\)\)/i);
+  assert.match(table, /assignment_id uuid references public\.assignments\(id\) on delete restrict/i);
+  assert.match(table, /invoice_id uuid references public\.invoices\(id\) on delete restrict/i);
+  assert.match(table, /char_length\(btrim\(body\)\) >= 1 and char_length\(body\) <= 2000/i);
+  assert.match(table, /status text not null check \(status in \('opened'\)\)/i);
+  assert.match(table, /created_by uuid not null references public\.profiles\(user_id\) on delete restrict/i);
+  assert.match(table, /is_demo boolean not null default false/i);
+  expectSql(sql0016, /create index client_messages_client_created_idx on public\.client_messages \(client_id, created_at desc\);/i, 'client and date index');
+
+  // 2. Guard: demo flag inherited, links stay on the same client, nothing changes after insert
+  const guard = functionBlock(sql0016, 'guard_client_message_write');
+  assert.match(guard, /security definer/i);
+  assert.match(guard, /set search_path = public, pg_temp/i);
+  assert.match(guard, /new\.is_demo := coalesce\(v_client_is_demo, false\);/i);
+  assert.match(guard, /The contact does not belong to this client\./i);
+  assert.match(guard, /a\.id = new\.assignment_id and a\.client_id = new\.client_id/i);
+  assert.match(guard, /i\.id = new\.invoice_id and i\.client_id = new\.client_id/i);
+  assert.match(guard, /The linked work does not belong to this client\./i);
+  assert.match(guard, /A recorded message cannot be changed\./i);
+  expectSql(sql0016, /create trigger guard_client_message_write\s+before insert or update on public\.client_messages\s+for each row execute function public\.guard_client_message_write\(\);/i, 'guard trigger');
+  expectSql(sql0016, /create trigger prevent_demo_flag_tampering before update on public\.client_messages/i, 'demo flag is immutable');
+  expectSql(sql0016, /create trigger audit_client_messages after insert or update or delete on public\.client_messages\s+for each row execute function public\.audit_row_change\(\);/i, 'audit trigger');
+
+  // 3. Table access: whoever looks after the client may read and add; nobody updates or deletes
+  expectSql(sql0016, /alter table public\.client_messages enable row level security;/i, 'RLS enabled');
+  expectSql(sql0016, /create policy client_messages_select on public\.client_messages\s+for select to authenticated\s+using \(public\.looks_after_client\(client_id\)\);/i, 'message select');
+  expectSql(sql0016, /create policy client_messages_insert on public\.client_messages\s+for insert to authenticated\s+with check \(public\.looks_after_client\(client_id\) and created_by = auth\.uid\(\)\);/i, 'message insert');
+  assert.doesNotMatch(sql0016, /create policy \w+ on public\.client_messages\s+for (update|delete|all)/i, 'no update or delete policy on messages');
+  expectSql(sql0016, /revoke all on table public\.client_messages from public, anon, authenticated;\s+grant select, insert on public\.client_messages to authenticated;/i, 'message grants');
+
+  // 4. Demo removal clears message records before their clients
+  const removeDemo = functionBlock(sql0016, 'remove_demo_data');
+  assert.match(removeDemo, /delete from public\.client_messages where is_demo = true;/i);
+  assert.ok(
+    removeDemo.indexOf('delete from public.client_messages') < removeDemo.indexOf('delete from public.clients where is_demo = true'),
+    'messages are deleted before clients',
+  );
+  assert.match(removeDemo, /'client_messages', v_client_messages_count,/i);
+  assert.match(removeDemo, /'client_documents', v_client_documents_count,/i);
+  assert.match(removeDemo, /Unauthorized: remove_demo_data may only be executed by a Founder\./i);
+  expectSql(sql0016, /revoke all on function public\.remove_demo_data\(\) from public, anon;\s+grant execute on function public\.remove_demo_data\(\) to authenticated;/i, 'demo removal grants');
+});
+
+test('migration 0017 removes demo messages before the bills, work and contacts they point to', () => {
+  const migration0017Path = new URL('../../supabase/migrations/20261113230000_msg01_demo_removal_order.sql', import.meta.url);
+  const sql0017 = readMigration(migration0017Path, 'Migration 0017');
+  const removeDemo = functionBlock(sql0017, 'remove_demo_data');
+  const at = (pattern) => removeDemo.search(pattern);
+  const messages = at(/delete from public\.client_messages where is_demo = true;/i);
+  assert.ok(messages >= 0, 'demo messages are removed');
+  for (const table of ['payment_allocations', 'invoices', 'assignments', 'client_contacts', 'clients']) {
+    const position = at(new RegExp(`delete from public\.${table} where is_demo = true`, 'i'));
+    if (position >= 0) assert.ok(messages < position, `client_messages are removed before ${table}`);
+  }
+  assert.match(removeDemo, /Unauthorized: remove_demo_data may only be executed by a Founder\./i);
+  expectSql(sql0017, /revoke all on function public\.remove_demo_data\(\) from public, anon;\s+grant execute on function public\.remove_demo_data\(\) to authenticated;/i, 'demo removal grants');
+});

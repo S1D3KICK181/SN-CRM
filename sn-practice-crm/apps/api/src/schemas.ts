@@ -7,6 +7,7 @@ import {
   ENGAGEMENT_END_OUTCOMES,
   ENGAGEMENT_FEE_MODELS,
   INDIAN_STATES,
+  MESSAGE_PURPOSES,
   PAYMENT_METHODS,
   WORK_ITEM_TRANSITIONS,
 } from '@sn/contracts';
@@ -159,6 +160,37 @@ export const confirmDocumentSchema = z.object({}).strict();
 
 export const removeDocumentSchema = z
   .object({ reason: z.string().trim().min(3).max(500) })
+  .strict();
+
+// --- Client messages (MSG-01) ---
+
+export const WHATSAPP_NUMBER_MESSAGE = 'Enter a WhatsApp number with 10 digits, or with the country code.';
+
+/**
+ * Keeps the digits of a number. A 10-digit Indian mobile number (starting 6 to 9) gets the 91 prefix;
+ * anything else must already be 11 to 15 digits including the country code. Returns null otherwise.
+ */
+export function normalizeWhatsAppNumber(value: string): string | null {
+  // A trunk prefix is not part of the number: 098200 12345 and 0091 98200 12345 both mean +91 98200 12345.
+  const digits = value.replace(/\D/g, '').replace(/^00(?=91[6-9]\d{9}$)/, '').replace(/^0(?=[6-9]\d{9}$)/, '');
+  if (/^[6-9]\d{9}$/.test(digits)) return `91${digits}`;
+  return /^\d{11,15}$/.test(digits) ? digits : null;
+}
+
+export const recordClientMessageSchema = z
+  .object({
+    clientId: entityUuid,
+    contactId: entityUuid.nullable().optional(),
+    recipientName: z.string().trim().min(1).max(120),
+    recipientNumber: z.string().trim().min(1, WHATSAPP_NUMBER_MESSAGE).max(40, WHATSAPP_NUMBER_MESSAGE),
+    purpose: z.enum(MESSAGE_PURPOSES),
+    assignmentId: entityUuid.nullable().optional(),
+    invoiceId: entityUuid.nullable().optional(),
+    body: z
+      .string()
+      .max(2000, 'The message must be between 1 and 2000 characters.')
+      .refine((value) => value.trim().length > 0, { message: 'The message must be between 1 and 2000 characters.' }),
+  })
   .strict();
 
 // --- Client credit (FEE-02a) ---

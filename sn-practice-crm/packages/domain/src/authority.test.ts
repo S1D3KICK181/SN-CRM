@@ -332,3 +332,18 @@ describe('DOC-01 document authority', () => {
     });
   });
 });
+
+describe('MSG-01 message authority', () => {
+  // Which clients each person may message is the "looks after the client" rule in Postgres.
+  it.each(['founder', 'manager', 'senior_staff', 'staff'] as const)('allows the %s to message clients', (role) => {
+    expect(authorize({ action: 'message.send', actor: actor(role) })).toEqual({ allowed: true });
+  });
+
+  it('denies a trainee messaging clients', () => {
+    expect(authorize({ action: 'message.send', actor: actor('trainee') })).toEqual({
+      allowed: false,
+      code: 'role_not_permitted',
+      reason: 'Trainees cannot message clients.',
+    });
+  });
+});

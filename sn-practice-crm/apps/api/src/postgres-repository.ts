@@ -6,6 +6,7 @@ import type {
   ClientDocumentDto,
   ClientDto,
   ClientEntityType,
+  ClientMessageDto,
   ClientStatus,
   CreateLedgerEntryInput,
   CreateRecurringScheduleInput,
@@ -44,6 +45,7 @@ import type {
   DevActorDirectory,
   EmployeeRecord,
   MutateEngagementCommand,
+  RecordClientMessageCommand,
   RecordPaymentCommand,
   RecordVyaparBillCommand,
   RemoveCreditAllocationCommand,
@@ -64,6 +66,7 @@ import {
   alreadyVoided,
   billHasPayments,
   billNotOpen,
+  contactNotOfClient,
   documentNotConfirmable,
   documentNotRemovable,
   documentStoragePath,
@@ -71,6 +74,7 @@ import {
   duplicateVyaparBill,
   fileTooLarge,
   financialYearStart,
+  linkedWorkNotOfClient,
   noCreditAvailable,
   notCreditAllocation,
   staleClient,
@@ -2655,6 +2659,134 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
             throw new ApiError(500, 'internal_error', 'Removed document could not be retrieved.');
           }
           return { result: removed, isDemo: Boolean(document['is_demo']) };
+        }),
+      );
+    } catch (error) {
+      sanitizeDatabaseError(error);
+    }
+  }
+
+  // --- Client messages (MSG-01) ---
+  // Row-level security limits reads and writes to clients the actor looks after. Messages are
+  // append-only; the insert trigger inherits is_demo from the client.
+
+  private async queryMessageDtos(
+    tx: SqlClient,
+    filter: { readonly id?: string; readonly clientId?: string },
+  ): Promise<ClientMessageDto[]> {
+    const rows = await tx`
+      SELECT
+        m.id,
+        m.client_id AS "clientId",
+        c.code AS "clientCode",
+        c.display_name AS "clientName",
+        m.contact_id AS "contactId",
+        m.recipient_name AS "recipientName",
+        m.recipient_number AS "recipientNumber",
+        m.channel,
+        m.purpose,
+        m.assignment_id AS "assignmentId",
+        a.code AS "assignmentCode",
+        m.invoice_id AS "invoiceId",
+        coalesce(i.vyapar_bill_number, i.code) AS "invoiceLabel",
+        m.body,
+        m.status,
+        m.created_by AS "sentById",
+        p.full_name AS "sentByName",
+        m.created_at AS "createdAt"
+      FROM public.client_messages m
+      JOIN public.clients c ON c.id = m.client_id
+      JOIN public.profiles p ON p.user_id = m.created_by
+      LEFT JOIN public.assignments a ON a.id = m.assignment_id
+      LEFT JOIN public.invoices i ON i.id = m.invoice_id
+      WHERE (${filter.id ?? null}::uuid IS NULL OR m.id = ${filter.id ?? null}::uuid)
+        AND (${filter.clientId ?? null}::uuid IS NULL OR m.client_id = ${filter.clientId ?? null}::uuid)
+      ORDER BY m.created_at DESC, m.id DESC;
+    `;
+    return rows.map((row) => ({
+      id: String(row['id']),
+      clientId: String(row['clientId']),
+      clientCode: String(row['clientCode']),
+      clientName: String(row['clientName']),
+      contactId: nullableText(row['contactId']),
+      recipientName: String(row['recipientName']),
+      recipientNumber: String(row['recipientNumber']),
+      channel: row['channel'] as ClientMessageDto['channel'],
+      purpose: row['purpose'] as ClientMessageDto['purpose'],
+      assignmentId: nullableText(row['assignmentId']),
+      assignmentCode: nullableText(row['assignmentCode']),
+      invoiceId: nullableText(row['invoiceId']),
+      invoiceLabel: nullableText(row['invoiceLabel']),
+      body: String(row['body']),
+      status: row['status'] as ClientMessageDto['status'],
+      sentById: String(row['sentById']),
+      sentByName: String(row['sentByName']),
+      createdAt: toIsoString(row['createdAt']),
+    }));
+  }
+
+  async listClientMessages(ctx: RepositoryContext, clientId?: string): Promise<ClientMessageDto[]> {
+    try {
+      return await this.runner.withUserContext(ctx, (tx) =>
+        this.queryMessageDtos(tx, clientId !== undefined ? { clientId } : {}),
+      );
+    } catch (error) {
+      sanitizeDatabaseError(error);
+    }
+  }
+
+  async recordClientMessage(ctx: RepositoryContext, command: RecordClientMessageCommand): Promise<ClientMessageDto> {
+    const { idempotencyKey, ...payload } = command;
+    try {
+      return await this.runner.withUserContext(ctx, (tx) =>
+        this.runIdempotent<ClientMessageDto>(tx, ctx, idempotencyKey, 'recordClientMessage', payload, async () => {
+          const clientRows = await tx`
+            SELECT is_demo, public.looks_after_client(id) AS looks_after
+            FROM public.clients
+            WHERE id = ${command.clientId}::uuid;
+          `;
+          const client = clientRows[0];
+          if (!client || client['looks_after'] !== true) throw notFound('Client');
+
+          if (command.contactId) {
+            const rows = await tx`SELECT client_id FROM public.client_contacts WHERE id = ${command.contactId}::uuid;`;
+            if (!rows[0] || String(rows[0]['client_id']) !== command.clientId) throw contactNotOfClient();
+          }
+          if (command.assignmentId) {
+            const rows = await tx`SELECT client_id FROM public.assignments WHERE id = ${command.assignmentId}::uuid;`;
+            if (!rows[0] || String(rows[0]['client_id']) !== command.clientId) throw linkedWorkNotOfClient();
+          }
+          if (command.invoiceId) {
+            const rows = await tx`SELECT client_id FROM public.invoices WHERE id = ${command.invoiceId}::uuid;`;
+            if (!rows[0] || String(rows[0]['client_id']) !== command.clientId) throw linkedWorkNotOfClient();
+          }
+
+          const messageId = crypto.randomUUID();
+          // is_demo is inherited from the client by the message's insert trigger
+          await tx`
+            INSERT INTO public.client_messages (
+              id, client_id, contact_id, recipient_name, recipient_number, channel, purpose,
+              assignment_id, invoice_id, body, status, created_by
+            ) VALUES (
+              ${messageId}::uuid,
+              ${command.clientId}::uuid,
+              ${command.contactId ?? null}::uuid,
+              ${command.recipientName},
+              ${command.recipientNumber},
+              'whatsapp',
+              ${command.purpose},
+              ${command.assignmentId ?? null}::uuid,
+              ${command.invoiceId ?? null}::uuid,
+              ${command.body},
+              'opened',
+              ${ctx.actorId}::uuid
+            );
+          `;
+          const created = (await this.queryMessageDtos(tx, { id: messageId }))[0];
+          if (!created) {
+            throw new ApiError(500, 'internal_error', 'Recorded message could not be retrieved.');
+          }
+          return { result: created, isDemo: Boolean(client['is_demo']) };
         }),
       );
     } catch (error) {

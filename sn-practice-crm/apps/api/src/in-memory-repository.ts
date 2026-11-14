@@ -4,6 +4,7 @@ import type {
   ClientContactDto,
   ClientDocumentDto,
   ClientDto,
+  ClientMessageDto,
   CreateLedgerEntryInput,
   CreateRecurringScheduleInput,
   EngagementDto,
@@ -43,6 +44,7 @@ import type {
   DevActorDirectory,
   EmployeeRecord,
   MutateEngagementCommand,
+  RecordClientMessageCommand,
   RecordPaymentCommand,
   RecordVyaparBillCommand,
   RemoveCreditAllocationCommand,
@@ -63,6 +65,7 @@ import {
   alreadyVoided,
   billHasPayments,
   billNotOpen,
+  contactNotOfClient,
   documentNotConfirmable,
   documentNotRemovable,
   documentStoragePath,
@@ -71,6 +74,7 @@ import {
   fileTooLarge,
   financialYearStart,
   kolkataToday,
+  linkedWorkNotOfClient,
   noCreditAvailable,
   notCreditAllocation,
   staleClient,
@@ -119,6 +123,14 @@ type ContactRecord = { -readonly [K in keyof ClientContactDto]: ClientContactDto
 /** A document row; the client and uploader names are joined in when it is read. */
 type DocumentRecord = {
   -readonly [K in keyof Omit<ClientDocumentDto, 'clientCode' | 'clientName' | 'uploadedByName'>]: ClientDocumentDto[K];
+};
+
+/** A message row; the client, work and sender names are joined in when it is read. */
+type MessageRecord = {
+  -readonly [K in keyof Omit<
+    ClientMessageDto,
+    'clientCode' | 'clientName' | 'assignmentCode' | 'invoiceLabel' | 'sentByName'
+  >]: ClientMessageDto[K];
 };
 
 /** A client row. The CLI-02a detail fields and contacts are optional so older seeds stay valid. */
@@ -277,6 +289,7 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
   private readonly engagementVersions = new Map<string, EngagementVersionDto[]>();
   private readonly operationReceipts = new Map<string, StoredOperationReceipt>();
   private readonly documents: DocumentRecord[] = [];
+  private readonly messages: MessageRecord[] = [];
   private readonly uploadedObjects = new Map<string, number>(); // Simulated Storage: path to size in bytes
   private readonly engagementIsDemo = new Map<string, boolean>();
   private readonly invoiceSeeds: InvoiceSeedRecord[];
@@ -763,6 +776,10 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
     if (!match) throw notFound('Contact');
     if (!this.canEditClient(match.actor, match.client)) throw this.forbiddenOperation();
     match.client.contacts = (match.client.contacts ?? []).filter((candidate) => candidate.id !== contactId);
+    // Recorded messages keep their recipient snapshot; only the link to the deleted contact goes (on delete set null)
+    for (const message of this.messages) {
+      if (message.contactId === contactId) message.contactId = null;
+    }
   }
 
   // --- Reference Lookups ---
@@ -1850,6 +1867,79 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
       record.removedReason = command.reason;
       record.removedAt = this.now().toISOString();
       return { result: this.toDocumentDto(record), isDemo: this.clients.get(record.clientId)?.isDemo === true };
+    });
+  }
+
+  // --- Client messages (MSG-01) ---
+  // Append-only. Visibility and recording are "looks after the client", the same test as fee visibility.
+
+  private toMessageDto(record: MessageRecord): ClientMessageDto {
+    const client = this.clients.get(record.clientId);
+    const assignment = record.assignmentId ? this.assignments.get(record.assignmentId) : undefined;
+    const invoice = record.invoiceId ? this.invoiceSeeds.find((candidate) => candidate.id === record.invoiceId) : undefined;
+    return copy({
+      ...record,
+      clientCode: client?.code ?? '',
+      clientName: client?.displayName ?? '',
+      assignmentCode: assignment?.code ?? null,
+      invoiceLabel: invoice ? (invoice.vyaparBillNumber ?? invoice.code) : null,
+      sentByName: this.employees.get(record.sentById)?.name ?? '',
+    });
+  }
+
+  async listClientMessages(ctx: RepositoryContext, clientId?: string): Promise<ClientMessageDto[]> {
+    const actor = this.getActor(ctx);
+    if (!actor) return [];
+    return this.messages
+      .filter(
+        (record) =>
+          (clientId === undefined || record.clientId === clientId) && this.isFeeVisible(actor, record.clientId),
+      )
+      .map((record, index) => ({ record, index }))
+      .sort((left, right) => {
+        const byTime = Date.parse(right.record.createdAt) - Date.parse(left.record.createdAt);
+        return byTime !== 0 ? byTime : right.index - left.index;
+      })
+      .map(({ record }) => this.toMessageDto(record));
+  }
+
+  async recordClientMessage(ctx: RepositoryContext, command: RecordClientMessageCommand): Promise<ClientMessageDto> {
+    const { idempotencyKey, ...payload } = command;
+    return this.runIdempotent<ClientMessageDto>(ctx, idempotencyKey, 'recordClientMessage', payload, () => {
+      const actor = this.getActor(ctx);
+      const client = this.clients.get(command.clientId);
+      if (!actor || !client || !this.isFeeVisible(actor, client.id)) throw notFound('Client');
+
+      if (command.contactId && !(client.contacts ?? []).some((contact) => contact.id === command.contactId)) {
+        throw contactNotOfClient();
+      }
+      if (command.assignmentId && this.assignments.get(command.assignmentId)?.clientId !== client.id) {
+        throw linkedWorkNotOfClient();
+      }
+      if (
+        command.invoiceId &&
+        this.invoiceSeeds.find((candidate) => candidate.id === command.invoiceId)?.clientId !== client.id
+      ) {
+        throw linkedWorkNotOfClient();
+      }
+
+      const record: MessageRecord = {
+        id: crypto.randomUUID(),
+        clientId: client.id,
+        contactId: command.contactId ?? null,
+        recipientName: command.recipientName,
+        recipientNumber: command.recipientNumber,
+        channel: 'whatsapp',
+        purpose: command.purpose,
+        assignmentId: command.assignmentId ?? null,
+        invoiceId: command.invoiceId ?? null,
+        body: command.body,
+        status: 'opened',
+        sentById: actor.id,
+        createdAt: this.now().toISOString(),
+      };
+      this.messages.push(record);
+      return { result: this.toMessageDto(record), isDemo: client.isDemo === true };
     });
   }
 

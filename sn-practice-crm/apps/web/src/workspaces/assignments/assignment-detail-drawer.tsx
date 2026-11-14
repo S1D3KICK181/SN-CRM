@@ -25,6 +25,7 @@ import {
 } from '../../data';
 import { Field } from '../../ui/workspace-primitives';
 import { isValidUuid } from '../../api/metadata-safety';
+import { useMessageComposer } from '../messages/message-composer';
 
 export function AssignmentDetailDrawer({
   assignment,
@@ -97,6 +98,16 @@ export function AssignmentDetailDrawer({
     normalizedStatus === 'completed' ||
     normalizedStatus === 'closed' ||
     normalizedStatus === 'cancelled';
+
+  // A deadline reminder can be sent for open work whose client the reader may message.
+  const messageComposer = useMessageComposer();
+  const reminderClientId = assignment.clientId;
+  const canSendReminder =
+    messageComposer?.canMessage === true &&
+    !isTerminal &&
+    isValidUuid(assignment.id) &&
+    reminderClientId !== undefined &&
+    isValidUuid(reminderClientId);
 
   const staffList = teamMembers ?? [];
   const eligibleStaffOwners = useMemo(() => {
@@ -349,6 +360,39 @@ export function AssignmentDetailDrawer({
             </div>
           </div>
           <div className="drawer-header-actions">
+            {canSendReminder && messageComposer && reminderClientId ? (
+              <button
+                className="soft-button"
+                type="button"
+                onClick={(event) =>
+                  messageComposer.open(
+                    {
+                      clientId: reminderClientId,
+                      purpose: 'deadline_reminder',
+                      assignment: {
+                        id: assignment.id,
+                        code: displayCode ?? null,
+                        title: assignment.title,
+                        dueOn: assignment.due || null,
+                      },
+                    },
+                    event.currentTarget,
+                  )
+                }
+                disabled={isSubmitting}
+                style={{
+                  fontSize: 12,
+                  padding: '5px 12px',
+                  height: 'auto',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  flexShrink: 0,
+                }}
+              >
+                <Send size={12} /> Send reminder
+              </button>
+            ) : null}
             {canEditAssignment ? (
               <button
                 className="soft-button"

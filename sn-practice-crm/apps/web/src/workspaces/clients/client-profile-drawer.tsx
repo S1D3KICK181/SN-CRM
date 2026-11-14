@@ -13,7 +13,10 @@ import {
   X,
 } from 'lucide-react';
 import type { ClientOperationError } from '../../api/clients-types';
-import type { ClientDetailViewModel } from './clients-view-model';
+import { MESSAGE_PURPOSE_LABELS } from '../../api/messages-types';
+import { useMessageComposer, type MessageComposer } from '../messages/message-composer';
+import { normalizeWhatsAppNumber } from '../messages/message-templates';
+import { formatClientDate, type ClientDetailViewModel } from './clients-view-model';
 
 export type ClientDrawerTab = 'overview' | 'kyc' | 'schedules' | 'work' | 'billing';
 
@@ -35,9 +38,36 @@ interface DrawerHeaderProps {
   readonly loading: boolean;
   readonly onClose: () => void;
   readonly onEditClient?: () => void;
+  /** Start a WhatsApp message for this client; shown only when the reader may message clients. */
+  readonly onMessage?: (opener: HTMLElement) => void;
 }
 
-function DrawerHeader({ client, loading, onClose, onEditClient }: DrawerHeaderProps) {
+/** Starts a General message for the client, with the contacts this drawer is showing right now. */
+function startClientMessage(composer: MessageComposer, client: ClientDetailViewModel, opener: HTMLElement): void {
+  composer.open(
+    {
+      clientId: client.id,
+      purpose: 'general',
+      client: {
+        id: client.id,
+        displayName: client.displayName,
+        // The profile shows "Not provided" for a missing phone; only a real number is offered.
+        phone: normalizeWhatsAppNumber(client.phone) ? client.phone : null,
+        contacts: client.contacts.map((contact) => ({
+          id: contact.id,
+          name: contact.name,
+          designation: contact.designation,
+          phone: contact.phone,
+          whatsapp: contact.whatsapp,
+          isPrimary: contact.isPrimary,
+        })),
+      },
+    },
+    opener,
+  );
+}
+
+function DrawerHeader({ client, loading, onClose, onEditClient, onMessage }: DrawerHeaderProps) {
   const headerSubtitle = client
     ? (client.legalName ? `${client.legalName} · ${client.code}` : client.code)
     : (loading ? 'Fetching client details…' : 'Client details');
@@ -60,6 +90,11 @@ function DrawerHeader({ client, loading, onClose, onEditClient }: DrawerHeaderPr
           <span className={`status tone-${client.statusTone}`}>
             {client.statusLabel}
           </span>
+        ) : null}
+        {client && onMessage ? (
+          <button className="soft-button" type="button" onClick={(event) => onMessage(event.currentTarget)}>
+            Message on WhatsApp
+          </button>
         ) : null}
         {client?.canEdit && onEditClient ? (
           <button className="soft-button" type="button" onClick={onEditClient}>
@@ -305,7 +340,51 @@ function ContactPeopleCard({
   );
 }
 
-function OverviewTabPanel({ client, ...actions }: { readonly client: ClientDetailViewModel } & ClientActions) {
+/** How much of a message the drawer shows. */
+const MESSAGE_SNIPPET_LENGTH = 80;
+
+function MessagesCard({ client, composer }: { readonly client: ClientDetailViewModel; readonly composer: MessageComposer }) {
+  const recent = composer.recentFor(client.id, 5);
+  return (
+    <div className="drawer-card" style={{ padding: 16 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+        <h4 style={{ margin: 0, fontSize: 13, fontWeight: 700, color: 'var(--ink-strong)' }}>Messages</h4>
+        <button className="text-button" type="button" onClick={() => composer.showAll(client.id)}>
+          See all messages
+        </button>
+      </div>
+      {recent.length === 0 ? (
+        <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-muted)' }}>No messages yet.</p>
+      ) : (
+        <ul style={{ margin: 0, padding: 0, listStyle: 'none', display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {recent.map((message) => (
+            <li
+              key={message.id}
+              className="drawer-text-contain"
+              style={{ display: 'flex', flexDirection: 'column', gap: 2, fontSize: 12, color: 'var(--ink)' }}
+            >
+              <span>
+                <strong>{MESSAGE_PURPOSE_LABELS[message.purpose]}</strong> · {message.recipientName} ·{' '}
+                {formatClientDate(message.createdAt)}
+              </span>
+              <span style={{ color: 'var(--ink-muted)' }}>
+                {message.body.length > MESSAGE_SNIPPET_LENGTH
+                  ? `${message.body.slice(0, MESSAGE_SNIPPET_LENGTH)}…`
+                  : message.body}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function OverviewTabPanel({
+  client,
+  composer,
+  ...actions
+}: { readonly client: ClientDetailViewModel; readonly composer: MessageComposer | null } & ClientActions) {
   return (
     <div
       id="panel-overview"
@@ -371,6 +450,7 @@ function OverviewTabPanel({ client, ...actions }: { readonly client: ClientDetai
       <IdentityCard client={client} />
       <AddressCard client={client} />
       <ContactPeopleCard client={client} {...actions} />
+      {composer ? <MessagesCard client={client} composer={composer} /> : null}
 
       <div className="drawer-card" style={{ padding: 16 }}>
         <h4 style={{ margin: '0 0 12px', fontSize: 13, fontWeight: 700, color: 'var(--ink-strong)' }}>
@@ -532,6 +612,9 @@ export function ClientProfileDrawer({
 }: ClientProfileDrawerProps) {
   const [tab, setTab] = useState<ClientDrawerTab>('overview');
   const drawerRef = useRef<HTMLElement>(null);
+  // Only people who may message clients get the button and the Messages section.
+  const messageComposer = useMessageComposer();
+  const composer = messageComposer?.canMessage ? messageComposer : null;
 
   useEffect(() => {
     drawerRef.current?.focus();
@@ -559,7 +642,13 @@ export function ClientProfileDrawer({
         tabIndex={-1}
         className="client-drawer"
       >
-        <DrawerHeader client={client} loading={loading} onClose={onClose} onEditClient={onEditClient} />
+        <DrawerHeader
+          client={client}
+          loading={loading}
+          onClose={onClose}
+          onEditClient={onEditClient}
+          onMessage={composer && client ? (opener) => startClientMessage(composer, client, opener) : undefined}
+        />
 
         {client ? (
           <DrawerTabs activeTab={tab} onSelectTab={setTab} />
@@ -578,6 +667,7 @@ export function ClientProfileDrawer({
               {tab === 'overview' && (
                 <OverviewTabPanel
                   client={client}
+                  composer={composer}
                   onAddContact={onAddContact}
                   onEditContact={onEditContact}
                   onRemoveContact={onRemoveContact}

@@ -7,6 +7,7 @@ import type {
   CreateDocumentInput,
   CreateRecurringScheduleInput,
   LedgerEntryDto,
+  RecordClientMessageInput,
   RecordPaymentInput,
   RecordVyaparBillInput,
   RecurringScheduleDto,
@@ -1021,6 +1022,12 @@ describe("CrmApplication authority and workflow rules", () => {
         },
         async removeClientDocument(ctx: RepositoryContext) {
           throw new Error(`Unexpected document repository call: removeClientDocument(${ctx.actorId})`);
+        },
+        async listClientMessages(ctx: RepositoryContext) {
+          throw new Error(`Unexpected message repository call: listClientMessages(${ctx.actorId})`);
+        },
+        async recordClientMessage(ctx: RepositoryContext) {
+          throw new Error(`Unexpected message repository call: recordClientMessage(${ctx.actorId})`);
         },
       };
 
@@ -3267,5 +3274,185 @@ describe("DOC-01a client documents", () => {
       status: 409,
       code: "invalid_state_transition",
     });
+  });
+});
+
+describe("MSG-01 client messages", () => {
+  const ASTER = CANONICAL_CLIENT_1; // looked after by the Founder, Manager and Senior Staff, not by Staff
+  const BLUEPEAK = "10000000-0000-4000-a000-000000000002"; // owner: Staff; Senior Staff does not look after it
+  const ASTER_BILL = "70000000-0000-4000-a000-000000000001";
+  const ASTER_ASSIGNMENT = "30000000-0000-4000-a000-000000000001";
+  const BLUEPEAK_ASSIGNMENT = "30000000-0000-4000-a000-000000000002";
+  let keyCounter = 0;
+  const key = () => `msg-key-${++keyCounter}`;
+
+  async function messageFixture() {
+    const { application, repository } = createFixture();
+    return {
+      application,
+      repository,
+      founder: await application.requireActor(DEMO_ACTOR_IDS.founder),
+      manager: await application.requireActor(DEMO_ACTOR_IDS.manager),
+      senior: await application.requireActor(DEMO_ACTOR_IDS.senior),
+      staff: await application.requireActor(DEMO_ACTOR_IDS.staff),
+      trainee: await application.requireActor(DEMO_ACTOR_IDS.trainee),
+    };
+  }
+
+  const messageInput = (overrides: Partial<RecordClientMessageInput> = {}): RecordClientMessageInput => ({
+    clientId: BLUEPEAK,
+    recipientName: "Rahul Shah",
+    recipientNumber: "98200 12345",
+    purpose: "general",
+    body: "Dear Rahul, please share the bank statements.",
+    ...overrides,
+  });
+
+  it("records a message and lists it newest first for the people who look after the client", async () => {
+    const { application, founder, manager, senior, staff } = await messageFixture();
+    const first = await application.recordClientMessage(
+      staff,
+      messageInput({ purpose: "deadline_reminder", assignmentId: BLUEPEAK_ASSIGNMENT }),
+      key(),
+    );
+    expect(first).toMatchObject({
+      clientId: BLUEPEAK,
+      clientCode: "CL-001002",
+      clientName: "BluePeak Tech",
+      recipientName: "Rahul Shah",
+      recipientNumber: "919820012345",
+      channel: "whatsapp",
+      purpose: "deadline_reminder",
+      assignmentCode: "AS-001002",
+      invoiceLabel: null,
+      status: "opened",
+      sentById: staff.id,
+      sentByName: staff.name,
+    });
+    const second = await application.recordClientMessage(
+      manager,
+      messageInput({ purpose: "payment_reminder", body: "A gentle reminder." }),
+      key(),
+    );
+    const aster = await application.recordClientMessage(
+      senior,
+      messageInput({ clientId: ASTER, purpose: "payment_reminder", invoiceId: ASTER_BILL }),
+      key(),
+    );
+    expect(aster.invoiceLabel).toBe("VYP-118");
+
+    expect((await application.listClientMessages(founder)).map((message) => message.id).sort()).toEqual(
+      [first.id, second.id, aster.id].sort(),
+    );
+    expect((await application.listClientMessages(staff)).map((message) => message.id).sort()).toEqual(
+      [first.id, second.id].sort(),
+    );
+    expect((await application.listClientMessages(senior)).map((message) => message.id)).toEqual([aster.id]);
+    expect((await application.listClientMessages(founder, ASTER)).map((message) => message.id)).toEqual([aster.id]);
+    await expect(application.listClientMessages(founder, "not-a-uuid")).rejects.toMatchObject({ status: 422 });
+  });
+
+  it("refuses a trainee before touching the repository, and shows a trainee no messages", async () => {
+    const { application, repository, staff, trainee } = await messageFixture();
+    await application.recordClientMessage(staff, messageInput(), key());
+    const spy = vi.spyOn(repository, "recordClientMessage");
+    await expect(application.recordClientMessage(trainee, messageInput(), key())).rejects.toMatchObject({
+      status: 403,
+      code: "role_not_permitted",
+      message: "Trainees cannot message clients.",
+    });
+    expect(spy).not.toHaveBeenCalled();
+    expect(await application.listClientMessages(trainee)).toEqual([]);
+  });
+
+  it("keeps other staff out of clients they do not look after", async () => {
+    const { application, senior, staff } = await messageFixture();
+    await expect(application.recordClientMessage(senior, messageInput(), key())).rejects.toMatchObject({
+      status: 404,
+      message: "Client was not found.",
+    });
+    await expect(
+      application.recordClientMessage(staff, messageInput({ clientId: ASTER }), key()),
+    ).rejects.toMatchObject({ status: 404 });
+  });
+
+  it("normalises the number to digits with the country code", async () => {
+    const { application, staff } = await messageFixture();
+    const record = async (recipientNumber: string) =>
+      (await application.recordClientMessage(staff, messageInput({ recipientNumber }), key())).recipientNumber;
+    expect(await record("98200 12345")).toBe("919820012345");
+    expect(await record("+91 98200-12345")).toBe("919820012345");
+    expect(await record("6000000000")).toBe("916000000000");
+    expect(await record("919820012345")).toBe("919820012345");
+    expect(await record("+44 7911 123456")).toBe("447911123456");
+    expect(await record("+1 (415) 555-2671")).toBe("14155552671");
+  });
+
+  it("refuses a number that is neither a 10-digit mobile number nor carries a country code", async () => {
+    const { application, repository, staff } = await messageFixture();
+    const spy = vi.spyOn(repository, "recordClientMessage");
+    const refused = {
+      status: 422,
+      code: "validation_failed",
+      message: "Enter a WhatsApp number with 10 digits, or with the country code.",
+    };
+    for (const recipientNumber of ["12345", "5820012345", "98200 1234", "1234567890123456", "no number", "   "]) {
+      await expect(
+        application.recordClientMessage(staff, messageInput({ recipientNumber }), key()),
+      ).rejects.toMatchObject(refused);
+    }
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("validates the body, the recipient name, the purpose and the identifiers", async () => {
+    const { application, staff } = await messageFixture();
+    const invalid = { status: 422, code: "validation_failed" };
+    await expect(application.recordClientMessage(staff, messageInput({ body: "" }), key())).rejects.toMatchObject({
+      ...invalid,
+      message: "The message must be between 1 and 2000 characters.",
+    });
+    await expect(application.recordClientMessage(staff, messageInput({ body: "   " }), key())).rejects.toMatchObject(invalid);
+    await expect(
+      application.recordClientMessage(staff, messageInput({ body: "x".repeat(2001) }), key()),
+    ).rejects.toMatchObject(invalid);
+    await application.recordClientMessage(staff, messageInput({ body: "x".repeat(2000) }), key());
+    await expect(application.recordClientMessage(staff, messageInput({ recipientName: "" }), key())).rejects.toMatchObject(invalid);
+    await expect(
+      application.recordClientMessage(staff, messageInput({ recipientName: "n".repeat(121) }), key()),
+    ).rejects.toMatchObject(invalid);
+    await expect(
+      application.recordClientMessage(staff, messageInput({ purpose: "chat" as unknown as RecordClientMessageInput["purpose"] }), key()),
+    ).rejects.toMatchObject(invalid);
+    await expect(application.recordClientMessage(staff, messageInput({ clientId: "nope" }), key())).rejects.toMatchObject(invalid);
+    await expect(application.recordClientMessage(staff, messageInput({ contactId: "nope" }), key())).rejects.toMatchObject(invalid);
+  });
+
+  it("refuses an assignment, bill or contact that belongs to another client", async () => {
+    const { application, staff } = await messageFixture();
+    const linked = { status: 422, message: "The linked work does not belong to this client." };
+    await expect(
+      application.recordClientMessage(staff, messageInput({ assignmentId: ASTER_ASSIGNMENT }), key()),
+    ).rejects.toMatchObject(linked);
+    await expect(
+      application.recordClientMessage(staff, messageInput({ invoiceId: ASTER_BILL }), key()),
+    ).rejects.toMatchObject(linked);
+    await expect(
+      application.recordClientMessage(staff, messageInput({ contactId: "74000000-0000-4000-a000-0000000000ff" }), key()),
+    ).rejects.toMatchObject({ status: 422, message: "The contact does not belong to this client." });
+  });
+
+  it("replays a write for the same key and rejects the key for a different payload", async () => {
+    const { application, staff } = await messageFixture();
+    const replayKey = key();
+    const first = await application.recordClientMessage(staff, messageInput(), replayKey);
+    expect(await application.recordClientMessage(staff, messageInput(), replayKey)).toEqual(first);
+    // The same number written another way is the same payload
+    expect(
+      await application.recordClientMessage(staff, messageInput({ recipientNumber: "+919820012345" }), replayKey),
+    ).toEqual(first);
+    expect(await application.listClientMessages(staff)).toHaveLength(1);
+    await expect(
+      application.recordClientMessage(staff, messageInput({ body: "Other text" }), replayKey),
+    ).rejects.toMatchObject({ status: 409, code: "conflict" });
   });
 });

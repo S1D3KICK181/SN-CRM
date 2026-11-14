@@ -44,7 +44,7 @@ export type AuthorityRequest =
     }
   | { action: 'client.update'; actor: Actor; isRelationshipOwner: boolean }
   | { action: 'client.change_owner_or_status'; actor: Actor }
-  | { action: 'finance.manage' | 'reports.view_practice' | 'team.manage_access' | 'service.manage' | 'document.remove'; actor: Actor }
+  | { action: 'finance.manage' | 'reports.view_practice' | 'team.manage_access' | 'service.manage' | 'document.remove' | 'message.send'; actor: Actor }
   | { action: 'team.manage_reporting'; actor: Actor; subject: EmployeeRef; proposedManager: EmployeeRef | null }
   | {
       action:
@@ -212,6 +212,13 @@ export function authorize(request: AuthorityRequest): AuthorityDecision {
       return actor.role !== 'trainee'
         ? ALLOWED
         : deny('role_not_permitted', 'Trainees cannot remove documents.');
+
+    case 'message.send':
+      // Which clients a person may message is the "looks after the client" rule in Postgres.
+      // Trainees never look after a client, so they are refused here before any database work.
+      return actor.role !== 'trainee'
+        ? ALLOWED
+        : deny('role_not_permitted', 'Trainees cannot message clients.');
 
     case 'service.manage':
       return actor.role === 'founder'

@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { render, screen, fireEvent, cleanup } from '@testing-library/react';
+import { render, screen, fireEvent, cleanup, within } from '@testing-library/react';
 import { ClientProfileDrawer } from './client-profile-drawer';
 import { toClientDetailViewModel } from './clients-view-model';
 import { ClientOperationError } from '../../api/clients-types';
-import type { ClientDto } from '@sn/contracts';
+import { MessageComposerContextProvider, type MessageComposer } from '../messages/message-composer';
+import type { ClientDto, ClientMessageDto } from '@sn/contracts';
 
 afterEach(() => {
   cleanup();
@@ -447,5 +448,147 @@ describe('ClientProfileDrawer', () => {
       fireEvent.keyDown(window, { key: 'Escape' });
       expect(onClose).toHaveBeenCalledTimes(1);
     });
+  });
+});
+
+describe('ClientProfileDrawer messages (MSG-01)', () => {
+  const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+  const CONTACT = {
+    id: '74000000-0000-4000-a000-000000000001',
+    name: 'Rahul Shah',
+    designation: 'Accounts Manager',
+    email: null,
+    phone: '98200 99999',
+    whatsapp: '98200 12345',
+    isPrimary: true,
+    notes: null,
+    updatedAt: '2026-04-15T14:20:00.000Z',
+  };
+
+  function sentMessage(index: number, overrides: Partial<ClientMessageDto> = {}): ClientMessageDto {
+    return {
+      id: `75000000-0000-4000-a000-00000000000${index}`,
+      clientId: 'c1111111-1111-4111-8111-111111111111',
+      clientCode: 'CL-000001',
+      clientName: 'Aster Foods',
+      contactId: null,
+      recipientName: 'Rahul Shah',
+      recipientNumber: '919820012345',
+      channel: 'whatsapp',
+      purpose: 'general',
+      assignmentId: null,
+      assignmentCode: null,
+      invoiceId: null,
+      invoiceLabel: null,
+      body: `Message number ${index}`,
+      status: 'opened',
+      sentById: '20000000-0000-4000-a000-000000000001',
+      sentByName: 'Ananya Rao',
+      createdAt: '2026-11-13T10:30:00.000Z',
+      ...overrides,
+    };
+  }
+
+  function renderWithComposer(composerOverrides: Partial<MessageComposer> = {}, dtoOverrides: Partial<ClientDto> = {}) {
+    const composer: MessageComposer = {
+      canMessage: true,
+      open: vi.fn(),
+      recentFor: vi.fn().mockReturnValue([]),
+      showAll: vi.fn(),
+      ...composerOverrides,
+    };
+    render(
+      <MessageComposerContextProvider value={composer}>
+        <ClientProfileDrawer
+          client={toClientDetailViewModel(createMockDto({ contacts: [CONTACT], ...dtoOverrides }))}
+          onClose={vi.fn()}
+          onEditClient={vi.fn()}
+        />
+      </MessageComposerContextProvider>,
+    );
+    return composer;
+  }
+
+  it('shows Message on WhatsApp next to Edit details and starts a General message with the contacts on screen', () => {
+    const composer = renderWithComposer({}, { canEdit: true });
+    const button = screen.getByRole('button', { name: 'Message on WhatsApp' });
+    const edit = screen.getByRole('button', { name: 'Edit details' });
+    expect(button.parentElement).toBe(edit.parentElement);
+    fireEvent.click(button);
+    expect(composer.open).toHaveBeenCalledWith(
+      {
+        clientId: 'c1111111-1111-4111-8111-111111111111',
+        purpose: 'general',
+        client: {
+          id: 'c1111111-1111-4111-8111-111111111111',
+          displayName: 'Aster Foods',
+          phone: '+91 98200 12345',
+          contacts: [
+            {
+              id: CONTACT.id,
+              name: 'Rahul Shah',
+              designation: 'Accounts Manager',
+              phone: '98200 99999',
+              whatsapp: '98200 12345',
+              isPrimary: true,
+            },
+          ],
+        },
+      },
+      button,
+    );
+  });
+
+  it('offers no client phone when the profile has none', () => {
+    const composer = renderWithComposer({}, { phone: null });
+    fireEvent.click(screen.getByRole('button', { name: 'Message on WhatsApp' }));
+    expect(vi.mocked(composer.open).mock.calls[0]?.[0].client?.phone).toBeNull();
+  });
+
+  it('has no button and no Messages section for someone who may not message clients', () => {
+    renderWithComposer({ canMessage: false });
+    expect(screen.queryByRole('button', { name: 'Message on WhatsApp' })).toBeNull();
+    expect(screen.queryByText('Messages')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'See all messages' })).toBeNull();
+  });
+
+  it('has no button and no Messages section when the screen has no composer', () => {
+    render(<ClientProfileDrawer client={toClientDetailViewModel(createMockDto())} onClose={vi.fn()} />);
+    expect(screen.queryByRole('button', { name: 'Message on WhatsApp' })).toBeNull();
+    expect(screen.queryByText('Messages')).toBeNull();
+  });
+
+  it('shows no button while the client is still loading', () => {
+    const composer: MessageComposer = { canMessage: true, open: vi.fn(), recentFor: () => [], showAll: vi.fn() };
+    render(
+      <MessageComposerContextProvider value={composer}>
+        <ClientProfileDrawer client={null} loading onClose={vi.fn()} />
+      </MessageComposerContextProvider>,
+    );
+    expect(screen.queryByRole('button', { name: 'Message on WhatsApp' })).toBeNull();
+  });
+
+  it('lists the last 5 messages for the client with the purpose, the person and the date', () => {
+    const recentFor = vi.fn().mockReturnValue([
+      sentMessage(1, { purpose: 'payment_reminder', recipientName: 'Meera Iyer', body: 'x'.repeat(100) }),
+      sentMessage(2),
+    ]);
+    renderWithComposer({ recentFor });
+    expect(recentFor).toHaveBeenCalledWith('c1111111-1111-4111-8111-111111111111', 5);
+    const section = screen.getByText('Messages').closest('.drawer-card') as HTMLElement;
+    const items = within(section).getAllByRole('listitem');
+    expect(items).toHaveLength(2);
+    expect(items[0]?.textContent).toContain('Payment reminder · Meera Iyer · 13/11/2026');
+    expect(items[0]?.textContent).toContain(`${'x'.repeat(80)}…`);
+    expect(items[1]?.textContent).toContain('General message · Rahul Shah');
+    expect(items[1]?.textContent).toContain('Message number 2');
+    expect(UUID.test(section.textContent ?? '')).toBe(false);
+  });
+
+  it('says there are no messages yet, and takes the reader to all of them', () => {
+    const composer = renderWithComposer();
+    expect(screen.getByText('No messages yet.')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'See all messages' }));
+    expect(composer.showAll).toHaveBeenCalledWith('c1111111-1111-4111-8111-111111111111');
   });
 });

@@ -1005,3 +1005,40 @@ export interface CreateDocumentInput {
 export interface RemoveDocumentInput {
   readonly reason: string;
 }
+
+// --- Client messages (MSG-01) ---
+
+export const MESSAGE_PURPOSES = ['document_request', 'deadline_reminder', 'payment_reminder', 'general'] as const;
+export type MessagePurpose = (typeof MESSAGE_PURPOSES)[number];
+
+export interface ClientMessageDto {
+  readonly id: string; // RFC 4122 UUID
+  readonly clientId: string; // RFC 4122 UUID
+  readonly clientCode: string;
+  readonly clientName: string;
+  readonly contactId: string | null; // RFC 4122 UUID; null when no contact was chosen or the contact was deleted
+  readonly recipientName: string; // snapshot at the time of sending
+  readonly recipientNumber: string; // digits only, with the country code; snapshot
+  readonly channel: 'whatsapp';
+  readonly purpose: MessagePurpose;
+  readonly assignmentId: string | null; // RFC 4122 UUID
+  readonly assignmentCode: string | null;
+  readonly invoiceId: string | null; // RFC 4122 UUID
+  readonly invoiceLabel: string | null; // the Vyapar bill number, or the CRM code
+  readonly body: string;
+  readonly status: 'opened'; // opened in WhatsApp for the user to send
+  readonly sentById: string; // RFC 4122 UUID
+  readonly sentByName: string;
+  readonly createdAt: string; // ISO-8601 UTC
+}
+
+export interface RecordClientMessageInput {
+  readonly clientId: string; // RFC 4122 UUID
+  readonly contactId?: string | null; // RFC 4122 UUID of one of the client's contacts
+  readonly recipientName: string;
+  readonly recipientNumber: string; // 10 digits, or with the country code; the API normalises it
+  readonly purpose: MessagePurpose;
+  readonly assignmentId?: string | null; // RFC 4122 UUID
+  readonly invoiceId?: string | null; // RFC 4122 UUID
+  readonly body: string; // 1 to 2000 characters
+}

@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { AssignmentDetailDrawer } from './assignment-detail-drawer';
 import type { AssignmentRow } from '../../data';
+import { MessageComposerContextProvider, type MessageComposer } from '../messages/message-composer';
 
 afterEach(() => {
   cleanup();
@@ -312,5 +313,85 @@ describe('AssignmentDetailDrawer component', () => {
 
     render(<AssignmentDetailDrawer {...props} assignment={sampleAssignment} />);
     expect(screen.getByText('Engagement: Not linked')).toBeDefined();
+  });
+});
+
+describe('AssignmentDetailDrawer send reminder (MSG-01)', () => {
+  const liveAssignment: AssignmentRow = {
+    ...sampleAssignment,
+    id: '30000000-0000-4000-a000-000000000001',
+    code: 'AS-001001',
+    title: 'GSTR-1 & 3B Compliance · Oct 2026',
+  };
+
+  function renderDrawer(assignment: AssignmentRow, composer: MessageComposer | null) {
+    const drawer = (
+      <AssignmentDetailDrawer
+        assignment={assignment}
+        leadership={true}
+        role="founder"
+        teamMembers={customTeamMembers}
+        onClose={vi.fn()}
+        onToast={vi.fn()}
+        onUpdateAssignment={vi.fn()}
+      />
+    );
+    render(composer ? <MessageComposerContextProvider value={composer}>{drawer}</MessageComposerContextProvider> : drawer);
+  }
+
+  function stubComposer(overrides: Partial<MessageComposer> = {}): MessageComposer {
+    return { canMessage: true, open: vi.fn(), recentFor: () => [], showAll: vi.fn(), ...overrides };
+  }
+
+  it('opens a deadline reminder with the assignment linked', () => {
+    const composer = stubComposer();
+    renderDrawer(liveAssignment, composer);
+    const button = screen.getByRole('button', { name: /Send reminder/ });
+    fireEvent.click(button);
+    expect(composer.open).toHaveBeenCalledWith(
+      {
+        clientId: '10000000-0000-4000-a000-000000000001',
+        purpose: 'deadline_reminder',
+        assignment: {
+          id: '30000000-0000-4000-a000-000000000001',
+          code: 'AS-001001',
+          title: 'GSTR-1 & 3B Compliance · Oct 2026',
+          dueOn: '11/11/2026',
+        },
+      },
+      button,
+    );
+  });
+
+  it.each(['Approved', 'Completed', 'Closed', 'Cancelled'])('has no Send reminder for a %s assignment', (status) => {
+    renderDrawer({ ...liveAssignment, status }, stubComposer());
+    expect(screen.queryByRole('button', { name: /Send reminder/ })).toBeNull();
+  });
+
+  it.each(['Draft', 'Assigned', 'In progress', 'Ready for review', 'Changes requested'])(
+    'has Send reminder for a %s assignment',
+    (status) => {
+      renderDrawer({ ...liveAssignment, status }, stubComposer());
+      expect(screen.getByRole('button', { name: /Send reminder/ })).toBeTruthy();
+    },
+  );
+
+  it('has no Send reminder for someone who may not message clients, or without a composer', () => {
+    renderDrawer(liveAssignment, stubComposer({ canMessage: false }));
+    expect(screen.queryByRole('button', { name: /Send reminder/ })).toBeNull();
+    cleanup();
+    renderDrawer(liveAssignment, null);
+    expect(screen.queryByRole('button', { name: /Send reminder/ })).toBeNull();
+  });
+
+  it('has no Send reminder when the assignment or its client is not a live record', () => {
+    renderDrawer({ ...liveAssignment, clientId: 'CLI-0001' }, stubComposer());
+    expect(screen.queryByRole('button', { name: /Send reminder/ })).toBeNull();
+    cleanup();
+    renderDrawer({ ...liveAssignment, clientId: undefined }, stubComposer());
+    expect(screen.queryByRole('button', { name: /Send reminder/ })).toBeNull();
+    cleanup();
+    renderDrawer(sampleAssignment, stubComposer());
+    expect(screen.queryByRole('button', { name: /Send reminder/ })).toBeNull();
   });
 });

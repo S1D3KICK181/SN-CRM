@@ -34,3 +34,6 @@ export * from './documents-types';
 export * from './http-documents-adapter';
 export * from './document-storage';
 export * from './use-documents';
+export * from './messages-types';
+export * from './http-messages-adapter';
+export * from './use-messages';

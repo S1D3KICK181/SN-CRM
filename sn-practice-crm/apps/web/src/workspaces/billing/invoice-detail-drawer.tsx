@@ -1,6 +1,8 @@
 import { useRef, useState } from 'react';
 import { ReceiptIndianRupee, X } from 'lucide-react';
 import { formatINR, type InvoiceRecord, type InvoicePaymentRecord } from '../../data';
+import { isValidUuid } from '../../api/metadata-safety';
+import { useMessageComposer } from '../messages/message-composer';
 import {
   billingSaveErrorMessage,
   billLabel,
@@ -72,6 +74,14 @@ export function InvoiceDetailDrawer({
   const hasReceivedPayments = payments.some((payment) => !payment.voided);
   const showCrmRef = Boolean(invoice.vyaparBillNumber);
   const showUseCredit = mayRecordPayment && canRecordPayment(invoice) && creditPaise > 0;
+  // A payment reminder can be sent for a bill with something pending, to a client the reader may message.
+  const messageComposer = useMessageComposer();
+  const showPaymentReminder =
+    messageComposer?.canMessage === true &&
+    canRecordPayment(invoice) &&
+    invoice.balancePaise > 0 &&
+    isValidUuid(invoice.id) &&
+    isValidUuid(invoice.clientId);
 
   return (
     <>
@@ -272,6 +282,31 @@ export function InvoiceDetailDrawer({
           {mayRecordPayment && canRecordPayment(invoice) ? (
             <button className="primary-button" type="button" onClick={(event) => onRecordPayment(event.currentTarget)}>
               <ReceiptIndianRupee size={14} /> Record payment
+            </button>
+          ) : null}
+          {showPaymentReminder && messageComposer ? (
+            <button
+              className="soft-button"
+              type="button"
+              onClick={(event) =>
+                messageComposer.open(
+                  {
+                    clientId: invoice.clientId,
+                    purpose: 'payment_reminder',
+                    bill: {
+                      id: invoice.id,
+                      label: billLabel(invoice),
+                      billDate: invoice.invoiceDate,
+                      dueDate: invoice.dueDate,
+                      pendingPaise: invoice.balancePaise,
+                      overdue: invoice.status === 'Overdue' || invoice.daysOverdue > 0,
+                    },
+                  },
+                  event.currentTarget,
+                )
+              }
+            >
+              Payment reminder
             </button>
           ) : null}
           {canCancel && invoice.status !== 'Cancelled' ? (

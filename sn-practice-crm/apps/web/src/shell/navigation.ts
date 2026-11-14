@@ -122,7 +122,7 @@ export const MODULE_DESCRIPTIONS: Record<PageKey, string> = {
   'My Tasks': 'Personal reminders, delegated work, internal tasks, checklists, and due-time planning.',
   Team: 'Reporting lines, workload, capabilities, departments, and controlled access.',
   Documents: 'Client evidence, versions, requests, expiry dates, and Assignment links.',
-  Communication: 'Client calls, emails, notes, reminders, and follow-ups with a complete activity trail.',
+  Communication: 'WhatsApp messages sent to clients from the CRM, with who sent them and why.',
   'Billing & Collections': 'Bills raised in Vyapar, payments received, and what each client still owes.',
   'Office Accounts': 'Manager-operated cash ledger, expenses, bank entries, and daily reconciliation.',
   Reports: 'Delivery, compliance, utilization, revenue, collection, and practice-performance reporting.',

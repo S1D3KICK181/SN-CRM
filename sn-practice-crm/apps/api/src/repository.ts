@@ -7,6 +7,7 @@ import type {
   ClientDocumentDto,
   ClientDto,
   ClientEntityType,
+  ClientMessageDto,
   CreateClientContactInput,
   CreateDocumentInput,
   CreateEngagementDraftInput,
@@ -21,6 +22,7 @@ import type {
   LedgerEntryDto,
   OfficeAccountsSummaryDto,
   PaymentReceiptDto,
+  RecordClientMessageInput,
   RecordPaymentInput,
   RecordVyaparBillInput,
   RecurringScheduleDto,
@@ -364,6 +366,19 @@ export function documentNotRemovable(): ApiError {
   return new ApiError(409, 'invalid_state_transition', 'Only an uploaded document can be removed.');
 }
 
+// --- Client message commands (MSG-01) ---
+// The application has already normalised recipientNumber to digits with the country code.
+
+export type RecordClientMessageCommand = RecordClientMessageInput & { readonly idempotencyKey: string };
+
+export function contactNotOfClient(): ApiError {
+  return new ApiError(422, 'validation_failed', 'The contact does not belong to this client.');
+}
+
+export function linkedWorkNotOfClient(): ApiError {
+  return new ApiError(422, 'validation_failed', 'The linked work does not belong to this client.');
+}
+
 export interface CrmRepository {
   // Clients
   getClient(ctx: RepositoryContext, clientId: string): Promise<ClientDto | null>;
@@ -382,6 +397,11 @@ export interface CrmRepository {
   createClientDocument(ctx: RepositoryContext, command: CreateDocumentCommand): Promise<ClientDocumentDto>;
   confirmClientDocument(ctx: RepositoryContext, command: ConfirmDocumentCommand): Promise<ClientDocumentDto>;
   removeClientDocument(ctx: RepositoryContext, command: RemoveDocumentCommand): Promise<ClientDocumentDto>;
+
+  // Client messages (MSG-01); visibility and recording follow "looks after the client".
+  // Newest first; recording is idempotent on (actor, key).
+  listClientMessages(ctx: RepositoryContext, clientId?: string): Promise<ClientMessageDto[]>;
+  recordClientMessage(ctx: RepositoryContext, command: RecordClientMessageCommand): Promise<ClientMessageDto>;
 
   // Reference Lookups (Repository-backed, split for SQL safety)
   getClientReference(ctx: RepositoryContext, clientId: string): Promise<ClientReference | null>;

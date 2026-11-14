@@ -30,6 +30,7 @@ import { useBilling } from './api/use-billing';
 import { useEngagements } from './api/use-engagements';
 import { useServiceCatalog } from './api/use-service-catalog';
 import { useDocuments } from './api/use-documents';
+import { useClientMessages } from './api/use-messages';
 import { SessionClient } from './api/auth/session-client';
 import { SessionManager } from './api/auth/session-manager';
 import type { AuthSessionSource } from './api/auth/types';
@@ -42,6 +43,8 @@ import { ClientsWorkspace } from './workspaces/clients/clients-workspace';
 import { EngagementsWorkspace } from './workspaces/engagements/engagements-workspace';
 import { BillingWorkspace, type BillingActions } from './workspaces/billing/billing-workspace';
 import { DocumentsWorkspace, type DocumentsWorkspaceProps } from './workspaces/documents/documents-workspace';
+import { CommunicationWorkspace, type CommunicationWorkspaceProps } from './workspaces/messages/communication-workspace';
+import { MessageComposerProvider } from './workspaces/messages/message-composer';
 import { TeamWorkspace } from './workspaces/team/team-workspace';
 import { SettingsWorkspace, type SettingsWorkspaceProps } from './workspaces/settings/settings-workspace';
 import {
@@ -271,6 +274,17 @@ function AuthenticatedApp({
     download: downloadDocument,
     remove: removeDocument,
   } = useDocuments(role, { enabled: activePage === 'Documents' });
+  // The message log feeds the Communication page and the Messages section of a client's profile.
+  const {
+    messages: clientMessages,
+    loading: messagesLoading,
+    error: messagesError,
+    hasLiveSnapshot: messagesLoaded,
+    retry: retryMessages,
+    record: recordMessage,
+  } = useClientMessages(role, { enabled: activePage === 'Communication' || activePage === 'Clients' });
+  // The client chosen when the Communication page was opened from a client's profile.
+  const [communicationClientId, setCommunicationClientId] = useState<string | null>(null);
   const [clients, setClients] = useState<ClientRecord[]>(CLIENTS);
 
   const staffOptions = useMemo<readonly DialogStaffOption[]>(() => {
@@ -553,13 +567,32 @@ function AuthenticatedApp({
     setToast(`Client ${newClient.name} onboarded with ${newSchedules.length} recurring schedules assigned to ${assignedOwner}`);
   }
 
+  // Opening a page from the sidebar or a link shows everyone's messages; only "See all messages" picks a client.
+  function navigate(page: PageKey) {
+    setCommunicationClientId(null);
+    setActivePage(page);
+  }
+
+  function showMessagesFor(clientId: string) {
+    setCommunicationClientId(clientId);
+    setActivePage('Communication');
+  }
+
   return (
+    <MessageComposerProvider
+      role={role}
+      clients={directoryClients ?? []}
+      messages={clientMessages}
+      record={recordMessage}
+      onShowAll={showMessagesFor}
+      onToast={setToast}
+    >
     <ApplicationChrome
       actor={actor}
       activePage={activePage}
       toast={toast}
       onSignOut={onSignOut}
-      onNavigate={setActivePage}
+      onNavigate={navigate}
       onQuickAdd={openPrimaryAction}
       onToast={setToast}
       overlays={
@@ -641,7 +674,7 @@ function AuthenticatedApp({
           onApproveDelegatedTask={handleApproveDelegatedTask}
           onReopenDelegatedTask={handleReopenDelegatedTask}
           onSubmitTaskForReview={handleSubmitTaskForReview}
-          onNavigate={setActivePage}
+          onNavigate={navigate}
         />
       ) : (
         <ModuleWorkspace
@@ -676,6 +709,14 @@ function AuthenticatedApp({
             hasLiveSnapshot: documentsLoaded,
             error: documentsError ? documentsError.message : null,
             onRetry: retryDocuments,
+          }}
+          communicationModel={{
+            messages: clientMessages,
+            loading: messagesLoading,
+            hasLiveSnapshot: messagesLoaded,
+            error: messagesError ? messagesError.message : null,
+            onRetry: retryMessages,
+            initialClientId: communicationClientId,
           }}
           assignmentsLoading={assignmentsLoading}
           assignmentsError={assignmentsError ? assignmentsError.message : null}
@@ -712,6 +753,7 @@ function AuthenticatedApp({
         />
       )}
     </ApplicationChrome>
+    </MessageComposerProvider>
   );
 }
 
@@ -1231,6 +1273,14 @@ const NO_DOCUMENTS_MODEL: Omit<DocumentsWorkspaceProps, 'role' | 'clients' | 'on
   onRetry: () => undefined,
 };
 
+const NO_COMMUNICATION_MODEL: Omit<CommunicationWorkspaceProps, 'role' | 'clients'> = {
+  messages: [],
+  loading: false,
+  hasLiveSnapshot: true,
+  error: null,
+  onRetry: () => undefined,
+};
+
 export function ModuleWorkspace({
   page,
   role,
@@ -1258,6 +1308,7 @@ export function ModuleWorkspace({
   billingActions,
   serviceCatalog,
   documentsModel,
+  communicationModel,
   onGenerateDue,
   isGeneratingDue,
   assignmentsLoading,
@@ -1292,6 +1343,8 @@ export function ModuleWorkspace({
   serviceCatalog?: Omit<SettingsWorkspaceProps, 'onToast'>;
   /** The client documents for the Documents page; without it the page shows an empty list. */
   documentsModel?: Omit<DocumentsWorkspaceProps, 'role' | 'clients' | 'onToast'>;
+  /** The client message log for the Communication page; without it the page shows an empty list. */
+  communicationModel?: Omit<CommunicationWorkspaceProps, 'role' | 'clients'>;
   onGenerateDue?: () => void;
   isGeneratingDue?: boolean;
   assignmentsLoading?: boolean;
@@ -1395,10 +1448,13 @@ export function ModuleWorkspace({
           {...(documentsModel ?? NO_DOCUMENTS_MODEL)}
         />
       ) : null}
+      {page === 'Communication' ? (
+        <CommunicationWorkspace role={role} clients={directoryClients ?? []} {...(communicationModel ?? NO_COMMUNICATION_MODEL)} />
+      ) : null}
       {page === 'Office Accounts' ? <AccountsWorkspace /> : null}
       {page === 'Team' ? <TeamWorkspace role={role} onToast={onToast} /> : null}
       {showSettings && serviceCatalog ? <SettingsWorkspace {...serviceCatalog} onToast={onToast} /> : null}
-      {!['Clients', 'Engagements', 'Assignments', 'Billing & Collections', 'My Tasks', 'Documents', 'Office Accounts', 'Team'].includes(page) &&
+      {!['Clients', 'Engagements', 'Assignments', 'Billing & Collections', 'My Tasks', 'Documents', 'Communication', 'Office Accounts', 'Team'].includes(page) &&
       !showSettings ? (
         <ModuleFoundation page={page} />
       ) : null}
@@ -1409,7 +1465,6 @@ export function ModuleWorkspace({
 function ModuleFoundation({ page }: { page: PageKey }) {
   const modules: Record<string, Array<[string, string, string]>> = {
     Clients: [['Active clients', '48', '3 require attention'], ['Registrations tracked', '126', 'PAN, GSTIN, TAN and more'], ['Document requests', '12', '5 overdue']],
-    Communication: [['Follow-ups due', '9', '4 scheduled today'], ['Unanswered requests', '5', 'Oldest 3 days'], ['Activity logged', '74', 'This week']],
     'Billing & Collections': [['Raised this month', '₹1,84,000', '12 invoices'], ['Collected', '₹1,27,500', '69% realized'], ['Outstanding', '₹1,21,750', '4 clients']],
     Reports: [['Delivery readiness', '86%', 'Across open work'], ['Review velocity', '78%', 'Within 24 hours'], ['Collections discipline', '61%', 'Improvement needed']],
     Settings: [['Active staff', '12', '5 role types'], ['Recurring templates', '18', '42 live schedules'], ['Audit events', '286', 'Last 30 days']],
