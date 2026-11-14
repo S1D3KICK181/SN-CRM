@@ -367,6 +367,7 @@ function parseClientDto(raw: unknown): ClientDto {
   const contacts = (contactsRaw ?? []).map(parseContact);
   const canEdit = rec['canEdit'] === true;
   const canChangeOwnerOrStatus = rec['canChangeOwnerOrStatus'] === true;
+  const looksAfter = rec['looksAfter'] === true;
 
   // Construct a safe, clean projection containing ONLY contract-approved fields.
   // Hostile/untrusted properties (such as raw `pan`, raw `gstin`, or arbitrary properties)
@@ -389,6 +390,7 @@ function parseClientDto(raw: unknown): ClientDto {
     contacts,
     canEdit,
     canChangeOwnerOrStatus,
+    looksAfter,
     activeAssignmentsCount,
     createdById,
     createdAt,

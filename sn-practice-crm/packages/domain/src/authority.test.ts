@@ -318,6 +318,20 @@ describe('SVC-01 service list authority', () => {
   });
 });
 
+describe('DEPT-01 department authority', () => {
+  it('allows only the Founder to manage departments', () => {
+    expect(authorize({ action: 'department.manage', actor: actor('founder') })).toEqual({ allowed: true });
+  });
+
+  it.each(['manager', 'senior_staff', 'staff', 'trainee'] as const)('denies %s managing departments', (role) => {
+    expect(authorize({ action: 'department.manage', actor: actor(role) })).toEqual({
+      allowed: false,
+      code: 'role_not_permitted',
+      reason: 'Only the Founder may manage departments.',
+    });
+  });
+});
+
 describe('DOC-01 document authority', () => {
   // Which clients' documents each person may remove is the "looks after the client" rule in Postgres.
   it.each(['founder', 'manager', 'senior_staff', 'staff'] as const)('allows the %s to remove a document', (role) => {

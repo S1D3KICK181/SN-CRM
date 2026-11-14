@@ -2469,6 +2469,278 @@ describe('SVC-01 service list routes', () => {
   });
 });
 
+describe('DEPT-01 department routes', () => {
+  const BLUEPEAK = '10000000-0000-4000-a000-000000000002';
+  const INTERNAL_AUDIT = '50000000-0000-4000-a000-000000000002';
+  const AUDIT_ASSIGNMENT = '30000000-0000-4000-a000-000000000002';
+
+  async function call(
+    baseUrl: string,
+    method: 'GET' | 'POST' | 'PATCH' | 'PUT',
+    path: string,
+    options: { actor?: string; body?: unknown; key?: string | null } = {},
+  ) {
+    const headers: Record<string, string> = { 'x-demo-user-id': options.actor ?? DEMO_ACTOR_IDS.founder };
+    if (options.body !== undefined) headers['content-type'] = 'application/json';
+    if (options.key !== null && method !== 'GET') headers['Idempotency-Key'] = options.key ?? `key-${Math.random()}`;
+    const response = await fetch(`${baseUrl}${path}`, {
+      method,
+      headers,
+      ...(options.body !== undefined ? { body: JSON.stringify(options.body) } : {}),
+    });
+    return { status: response.status, body: await response.json() };
+  }
+
+  it('lets the Founder create, rename and deactivate a department, and every employee read the list', async () => {
+    const baseUrl = await startServer();
+    const created = await call(baseUrl, 'POST', '/api/v1/departments', { body: { name: '  Audit ' } });
+    expect(created.status).toBe(201);
+    expect(created.body.data).toMatchObject({ name: 'Audit', isActive: true, members: [], serviceIds: [] });
+    const id = created.body.data.id as string;
+
+    const renamed = await call(baseUrl, 'PATCH', `/api/v1/departments/${id}`, {
+      body: { name: 'Audit and Assurance', expectedUpdatedAt: created.body.data.updatedAt },
+    });
+    expect(renamed.status).toBe(200);
+    expect(renamed.body.data.name).toBe('Audit and Assurance');
+    const off = await call(baseUrl, 'PATCH', `/api/v1/departments/${id}`, {
+      body: { isActive: false, expectedUpdatedAt: renamed.body.data.updatedAt },
+    });
+    expect(off.body.data.isActive).toBe(false);
+
+    const listed = await call(baseUrl, 'GET', '/api/v1/departments', { actor: DEMO_ACTOR_IDS.trainee });
+    expect(listed.status).toBe(200);
+    expect(listed.body.data.map((department: { id: string }) => department.id)).toEqual([id]);
+  });
+
+  it('refuses a duplicate name with 409 duplicate_department and a stale update with 409 stale_department', async () => {
+    const baseUrl = await startServer();
+    const created = await call(baseUrl, 'POST', '/api/v1/departments', { body: { name: 'GST' } });
+    const id = created.body.data.id as string;
+    const duplicate = await call(baseUrl, 'POST', '/api/v1/departments', { body: { name: ' gst ' } });
+    expect(duplicate.status).toBe(409);
+    expect(duplicate.body.error).toEqual({
+      code: 'duplicate_department',
+      message: 'A department named gst already exists.',
+    });
+
+    await call(baseUrl, 'PATCH', `/api/v1/departments/${id}`, {
+      body: { name: 'GST Returns', expectedUpdatedAt: created.body.data.updatedAt },
+    });
+    const stale = await call(baseUrl, 'PATCH', `/api/v1/departments/${id}`, {
+      body: { name: 'GST Again', expectedUpdatedAt: created.body.data.updatedAt },
+    });
+    expect(stale.status).toBe(409);
+    expect(stale.body.error).toEqual({
+      code: 'stale_department',
+      message: 'This department was changed by someone else. Reload and try again.',
+    });
+  });
+
+  it('returns 404 for an unknown department and 422 for a malformed id', async () => {
+    const baseUrl = await startServer();
+    const missing = await call(baseUrl, 'PUT', '/api/v1/departments/50000000-0000-4000-a000-999999999999/members', {
+      body: { members: [] },
+    });
+    expect(missing.status).toBe(404);
+    expect(missing.body.error.message).toBe('Department was not found.');
+    const malformed = await call(baseUrl, 'PATCH', '/api/v1/departments/not-a-uuid', {
+      body: { isActive: false, expectedUpdatedAt: '2026-10-30T12:00:00.000Z' },
+    });
+    expect(malformed.status).toBe(422);
+    expect(malformed.body.error.code).toBe('invalid_identifier');
+  });
+
+  it('validates the bodies', async () => {
+    const baseUrl = await startServer();
+    for (const body of [{ name: 'X' }, { name: 'x'.repeat(81) }, { name: 'Valid', unexpected: true }, {}]) {
+      const response = await call(baseUrl, 'POST', '/api/v1/departments', { body });
+      expect(response.status).toBe(422);
+      expect(response.body.error.code).toBe('validation_failed');
+    }
+    const created = await call(baseUrl, 'POST', '/api/v1/departments', { body: { name: 'Audit' } });
+    const id = created.body.data.id as string;
+    const noToken = await call(baseUrl, 'PATCH', `/api/v1/departments/${id}`, { body: { isActive: false } });
+    expect(noToken.status).toBe(422);
+    const badMembers: unknown[] = [
+      {},
+      { members: [{ userId: 'not-a-uuid', isHead: false }] },
+      { members: [{ userId: DEMO_ACTOR_IDS.staff }] },
+      { members: [{ userId: DEMO_ACTOR_IDS.staff, isHead: false }, { userId: DEMO_ACTOR_IDS.staff, isHead: true }] },
+    ];
+    for (const body of badMembers) {
+      const response = await call(baseUrl, 'PUT', `/api/v1/departments/${id}/members`, { body });
+      expect(response.status).toBe(422);
+      expect(response.body.error.code).toBe('validation_failed');
+    }
+  });
+
+  it('requires an Idempotency-Key on every write', async () => {
+    const baseUrl = await startServer();
+    const create = await call(baseUrl, 'POST', '/api/v1/departments', { body: { name: 'Audit' }, key: null });
+    expect(create.status).toBe(400);
+    expect(create.body.error.code).toBe('idempotency_key_required');
+    const update = await call(baseUrl, 'PATCH', `/api/v1/departments/${CANONICAL_SERVICE_1}`, {
+      body: { isActive: false, expectedUpdatedAt: '2026-10-30T12:00:00.000Z' },
+      key: null,
+    });
+    expect(update.status).toBe(400);
+    const members = await call(baseUrl, 'PUT', `/api/v1/departments/${CANONICAL_SERVICE_1}/members`, {
+      body: { members: [] },
+      key: null,
+    });
+    expect(members.status).toBe(400);
+    expect(members.body.error.code).toBe('idempotency_key_required');
+  });
+
+  it('replays the same result for the same key and refuses the key with a different payload', async () => {
+    const baseUrl = await startServer();
+    const first = await call(baseUrl, 'POST', '/api/v1/departments', { body: { name: 'Audit' }, key: 'dept-key' });
+    const replay = await call(baseUrl, 'POST', '/api/v1/departments', { body: { name: 'Audit' }, key: 'dept-key' });
+    expect(replay.status).toBe(201);
+    expect(replay.body.data).toEqual(first.body.data);
+    const listed = await call(baseUrl, 'GET', '/api/v1/departments');
+    expect(listed.body.data).toHaveLength(1);
+    const changed = await call(baseUrl, 'POST', '/api/v1/departments', { body: { name: 'Audit 2' }, key: 'dept-key' });
+    expect(changed.status).toBe(409);
+    expect(changed.body.error.code).toBe('conflict');
+  });
+
+  it('replaces the membership with PUT, refuses a trainee as head and an unknown person', async () => {
+    const baseUrl = await startServer();
+    const created = await call(baseUrl, 'POST', '/api/v1/departments', { body: { name: 'Audit' } });
+    const id = created.body.data.id as string;
+
+    const set = await call(baseUrl, 'PUT', `/api/v1/departments/${id}/members`, {
+      body: {
+        members: [
+          { userId: DEMO_ACTOR_IDS.senior, isHead: true },
+          { userId: DEMO_ACTOR_IDS.trainee, isHead: false },
+        ],
+      },
+    });
+    expect(set.status).toBe(200);
+    expect(set.body.data.members).toEqual([
+      { userId: DEMO_ACTOR_IDS.senior, name: 'Ananya Rao', role: 'senior_staff', isHead: true },
+      { userId: DEMO_ACTOR_IDS.trainee, name: 'Neha Kapoor', role: 'trainee', isHead: false },
+    ]);
+
+    const trainee = await call(baseUrl, 'PUT', `/api/v1/departments/${id}/members`, {
+      body: { members: [{ userId: DEMO_ACTOR_IDS.trainee, isHead: true }] },
+    });
+    expect(trainee.status).toBe(422);
+    expect(trainee.body.error).toEqual({
+      code: 'trainee_cannot_head',
+      message: 'Trainees can be members but not heads.',
+    });
+    const unknown = await call(baseUrl, 'PUT', `/api/v1/departments/${id}/members`, {
+      body: { members: [{ userId: '00000000-0000-4000-a000-999999999999', isHead: false }] },
+    });
+    expect(unknown.status).toBe(422);
+    expect(unknown.body.error.code).toBe('referenced_entity_not_found');
+    const unchanged = await call(baseUrl, 'GET', '/api/v1/departments');
+    expect(unchanged.body.data[0].members).toHaveLength(2);
+  });
+
+  it('files a service under an active department and refuses an unknown one with 422 department_not_found', async () => {
+    const baseUrl = await startServer();
+    const created = await call(baseUrl, 'POST', '/api/v1/departments', { body: { name: 'Audit' } });
+    const departmentId = created.body.data.id as string;
+
+    const service = await call(baseUrl, 'POST', '/api/v1/service-catalog', { body: { name: 'Tax Audit', departmentId } });
+    expect(service.status).toBe(201);
+    expect(service.body.data).toMatchObject({ departmentId, departmentName: 'Audit' });
+    const moved = await call(baseUrl, 'PATCH', `/api/v1/service-catalog/${service.body.data.id}`, {
+      body: { departmentId: null, expectedUpdatedAt: service.body.data.updatedAt },
+    });
+    expect(moved.body.data).toMatchObject({ departmentId: null, departmentName: null });
+
+    const missing = await call(baseUrl, 'POST', '/api/v1/service-catalog', {
+      body: { name: 'Elsewhere', departmentId: '50000000-0000-4000-a000-999999999999' },
+    });
+    expect(missing.status).toBe(422);
+    expect(missing.body.error.code).toBe('department_not_found');
+    const malformed = await call(baseUrl, 'POST', '/api/v1/service-catalog', {
+      body: { name: 'Elsewhere', departmentId: 'not-a-uuid' },
+    });
+    expect(malformed.status).toBe(422);
+    expect(malformed.body.error.code).toBe('validation_failed');
+  });
+
+  it.each([
+    ['manager', DEMO_ACTOR_IDS.manager],
+    ['senior_staff', DEMO_ACTOR_IDS.senior],
+    ['staff', DEMO_ACTOR_IDS.staff],
+    ['trainee', DEMO_ACTOR_IDS.trainee],
+  ] as const)('answers %s with 403 on every department write', async (_role, actor) => {
+    const baseUrl = await startServer();
+    const responses = [
+      await call(baseUrl, 'POST', '/api/v1/departments', { actor, body: { name: 'Audit' } }),
+      await call(baseUrl, 'PATCH', `/api/v1/departments/${CANONICAL_SERVICE_1}`, {
+        actor,
+        body: { isActive: false, expectedUpdatedAt: '2026-10-30T12:00:00.000Z' },
+      }),
+      await call(baseUrl, 'PUT', `/api/v1/departments/${CANONICAL_SERVICE_1}/members`, { actor, body: { members: [] } }),
+    ];
+    for (const response of responses) {
+      expect(response.status).toBe(403);
+      expect(response.body.error).toEqual({
+        code: 'role_not_permitted',
+        message: 'Only the Founder may manage departments.',
+      });
+    }
+    expect((await call(baseUrl, 'GET', '/api/v1/departments', { actor })).status).toBe(200);
+  });
+
+  it('shows a head their department work, read only, and nothing else of the client', async () => {
+    const baseUrl = await startServer();
+    const senior = DEMO_ACTOR_IDS.senior;
+    const before = await call(baseUrl, 'GET', '/api/v1/assignments', { actor: senior });
+    expect(before.body.data.map((a: { id: string }) => a.id)).not.toContain(AUDIT_ASSIGNMENT);
+
+    const created = await call(baseUrl, 'POST', '/api/v1/departments', { body: { name: 'Audit' } });
+    const departmentId = created.body.data.id as string;
+    const catalog = await call(baseUrl, 'GET', '/api/v1/service-catalog');
+    const service = catalog.body.data.find((s: { id: string }) => s.id === INTERNAL_AUDIT);
+    await call(baseUrl, 'PATCH', `/api/v1/service-catalog/${INTERNAL_AUDIT}`, {
+      body: { departmentId, expectedUpdatedAt: service.updatedAt },
+    });
+    await call(baseUrl, 'PUT', `/api/v1/departments/${departmentId}/members`, {
+      body: { members: [{ userId: senior, isHead: true }] },
+    });
+
+    const after = await call(baseUrl, 'GET', '/api/v1/assignments', { actor: senior });
+    const seen = after.body.data.find((a: { id: string }) => a.id === AUDIT_ASSIGNMENT);
+    expect(seen).toMatchObject({ clientName: 'BluePeak Tech', service: 'Internal Audit' });
+
+    const client = await call(baseUrl, 'GET', `/api/v1/clients/${BLUEPEAK}`, { actor: senior });
+    expect(client.status).toBe(200);
+    expect(client.body.data).toMatchObject({ displayName: 'BluePeak Tech', pan: null, gstin: null, canEdit: false });
+
+    const start = await call(baseUrl, 'POST', `/api/v1/assignments/${AUDIT_ASSIGNMENT}/transitions`, {
+      actor: senior,
+      body: { action: 'start', expectedUpdatedAt: seen.updatedAt },
+    });
+    const patch = await call(baseUrl, 'PATCH', `/api/v1/assignments/${AUDIT_ASSIGNMENT}`, {
+      actor: senior,
+      body: { deliveryNotes: 'Done', expectedUpdatedAt: seen.updatedAt },
+    });
+    expect(patch.status).toBe(403);
+    expect(start.status).toBe(403);
+
+    // Moving the service away takes the work and the client back out of sight
+    const current = (await call(baseUrl, 'GET', '/api/v1/service-catalog')).body.data.find(
+      (s: { id: string }) => s.id === INTERNAL_AUDIT,
+    );
+    await call(baseUrl, 'PATCH', `/api/v1/service-catalog/${INTERNAL_AUDIT}`, {
+      body: { departmentId: null, expectedUpdatedAt: current.updatedAt },
+    });
+    const gone = await call(baseUrl, 'GET', '/api/v1/assignments', { actor: senior });
+    expect(gone.body.data.map((a: { id: string }) => a.id)).not.toContain(AUDIT_ASSIGNMENT);
+    expect((await call(baseUrl, 'GET', `/api/v1/clients/${BLUEPEAK}`, { actor: senior })).status).toBe(404);
+  });
+});
+
 describe('HTTP API client master (CLI-02a)', () => {
   const ASTER = CANONICAL_CLIENT_1;
   const BLUEPEAK = '10000000-0000-4000-a000-000000000002';

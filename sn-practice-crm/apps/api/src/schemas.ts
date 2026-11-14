@@ -569,6 +569,7 @@ export const createServiceSchema = z
     description: serviceDescription.optional(),
     turnaroundDays: serviceTurnaroundDays.optional(),
     isStatutory: z.boolean().optional(),
+    departmentId: entityUuid.nullable().optional(),
   })
   .strict();
 
@@ -579,6 +580,32 @@ export const updateServiceSchema = z
     turnaroundDays: serviceTurnaroundDays.optional(),
     isStatutory: z.boolean().optional(),
     isActive: z.boolean().optional(),
+    departmentId: entityUuid.nullable().optional(),
     expectedUpdatedAt: isoInstantSchema,
+  })
+  .strict();
+
+// --- Departments (DEPT-01) ---
+
+const departmentName = z.string().trim().min(2).max(80);
+
+export const createDepartmentSchema = z.object({ name: departmentName }).strict();
+
+export const updateDepartmentSchema = z
+  .object({
+    name: departmentName.optional(),
+    isActive: z.boolean().optional(),
+    expectedUpdatedAt: isoInstantSchema,
+  })
+  .strict();
+
+export const setDepartmentMembersSchema = z
+  .object({
+    members: z
+      .array(z.object({ userId: entityUuid, isHead: z.boolean() }).strict())
+      .max(200)
+      .refine((members) => new Set(members.map((member) => member.userId)).size === members.length, {
+        message: 'A person can be listed only once.',
+      }),
   })
   .strict();

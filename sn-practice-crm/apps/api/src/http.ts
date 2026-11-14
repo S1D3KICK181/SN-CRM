@@ -16,6 +16,7 @@ import {
   createAssignmentSchema,
   createClientContactSchema,
   createClientSchema,
+  createDepartmentSchema,
   confirmDocumentSchema,
   createDocumentSchema,
   createLedgerEntrySchema,
@@ -32,9 +33,11 @@ import {
   removeCreditSchema,
   generateDueAssignmentsSchema,
   reportingLineSchema,
+  setDepartmentMembersSchema,
   updateAssignmentSchema,
   updateClientContactSchema,
   updateClientSchema,
+  updateDepartmentSchema,
   updateRecurringScheduleSchema,
   updateServiceSchema,
   workItemTransitionSchema,
@@ -398,6 +401,37 @@ export function createApiServer(application: CrmApplication, options: ApiServerO
         const key = idempotencyKey(request);
         const body = await readJson(request, updateServiceSchema);
         sendData(response, context, allowedOrigins, 200, await application.updateService(actor, serviceCatalogId, body, key));
+        return;
+      }
+
+      if (request.method === 'GET' && pathname === '/api/v1/departments') {
+        sendData(response, context, allowedOrigins, 200, await application.listDepartments(actor));
+        return;
+      }
+      if (request.method === 'POST' && pathname === '/api/v1/departments') {
+        const key = idempotencyKey(request);
+        const body = await readJson(request, createDepartmentSchema);
+        sendData(response, context, allowedOrigins, 201, await application.createDepartment(actor, body, key));
+        return;
+      }
+      const departmentId = routeId(pathname, /^\/api\/v1\/departments\/([^/]+)$/);
+      if (request.method === 'PATCH' && departmentId) {
+        const key = idempotencyKey(request);
+        const body = await readJson(request, updateDepartmentSchema);
+        sendData(response, context, allowedOrigins, 200, await application.updateDepartment(actor, departmentId, body, key));
+        return;
+      }
+      const departmentMembersId = routeId(pathname, /^\/api\/v1\/departments\/([^/]+)\/members$/);
+      if (request.method === 'PUT' && departmentMembersId) {
+        const key = idempotencyKey(request);
+        const body = await readJson(request, setDepartmentMembersSchema);
+        sendData(
+          response,
+          context,
+          allowedOrigins,
+          200,
+          await application.setDepartmentMembers(actor, departmentMembersId, body, key),
+        );
         return;
       }
 

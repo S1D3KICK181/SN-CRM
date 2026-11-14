@@ -259,6 +259,8 @@ export interface ServiceDto {
   readonly turnaroundDays: number | null; // Stored as default_duration_days
   readonly isStatutory: boolean;
   readonly isActive: boolean;
+  readonly departmentId: string | null; // RFC 4122 UUID of the service's department (DEPT-01)
+  readonly departmentName: string | null; // Output only
   readonly usage: ServiceUsageDto;
   readonly createdAt: string; // ISO-8601 UTC
   readonly updatedAt: string; // ISO-8601 UTC
@@ -269,6 +271,7 @@ export interface CreateServiceInput {
   readonly description?: string | null;
   readonly turnaroundDays?: number | null;
   readonly isStatutory?: boolean;
+  readonly departmentId?: string | null; // Must be an active department
 }
 
 export interface UpdateServiceInput {
@@ -277,7 +280,41 @@ export interface UpdateServiceInput {
   readonly turnaroundDays?: number | null;
   readonly isStatutory?: boolean;
   readonly isActive?: boolean;
+  readonly departmentId?: string | null; // Must be an active department; null clears it
   readonly expectedUpdatedAt: string; // Required optimistic concurrency token
+}
+
+// --- Departments (DEPT-01) ---
+
+export interface DepartmentMemberDto {
+  readonly userId: string; // RFC 4122 UUID
+  readonly name: string;
+  readonly role: CompanyRole;
+  readonly isHead: boolean;
+}
+
+export interface DepartmentDto {
+  readonly id: string; // RFC 4122 UUID
+  readonly name: string;
+  readonly isActive: boolean;
+  readonly members: readonly DepartmentMemberDto[];
+  readonly serviceIds: readonly string[]; // Every service filed under this department
+  readonly createdAt: string; // ISO-8601 UTC
+  readonly updatedAt: string; // ISO-8601 UTC
+}
+
+export interface CreateDepartmentInput {
+  readonly name: string;
+}
+
+export interface UpdateDepartmentInput {
+  readonly name?: string;
+  readonly isActive?: boolean;
+  readonly expectedUpdatedAt: string; // Required optimistic concurrency token
+}
+
+export interface SetDepartmentMembersInput {
+  readonly members: readonly { readonly userId: string; readonly isHead: boolean }[];
 }
 
 export interface CreateRecurringScheduleInput {
@@ -525,6 +562,9 @@ export interface ClientDto {
   readonly contacts: readonly ClientContactDto[]; // Primary first, then by name
   readonly canEdit: boolean; // The reader may edit this client's details and contacts
   readonly canChangeOwnerOrStatus: boolean; // The reader may change the relationship owner or status
+  // The reader looks after this client (Founder, Manager, or staff who own or review its work): full PAN/GSTIN,
+  // fees, documents and WhatsApp messages. A department head who can only read the client gets false.
+  readonly looksAfter: boolean;
   readonly activeAssignmentsCount: number; // Server-derived read-model value
   readonly createdById: string; // RFC 4122 UUID references public.profiles(user_id)
   readonly createdAt: string; // ISO-8601 UTC

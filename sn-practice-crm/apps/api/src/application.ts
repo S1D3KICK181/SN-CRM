@@ -14,7 +14,9 @@ import type {
   CreateAssignmentInput,
   CreateClientContactInput,
   CreateClientInput,
+  CreateDepartmentInput,
   CreateDocumentInput,
+  DepartmentDto,
   CreateLedgerEntryInput,
   CreateRecurringScheduleInput,
   CreateServiceInput,
@@ -43,9 +45,11 @@ import type {
   ServiceCatalogItemDto,
   ServiceDto,
   SessionActor,
+  SetDepartmentMembersInput,
   UpdateAssignmentInput,
   UpdateClientContactInput,
   UpdateClientInput,
+  UpdateDepartmentInput,
   UpdateRecurringScheduleInput,
   UpdateServiceInput,
   VoidFeeRecordInput,
@@ -684,6 +688,7 @@ export class CrmApplication {
         description: normalizeServiceDescription(input.description) ?? null,
         turnaroundDays: input.turnaroundDays ?? null,
         isStatutory: input.isStatutory === true,
+        ...(input.departmentId !== undefined ? { departmentId: input.departmentId } : {}),
         idempotencyKey: normalizeIdempotencyKey(idempotencyKey),
       },
     );
@@ -706,17 +711,87 @@ export class CrmApplication {
         ...(input.turnaroundDays !== undefined ? { turnaroundDays: input.turnaroundDays } : {}),
         ...(input.isStatutory !== undefined ? { isStatutory: input.isStatutory } : {}),
         ...(input.isActive !== undefined ? { isActive: input.isActive } : {}),
+        ...(input.departmentId !== undefined ? { departmentId: input.departmentId } : {}),
         expectedUpdatedAt: input.expectedUpdatedAt,
         idempotencyKey: normalizeIdempotencyKey(idempotencyKey),
       },
     );
   }
 
+  // --- Departments (DEPT-01) ---
+
+  async listDepartments(actor: SessionActor): Promise<DepartmentDto[]> {
+    return this.repository.listDepartments({ actorId: actor.id });
+  }
+
+  async createDepartment(
+    actor: SessionActor,
+    input: CreateDepartmentInput,
+    idempotencyKey: string,
+  ): Promise<DepartmentDto> {
+    requireAuthority({ action: 'department.manage', actor: asActor(actor) });
+    return this.repository.createDepartment(
+      { actorId: actor.id },
+      { name: input.name.trim(), idempotencyKey: normalizeIdempotencyKey(idempotencyKey) },
+    );
+  }
+
+  async updateDepartment(
+    actor: SessionActor,
+    departmentId: string,
+    input: UpdateDepartmentInput,
+    idempotencyKey: string,
+  ): Promise<DepartmentDto> {
+    requireAuthority({ action: 'department.manage', actor: asActor(actor) });
+    return this.repository.updateDepartment(
+      { actorId: actor.id },
+      {
+        id: departmentId,
+        ...(input.name !== undefined ? { name: input.name.trim() } : {}),
+        ...(input.isActive !== undefined ? { isActive: input.isActive } : {}),
+        expectedUpdatedAt: input.expectedUpdatedAt,
+        idempotencyKey: normalizeIdempotencyKey(idempotencyKey),
+      },
+    );
+  }
+
+  async setDepartmentMembers(
+    actor: SessionActor,
+    departmentId: string,
+    input: SetDepartmentMembersInput,
+    idempotencyKey: string,
+  ): Promise<DepartmentDto> {
+    requireAuthority({ action: 'department.manage', actor: asActor(actor) });
+    return this.repository.setDepartmentMembers(
+      { actorId: actor.id },
+      {
+        id: departmentId,
+        members: input.members.map((member) => ({ userId: member.userId, isHead: member.isHead })),
+        idempotencyKey: normalizeIdempotencyKey(idempotencyKey),
+      },
+    );
+  }
+
+  /** The services of the active departments this person heads. Nobody else has a head's read access. */
+  private async headedServiceIds(ctx: RepositoryContext, actor: SessionActor): Promise<ReadonlySet<string>> {
+    if (isLeadership(actor.role) || actor.role === 'trainee') return new Set();
+    const departments = await this.repository.listDepartments(ctx);
+    return new Set(
+      departments
+        .filter(
+          (department) =>
+            department.isActive && department.members.some((member) => member.userId === actor.id && member.isHead),
+        )
+        .flatMap((department) => department.serviceIds),
+    );
+  }
+
   async listAssignments(actor: SessionActor): Promise<AssignmentDto[]> {
     const ctx: RepositoryContext = { actorId: actor.id };
-    const [assignments, workItems] = await Promise.all([
+    const [assignments, workItems, headedServiceIds] = await Promise.all([
       this.repository.listAssignments(ctx),
       this.repository.listWorkItems(ctx),
+      this.headedServiceIds(ctx, actor),
     ]);
 
     const involvedAssignmentIds = new Set(
@@ -725,13 +800,15 @@ export class CrmApplication {
         .map((item) => item.assignmentId as string),
     );
 
+    // A head also reads (read only) the assignments whose service is in a department they head.
     return assignments
       .filter(
         (assignment) =>
           isLeadership(actor.role) ||
           assignment.ownerId === actor.id ||
           assignment.reviewerIds.includes(actor.id) ||
-          involvedAssignmentIds.has(assignment.id),
+          involvedAssignmentIds.has(assignment.id) ||
+          headedServiceIds.has(assignment.serviceId),
       )
       .sort((left, right) => left.dueAt.localeCompare(right.dueAt));
   }

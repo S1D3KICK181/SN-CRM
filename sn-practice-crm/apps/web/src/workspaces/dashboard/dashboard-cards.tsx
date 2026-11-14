@@ -73,8 +73,15 @@ export function ComingUpCard({ assignments, today }: { assignments: readonly Ass
   );
 }
 
-export function OpenWorkByPersonCard({ assignments }: { assignments: readonly AssignmentRow[] }) {
-  const people = computeOpenWorkByPerson(assignments);
+export function OpenWorkByPersonCard({
+  assignments,
+  members,
+}: {
+  assignments: readonly AssignmentRow[];
+  /** People who always get a row, such as a department's members. */
+  members?: readonly { id: string; name: string }[];
+}) {
+  const people = computeOpenWorkByPerson(assignments, undefined, members);
   return (
     <Card
       title="Open work by person"

@@ -12,6 +12,8 @@ const service: ServiceDto = {
   turnaroundDays: 7,
   isStatutory: true,
   isActive: true,
+  departmentId: '60000000-0000-4000-a000-000000000001',
+  departmentName: 'GST',
   usage: { assignments: 4, recurringSchedules: 2, engagements: 1 },
   createdAt: '2026-10-01T04:30:00.000Z',
   updatedAt: '2026-11-08T04:30:00.000Z',
@@ -57,7 +59,15 @@ describe('HttpServiceCatalogAdapter', () => {
   });
 
   it('parses valid services unchanged, including a service with nothing optional set', async () => {
-    const bare: ServiceDto = { ...service, description: null, turnaroundDays: null, isStatutory: false, isActive: false };
+    const bare: ServiceDto = {
+      ...service,
+      description: null,
+      turnaroundDays: null,
+      isStatutory: false,
+      isActive: false,
+      departmentId: null,
+      departmentName: null,
+    };
     const services = await adapterFor([service, bare]).adapter.listServiceCatalog('founder');
     expect(services).toEqual([service, bare]);
   });
@@ -81,6 +91,9 @@ describe('HttpServiceCatalogAdapter', () => {
     ['a fractional turnaround', (dto: Record<string, unknown>) => { dto['turnaroundDays'] = 1.5; }],
     ['a negative turnaround', (dto: Record<string, unknown>) => { dto['turnaroundDays'] = -1; }],
     ['a string statutory flag', (dto: Record<string, unknown>) => { dto['isStatutory'] = 'yes'; }],
+    ['a missing department id', (dto: Record<string, unknown>) => { delete dto['departmentId']; }],
+    ['a non-UUID department id', (dto: Record<string, unknown>) => { dto['departmentId'] = 'GST'; }],
+    ['a numeric department name', (dto: Record<string, unknown>) => { dto['departmentName'] = 7; }],
     ['a missing usage', (dto: Record<string, unknown>) => { delete dto['usage']; }],
     ['a negative usage count', (dto: Record<string, unknown>) => { dto['usage'] = { assignments: -1, recurringSchedules: 0, engagements: 0 }; }],
     ['a malformed timestamp', (dto: Record<string, unknown>) => { dto['updatedAt'] = 'yesterday'; }],
@@ -175,6 +188,26 @@ describe('HttpServiceCatalogAdapter mutations', () => {
       description: 'Monthly and annual GST returns',
       turnaroundDays: 7,
       isStatutory: true,
+    });
+  });
+
+  it('sends the department when a service is created or moved, and null to clear it', async () => {
+    const create = adapterFor(service, 201);
+    await create.adapter.createService('founder', { name: 'GST Compliance', departmentId: service.departmentId }, 'key-d1');
+    expect(JSON.parse(String((create.fetchFn.mock.calls[0] as [string, RequestInit])[1].body))).toEqual({
+      name: 'GST Compliance',
+      departmentId: service.departmentId,
+    });
+    const update = adapterFor({ ...service, departmentId: null, departmentName: null });
+    await update.adapter.updateService(
+      'founder',
+      service.id,
+      { departmentId: null, expectedUpdatedAt: service.updatedAt },
+      'key-d2',
+    );
+    expect(JSON.parse(String((update.fetchFn.mock.calls[0] as [string, RequestInit])[1].body))).toEqual({
+      departmentId: null,
+      expectedUpdatedAt: service.updatedAt,
     });
   });
 

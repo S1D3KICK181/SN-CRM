@@ -167,6 +167,10 @@ describe('PostgresCrmRepository Integration Suite', () => {
     const ROLLBACK_SIGNAL = new Error('ROLLBACK_INTENTIONAL');
     try {
       await pool.begin(async (tx) => {
+        // Department heads read more clients and assignments. Heads set up in the local database must not
+        // change what older tests expect, so they are cleared inside this rolled-back transaction; the
+        // department tests make their own heads after this point.
+        await tx`UPDATE public.department_members SET is_head = false WHERE is_head`;
         const repo = new PostgresCrmRepository(tx);
         await testFn(repo, tx);
         throw ROLLBACK_SIGNAL;
@@ -542,109 +546,111 @@ describe('PostgresCrmRepository Integration Suite', () => {
   });
 
   it('IT-11: Client read operations enforce RLS visibility across all five roles and map complete DTOs', async () => {
-    const repo = new PostgresCrmRepository(pool);
-    const founderCtx = { actorId: FOUNDER_ID };
-    const managerCtx = { actorId: MANAGER_ID };
-    const seniorCtx = { actorId: SENIOR_ID };
-    const staffCtx = { actorId: STAFF_ID };
-    const traineeCtx = { actorId: TRAINEE_ID };
+    // Runs isolated so department heads set up locally do not widen who sees which client.
+    await runIsolatedTest(async (repo) => {
+      const founderCtx = { actorId: FOUNDER_ID };
+      const managerCtx = { actorId: MANAGER_ID };
+      const seniorCtx = { actorId: SENIOR_ID };
+      const staffCtx = { actorId: STAFF_ID };
+      const traineeCtx = { actorId: TRAINEE_ID };
 
-    // 1. Founder and Manager each list all six clients in ascending code order
-    const founderClients = await repo.listClients(founderCtx);
-    expect(founderClients.map((c) => c.code)).toEqual([
-      'CL-001001',
-      'CL-001002',
-      'CL-001003',
-      'CL-001004',
-      'CL-001005',
-      'CL-001006',
-    ]);
+      // 1. Founder and Manager each list all six clients in ascending code order
+      const founderClients = await repo.listClients(founderCtx);
+      expect(founderClients.map((c) => c.code)).toEqual([
+        'CL-001001',
+        'CL-001002',
+        'CL-001003',
+        'CL-001004',
+        'CL-001005',
+        'CL-001006',
+      ]);
 
-    // Full DTO mapping assertion on listClients result (the Founder looks after every client)
-    expect(founderClients[0]).toMatchObject({
-      pan: 'AABCA1234A',
-      gstin: '27AABCA1234A1Z5',
-      canEdit: true,
-      canChangeOwnerOrStatus: true,
-      contacts: [],
-      id: '10000000-0000-4000-a000-000000000001',
-      code: 'CL-001001',
-      displayName: 'Aster Foods',
-      legalName: 'Aster Foods Private Limited',
-      gstinMasked: '27**********1Z5',
-      panMasked: '******1234',
-      email: 'accounts@asterfoods.local',
-      phone: '+91 98200 11001',
-      relationshipOwnerId: MANAGER_ID,
-      relationshipOwnerName: 'Priya Desai',
-      status: 'active',
-      notes: null,
-      createdById: FOUNDER_ID,
-      activeAssignmentsCount: 1,
+      // Full DTO mapping assertion on listClients result (the Founder looks after every client)
+      expect(founderClients[0]).toMatchObject({
+        pan: 'AABCA1234A',
+        gstin: '27AABCA1234A1Z5',
+        canEdit: true,
+        canChangeOwnerOrStatus: true,
+        contacts: [],
+        id: '10000000-0000-4000-a000-000000000001',
+        code: 'CL-001001',
+        displayName: 'Aster Foods',
+        legalName: 'Aster Foods Private Limited',
+        gstinMasked: '27**********1Z5',
+        panMasked: '******1234',
+        email: 'accounts@asterfoods.local',
+        phone: '+91 98200 11001',
+        relationshipOwnerId: MANAGER_ID,
+        relationshipOwnerName: 'Priya Desai',
+        status: 'active',
+        notes: null,
+        createdById: FOUNDER_ID,
+        activeAssignmentsCount: 1,
+      });
+      expect(typeof founderClients[0]?.activeAssignmentsCount).toBe('number');
+      expect(new Date(founderClients[0]!.createdAt).toISOString()).toBe(founderClients[0]!.createdAt);
+      expect(new Date(founderClients[0]!.updatedAt).toISOString()).toBe(founderClients[0]!.updatedAt);
+
+      const managerClients = await repo.listClients(managerCtx);
+      expect(managerClients.map((c) => c.code)).toEqual(founderClients.map((c) => c.code));
+
+      // 2. Senior Staff sees exactly CL-001001, 001003, 001004, 001005, 001006
+      const seniorClients = await repo.listClients(seniorCtx);
+      expect(seniorClients.map((c) => c.code)).toEqual([
+        'CL-001001',
+        'CL-001003',
+        'CL-001004',
+        'CL-001005',
+        'CL-001006',
+      ]);
+
+      // 3. Staff sees exactly CL-001002 and CL-001004
+      const staffClients = await repo.listClients(staffCtx);
+      expect(staffClients.map((c) => c.code)).toEqual(['CL-001002', 'CL-001004']);
+
+      // 4. Trainee sees exactly CL-001001
+      const traineeClients = await repo.listClients(traineeCtx);
+      expect(traineeClients.map((c) => c.code)).toEqual(['CL-001001']);
+
+      const traineeAster = await repo.getClient(traineeCtx, '10000000-0000-4000-a000-000000000001');
+      expect(traineeAster).not.toBeNull();
+      expect(traineeAster?.relationshipOwnerName).toBe('Priya Desai');
+      expect(traineeAster?.activeAssignmentsCount).toBe(1);
+      expect(traineeAster).toMatchObject({ pan: null, gstin: null, panMasked: '******1234', gstinMasked: '27**********1Z5' });
+
+      // 5. Trainee getClient for BluePeak returns null (RLS hidden)
+      const traineeBluePeak = await repo.getClient(traineeCtx, '10000000-0000-4000-a000-000000000002');
+      expect(traineeBluePeak).toBeNull();
+
+      // 6. getClient with valid but absent UUID returns null
+      const absentClient = await repo.getClient(founderCtx, '10000000-0000-4000-a000-999999999999');
+      expect(absentClient).toBeNull();
+
+      // 7. Founder DTO mapping verifies representative DB-faithful fields, valid ISO timestamps, and numeric active assignment count
+      const founderAster = await repo.getClient(founderCtx, '10000000-0000-4000-a000-000000000001');
+      expect(founderAster).not.toBeNull();
+      expect(founderAster).toMatchObject({
+        pan: 'AABCA1234A',
+        gstin: '27AABCA1234A1Z5',
+        id: '10000000-0000-4000-a000-000000000001',
+        code: 'CL-001001',
+        displayName: 'Aster Foods',
+        legalName: 'Aster Foods Private Limited',
+        gstinMasked: '27**********1Z5',
+        panMasked: '******1234',
+        email: 'accounts@asterfoods.local',
+        phone: '+91 98200 11001',
+        relationshipOwnerId: MANAGER_ID,
+        relationshipOwnerName: 'Priya Desai',
+        status: 'active',
+        notes: null,
+        createdById: FOUNDER_ID,
+        activeAssignmentsCount: 1,
+      });
+      expect(typeof founderAster?.activeAssignmentsCount).toBe('number');
+      expect(new Date(founderAster!.createdAt).toISOString()).toBe(founderAster!.createdAt);
+      expect(new Date(founderAster!.updatedAt).toISOString()).toBe(founderAster!.updatedAt);
     });
-    expect(typeof founderClients[0]?.activeAssignmentsCount).toBe('number');
-    expect(new Date(founderClients[0]!.createdAt).toISOString()).toBe(founderClients[0]!.createdAt);
-    expect(new Date(founderClients[0]!.updatedAt).toISOString()).toBe(founderClients[0]!.updatedAt);
-
-    const managerClients = await repo.listClients(managerCtx);
-    expect(managerClients.map((c) => c.code)).toEqual(founderClients.map((c) => c.code));
-
-    // 2. Senior Staff sees exactly CL-001001, 001003, 001004, 001005, 001006
-    const seniorClients = await repo.listClients(seniorCtx);
-    expect(seniorClients.map((c) => c.code)).toEqual([
-      'CL-001001',
-      'CL-001003',
-      'CL-001004',
-      'CL-001005',
-      'CL-001006',
-    ]);
-
-    // 3. Staff sees exactly CL-001002 and CL-001004
-    const staffClients = await repo.listClients(staffCtx);
-    expect(staffClients.map((c) => c.code)).toEqual(['CL-001002', 'CL-001004']);
-
-    // 4. Trainee sees exactly CL-001001
-    const traineeClients = await repo.listClients(traineeCtx);
-    expect(traineeClients.map((c) => c.code)).toEqual(['CL-001001']);
-
-    const traineeAster = await repo.getClient(traineeCtx, '10000000-0000-4000-a000-000000000001');
-    expect(traineeAster).not.toBeNull();
-    expect(traineeAster?.relationshipOwnerName).toBe('Priya Desai');
-    expect(traineeAster?.activeAssignmentsCount).toBe(1);
-    expect(traineeAster).toMatchObject({ pan: null, gstin: null, panMasked: '******1234', gstinMasked: '27**********1Z5' });
-
-    // 5. Trainee getClient for BluePeak returns null (RLS hidden)
-    const traineeBluePeak = await repo.getClient(traineeCtx, '10000000-0000-4000-a000-000000000002');
-    expect(traineeBluePeak).toBeNull();
-
-    // 6. getClient with valid but absent UUID returns null
-    const absentClient = await repo.getClient(founderCtx, '10000000-0000-4000-a000-999999999999');
-    expect(absentClient).toBeNull();
-
-    // 7. Founder DTO mapping verifies representative DB-faithful fields, valid ISO timestamps, and numeric active assignment count
-    const founderAster = await repo.getClient(founderCtx, '10000000-0000-4000-a000-000000000001');
-    expect(founderAster).not.toBeNull();
-    expect(founderAster).toMatchObject({
-      pan: 'AABCA1234A',
-      gstin: '27AABCA1234A1Z5',
-      id: '10000000-0000-4000-a000-000000000001',
-      code: 'CL-001001',
-      displayName: 'Aster Foods',
-      legalName: 'Aster Foods Private Limited',
-      gstinMasked: '27**********1Z5',
-      panMasked: '******1234',
-      email: 'accounts@asterfoods.local',
-      phone: '+91 98200 11001',
-      relationshipOwnerId: MANAGER_ID,
-      relationshipOwnerName: 'Priya Desai',
-      status: 'active',
-      notes: null,
-      createdById: FOUNDER_ID,
-      activeAssignmentsCount: 1,
-    });
-    expect(typeof founderAster?.activeAssignmentsCount).toBe('number');
-    expect(new Date(founderAster!.createdAt).toISOString()).toBe(founderAster!.createdAt);
-    expect(new Date(founderAster!.updatedAt).toISOString()).toBe(founderAster!.updatedAt);
   });
 
   it('IT-12: Client active assignment count filters closed status and enforces assignment RLS', async () => {
@@ -2821,6 +2827,520 @@ describe('PostgresCrmRepository Integration Suite', () => {
         expect(unchanged?.isActive).toBe(target.isActive);
         // Every role still reads the active services for the pickers
         expect((await application.listServices(actor)).length).toBeGreaterThan(0);
+      });
+    });
+  });
+
+  describe('DEPT-01 departments and department heads', () => {
+    const founderCtx = { actorId: FOUNDER_ID };
+    const managerCtx = { actorId: MANAGER_ID };
+    const seniorCtx = { actorId: SENIOR_ID };
+    const staffCtx = { actorId: STAFF_ID };
+    const traineeCtx = { actorId: TRAINEE_ID };
+    let nameSequence = 0;
+
+    function uniqueName(label: string) {
+      nameSequence += 1;
+      return `DEPT Integration ${label} ${nameSequence}`;
+    }
+
+    function key() {
+      return `it-dept-${crypto.randomUUID()}`;
+    }
+
+    // One department with one service, one client and one assignment owned by Staff. The Senior is not
+    // involved in the assignment in any way, so anything they read of it comes from the head path.
+    async function scenario(repo: PostgresCrmRepository, suffix: string) {
+      const department = await repo.createDepartment(founderCtx, { name: uniqueName('Audit'), idempotencyKey: key() });
+      const service = await repo.createService(founderCtx, {
+        name: uniqueName('Service'),
+        departmentId: department.id,
+        idempotencyKey: key(),
+      });
+      const clientId = `90000000-0000-4000-a000-0000000d${suffix}01`;
+      const assignmentId = `90000000-0000-4000-a000-0000000d${suffix}02`;
+      const client = await repo.createClient(founderCtx, {
+        id: clientId,
+        displayName: `Department Client ${suffix}`,
+        pan: 'ABCDE1234F',
+        gstin: '27ABCDE1234F1Z5',
+        email: 'private@department-client.local',
+        relationshipOwnerId: STAFF_ID,
+        createdAt: '2026-11-06T12:00:00.000Z',
+        updatedAt: '2026-11-06T12:00:00.000Z',
+      });
+      await repo.createClientContact(founderCtx, {
+        clientId,
+        name: 'Contact Person',
+        phone: '9820011002',
+        idempotencyKey: key(),
+      });
+      const assignment = await repo.createAssignment(founderCtx, {
+        id: assignmentId,
+        clientId,
+        clientName: client.displayName,
+        serviceId: service.id,
+        service: service.name,
+        title: 'Department work',
+        ownerId: STAFF_ID,
+        reviewerIds: [],
+        status: 'assigned',
+        dueAt: new Date(Date.now() + 86400000 * 7).toISOString(),
+        createdById: FOUNDER_ID,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
+      return { department, service, client, assignment, clientId, assignmentId };
+    }
+
+    async function makeHead(repo: PostgresCrmRepository, departmentId: string, userId = SENIOR_ID) {
+      return repo.setDepartmentMembers(founderCtx, {
+        id: departmentId,
+        members: [{ userId, isHead: true }],
+        idempotencyKey: key(),
+      });
+    }
+
+    const assignmentIds = async (repo: PostgresCrmRepository, ctx: { actorId: string }) =>
+      (await repo.listAssignments(ctx)).map((assignment) => assignment.id);
+    const clientIds = async (repo: PostgresCrmRepository, ctx: { actorId: string }) =>
+      (await repo.listClients(ctx)).map((client) => client.id);
+
+    it('IT-60: the Founder creates, renames and deactivates departments; names are unique ignoring case and spaces', async () => {
+      await runIsolatedTest(async (repo, tx) => {
+        const name = uniqueName('Unique');
+        const created = await repo.createDepartment(founderCtx, { name: `  ${name}  `, idempotencyKey: key() });
+        expect(created).toMatchObject({ name, isActive: true, members: [], serviceIds: [] });
+
+        await expect(
+          repo.createDepartment(founderCtx, { name: name.toUpperCase(), idempotencyKey: key() }),
+        ).rejects.toMatchObject({
+          status: 409,
+          code: 'duplicate_department',
+          message: `A department named ${name.toUpperCase()} already exists.`,
+        });
+        const other = await repo.createDepartment(founderCtx, { name: uniqueName('Other'), idempotencyKey: key() });
+        await expect(
+          repo.updateDepartment(founderCtx, {
+            id: other.id,
+            name: name.toLowerCase(),
+            expectedUpdatedAt: other.updatedAt,
+            idempotencyKey: key(),
+          }),
+        ).rejects.toMatchObject({ status: 409, code: 'duplicate_department' });
+
+        const renamed = await repo.updateDepartment(founderCtx, {
+          id: created.id,
+          name: name.toUpperCase(),
+          expectedUpdatedAt: created.updatedAt,
+          idempotencyKey: key(),
+        });
+        expect(renamed.name).toBe(name.toUpperCase());
+        const off = await repo.updateDepartment(founderCtx, {
+          id: created.id,
+          isActive: false,
+          expectedUpdatedAt: renamed.updatedAt,
+          idempotencyKey: key(),
+        });
+        expect(off.isActive).toBe(false);
+
+        const listed = await repo.listDepartments(founderCtx);
+        expect(listed.at(-1)).toMatchObject({ id: created.id, isActive: false });
+        expect(listed.slice(0, -1).every((department) => department.isActive)).toBe(true);
+
+        // Stale tokens and unknown ids
+        const stale = new Date(Date.parse(created.updatedAt) - 5000).toISOString();
+        await expect(
+          repo.updateDepartment(founderCtx, { id: created.id, isActive: true, expectedUpdatedAt: stale, idempotencyKey: key() }),
+        ).rejects.toMatchObject({ status: 409, code: 'stale_department' });
+        await expect(
+          repo.updateDepartment(founderCtx, {
+            id: '60000000-0000-4000-a000-999999999999',
+            isActive: true,
+            expectedUpdatedAt: created.updatedAt,
+            idempotencyKey: key(),
+          }),
+        ).rejects.toMatchObject({ status: 404, message: 'Department was not found.' });
+
+        // The unique index and the creator provenance hold below the repository too
+        await tx`RESET ROLE`;
+        await expect(
+          tx.savepoint(async (sp) => {
+            await sp`INSERT INTO public.departments (name, created_by) VALUES (${`  ${name.toLowerCase()}  `}, ${FOUNDER_ID}::uuid)`;
+          }),
+        ).rejects.toMatchObject({ code: '23505', constraint_name: 'departments_name_normalized_key' });
+        const raw = await tx`SELECT created_by FROM public.departments WHERE id = ${created.id}::uuid`;
+        expect(raw[0]).toMatchObject({ created_by: FOUNDER_ID });
+      });
+    });
+
+    it('IT-61: the same key replays the stored result and a changed payload on that key is refused', async () => {
+      await runIsolatedTest(async (repo, tx) => {
+        const name = uniqueName('Replay');
+        const createKey = key();
+        const first = await repo.createDepartment(founderCtx, { name, idempotencyKey: createKey });
+        expect(await repo.createDepartment(founderCtx, { name, idempotencyKey: createKey })).toEqual(first);
+        await expect(
+          repo.createDepartment(founderCtx, { name: `${name} 2`, idempotencyKey: createKey }),
+        ).rejects.toMatchObject({ status: 409, code: 'conflict' });
+
+        const membersKey = key();
+        const command = {
+          id: first.id,
+          members: [{ userId: SENIOR_ID, isHead: true }],
+          idempotencyKey: membersKey,
+        };
+        const set = await repo.setDepartmentMembers(founderCtx, command);
+        expect(await repo.setDepartmentMembers(founderCtx, command)).toEqual(set);
+        await tx`RESET ROLE`;
+        const receipts = await tx`
+          SELECT operation_type FROM public.operation_receipts
+          WHERE actor_id = ${FOUNDER_ID}::uuid AND idempotency_key IN (${createKey}, ${membersKey})
+          ORDER BY operation_type`;
+        expect(receipts.map((row) => row['operation_type'])).toEqual(['createDepartment', 'setDepartmentMembers']);
+      });
+    });
+
+    it.each([
+      ['manager', managerCtx],
+      ['senior_staff', seniorCtx],
+      ['staff', staffCtx],
+      ['trainee', traineeCtx],
+    ] as const)('IT-62: %s gets 403 on every department write, in the application and in the database', async (_role, ctx) => {
+      await runIsolatedTest(async (repo) => {
+        const created = await repo.createDepartment(founderCtx, { name: uniqueName('Locked'), idempotencyKey: key() });
+        const application = new CrmApplication(repo);
+        const actor = await application.requireActor(ctx.actorId);
+        const denied = { status: 403, message: 'Only the Founder may manage departments.' };
+        await expect(application.createDepartment(actor, { name: uniqueName('Denied') }, key())).rejects.toMatchObject(denied);
+        await expect(
+          application.updateDepartment(actor, created.id, { isActive: false, expectedUpdatedAt: created.updatedAt }, key()),
+        ).rejects.toMatchObject(denied);
+        await expect(application.setDepartmentMembers(actor, created.id, { members: [] }, key())).rejects.toMatchObject(denied);
+
+        // Past the application check, the policies and guards refuse as well
+        await expect(repo.createDepartment(ctx, { name: uniqueName('Sneaky'), idempotencyKey: key() })).rejects.toMatchObject({
+          status: 403,
+        });
+        // (the row lock on a row they may not update finds nothing, so these answer 404 rather than 403)
+        await expect(
+          repo.updateDepartment(ctx, { id: created.id, isActive: false, expectedUpdatedAt: created.updatedAt, idempotencyKey: key() }),
+        ).rejects.toMatchObject({ status: 404 });
+        await expect(
+          repo.setDepartmentMembers(ctx, { id: created.id, members: [{ userId: ctx.actorId, isHead: false }], idempotencyKey: key() }),
+        ).rejects.toMatchObject({ status: 404 });
+        // Every employee still reads them
+        expect((await repo.listDepartments(ctx)).map((department) => department.id)).toContain(created.id);
+        expect((await repo.listDepartments(founderCtx)).find((department) => department.id === created.id)).toMatchObject({
+          isActive: true,
+          members: [],
+        });
+      });
+    });
+
+    it('IT-63: the membership is replaced in one step; several heads, several departments, and no trainee head', async () => {
+      await runIsolatedTest(async (repo, tx) => {
+        const first = await repo.createDepartment(founderCtx, { name: uniqueName('First'), idempotencyKey: key() });
+        const second = await repo.createDepartment(founderCtx, { name: uniqueName('Second'), idempotencyKey: key() });
+
+        const set = await repo.setDepartmentMembers(founderCtx, {
+          id: first.id,
+          members: [
+            { userId: SENIOR_ID, isHead: true },
+            { userId: STAFF_ID, isHead: true },
+            { userId: TRAINEE_ID, isHead: false },
+          ],
+          idempotencyKey: key(),
+        });
+        expect(set.members.map((member) => [member.name, member.role, member.isHead])).toEqual([
+          ['Ananya Rao', 'senior_staff', true],
+          ['Neha Kapoor', 'trainee', false],
+          ['Rohan Mehta', 'staff', true],
+        ]);
+        await repo.setDepartmentMembers(founderCtx, {
+          id: second.id,
+          members: [{ userId: STAFF_ID, isHead: false }],
+          idempotencyKey: key(),
+        });
+
+        const replaced = await repo.setDepartmentMembers(founderCtx, {
+          id: first.id,
+          members: [{ userId: STAFF_ID, isHead: false }, { userId: MANAGER_ID, isHead: true }],
+          idempotencyKey: key(),
+        });
+        expect(replaced.members.map((member) => [member.name, member.isHead])).toEqual([
+          ['Priya Desai', true],
+          ['Rohan Mehta', false],
+        ]);
+        expect((await repo.listDepartments(founderCtx)).find((d) => d.id === second.id)?.members).toHaveLength(1);
+
+        // Refused changes leave the membership as it was
+        await expect(
+          repo.setDepartmentMembers(founderCtx, {
+            id: first.id,
+            members: [{ userId: TRAINEE_ID, isHead: true }],
+            idempotencyKey: key(),
+          }),
+        ).rejects.toMatchObject({ status: 422, code: 'trainee_cannot_head', message: 'Trainees can be members but not heads.' });
+        await expect(
+          repo.setDepartmentMembers(founderCtx, {
+            id: first.id,
+            members: [{ userId: '00000000-0000-4000-a000-999999999999', isHead: false }],
+            idempotencyKey: key(),
+          }),
+        ).rejects.toMatchObject({ status: 422, code: 'referenced_entity_not_found' });
+        expect((await repo.listDepartments(founderCtx)).find((d) => d.id === first.id)?.members).toHaveLength(2);
+
+        // The database refuses a trainee head even when the repository check is skipped
+        await tx`RESET ROLE`;
+        await expect(
+          tx.savepoint(async (sp) => {
+            await sp`
+              INSERT INTO public.department_members (department_id, user_id, is_head, created_by)
+              VALUES (${first.id}::uuid, ${TRAINEE_ID}::uuid, true, ${FOUNDER_ID}::uuid)`;
+          }),
+        ).rejects.toMatchObject({ code: '23514' });
+        const emptied = await repo.setDepartmentMembers(founderCtx, { id: first.id, members: [], idempotencyKey: key() });
+        expect(emptied.members).toEqual([]);
+      });
+    });
+
+    it('IT-64: a service is filed under an active department only, and shows the name and the department service list', async () => {
+      await runIsolatedTest(async (repo) => {
+        const department = await repo.createDepartment(founderCtx, { name: uniqueName('Filing'), idempotencyKey: key() });
+        const created = await repo.createService(founderCtx, {
+          name: uniqueName('Filed'),
+          departmentId: department.id,
+          idempotencyKey: key(),
+        });
+        expect(created).toMatchObject({ departmentId: department.id, departmentName: department.name });
+        expect((await repo.listDepartments(founderCtx)).find((d) => d.id === department.id)?.serviceIds).toEqual([created.id]);
+
+        await expect(
+          repo.createService(founderCtx, {
+            name: uniqueName('Nowhere'),
+            departmentId: '60000000-0000-4000-a000-999999999999',
+            idempotencyKey: key(),
+          }),
+        ).rejects.toMatchObject({ status: 422, code: 'department_not_found' });
+
+        const off = await repo.updateDepartment(founderCtx, {
+          id: department.id,
+          isActive: false,
+          expectedUpdatedAt: department.updatedAt,
+          idempotencyKey: key(),
+        });
+        await expect(
+          repo.createService(founderCtx, { name: uniqueName('Late'), departmentId: off.id, idempotencyKey: key() }),
+        ).rejects.toMatchObject({ status: 422, code: 'department_not_found' });
+        // A service already in the retired department keeps it while another field changes
+        const renamed = await repo.updateService(founderCtx, {
+          id: created.id,
+          name: `${created.name} Renamed`,
+          departmentId: department.id,
+          expectedUpdatedAt: created.updatedAt,
+          idempotencyKey: key(),
+        });
+        expect(renamed).toMatchObject({ departmentId: department.id, departmentName: department.name });
+        const plain = await repo.createService(founderCtx, { name: uniqueName('Plain'), idempotencyKey: key() });
+        await expect(
+          repo.updateService(founderCtx, {
+            id: plain.id,
+            departmentId: off.id,
+            expectedUpdatedAt: plain.updatedAt,
+            idempotencyKey: key(),
+          }),
+        ).rejects.toMatchObject({ status: 422, code: 'department_not_found' });
+        const cleared = await repo.updateService(founderCtx, {
+          id: created.id,
+          departmentId: null,
+          expectedUpdatedAt: renamed.updatedAt,
+          idempotencyKey: key(),
+        });
+        expect(cleared).toMatchObject({ departmentId: null, departmentName: null });
+      });
+    });
+
+    it('IT-65: a head reads the assignments of their department and the client name, and loses them with the head role', async () => {
+      await runIsolatedTest(async (repo) => {
+        const { department, service, assignmentId, clientId } = await scenario(repo, '01');
+        const application = new CrmApplication(repo);
+        const senior = await application.requireActor(SENIOR_ID);
+
+        expect(await assignmentIds(repo, seniorCtx)).not.toContain(assignmentId);
+        expect(await clientIds(repo, seniorCtx)).not.toContain(clientId);
+        expect(await repo.getAssignment(seniorCtx, assignmentId)).toBeNull();
+
+        await makeHead(repo, department.id);
+
+        const listed = (await repo.listAssignments(seniorCtx)).find((assignment) => assignment.id === assignmentId);
+        expect(listed).toMatchObject({ clientName: 'Department Client 01', service: service.name, ownerName: 'Rohan Mehta' });
+        expect((await application.listAssignments(senior)).map((a) => a.id)).toContain(assignmentId);
+        expect(await repo.getAssignment(seniorCtx, assignmentId)).toMatchObject({ id: assignmentId });
+        expect(await repo.getClientReference(seniorCtx, clientId)).toMatchObject({ name: 'Department Client 01' });
+        expect(await clientIds(repo, seniorCtx)).toContain(clientId);
+        // Heads of other departments, plain members and trainees see nothing
+        expect(await assignmentIds(repo, traineeCtx)).not.toContain(assignmentId);
+        expect(await clientIds(repo, traineeCtx)).not.toContain(clientId);
+
+        // Moving the service away, demoting the head or retiring the department each end it
+        const other = await repo.createDepartment(founderCtx, { name: uniqueName('Elsewhere'), idempotencyKey: key() });
+        const moved = await repo.updateService(founderCtx, {
+          id: service.id,
+          departmentId: other.id,
+          expectedUpdatedAt: service.updatedAt,
+          idempotencyKey: key(),
+        });
+        expect(await assignmentIds(repo, seniorCtx)).not.toContain(assignmentId);
+        expect(await clientIds(repo, seniorCtx)).not.toContain(clientId);
+
+        await repo.updateService(founderCtx, {
+          id: service.id,
+          departmentId: department.id,
+          expectedUpdatedAt: moved.updatedAt,
+          idempotencyKey: key(),
+        });
+        expect(await assignmentIds(repo, seniorCtx)).toContain(assignmentId);
+        await repo.setDepartmentMembers(founderCtx, {
+          id: department.id,
+          members: [{ userId: SENIOR_ID, isHead: false }, { userId: TRAINEE_ID, isHead: false }],
+          idempotencyKey: key(),
+        });
+        expect(await assignmentIds(repo, seniorCtx)).not.toContain(assignmentId);
+        expect(await assignmentIds(repo, traineeCtx)).not.toContain(assignmentId);
+
+        await makeHead(repo, department.id);
+        expect(await assignmentIds(repo, seniorCtx)).toContain(assignmentId);
+        const current = (await repo.listDepartments(founderCtx)).find((d) => d.id === department.id)!;
+        await repo.updateDepartment(founderCtx, {
+          id: department.id,
+          isActive: false,
+          expectedUpdatedAt: current.updatedAt,
+          idempotencyKey: key(),
+        });
+        expect(await assignmentIds(repo, seniorCtx)).not.toContain(assignmentId);
+        expect(await clientIds(repo, seniorCtx)).not.toContain(clientId);
+      });
+    });
+
+    it('IT-66: a head cannot change the assignment or the client, add work to it, or touch the department', async () => {
+      await runIsolatedTest(async (repo, tx) => {
+        const { department, assignmentId, assignment, clientId, client } = await scenario(repo, '02');
+        await makeHead(repo, department.id);
+        const application = new CrmApplication(repo);
+        const senior = await application.requireActor(SENIOR_ID);
+
+        // The application refuses first
+        await expect(
+          application.transitionAssignment(senior, assignmentId, 'start', { expectedUpdatedAt: assignment.updatedAt }),
+        ).rejects.toMatchObject({ status: 403 });
+        await expect(
+          application.updateAssignment(senior, assignmentId, { title: 'Head rename', expectedUpdatedAt: assignment.updatedAt }),
+        ).rejects.toMatchObject({ status: 403 });
+        await expect(
+          application.updateClient(senior, clientId, { notes: 'head note', expectedUpdatedAt: client.updatedAt }, key()),
+        ).rejects.toMatchObject({ status: 403 });
+
+        // Past the application, the row-level policies and guards still refuse every write
+        await expect(
+          repo.updateAssignmentStatus(seniorCtx, {
+            id: assignmentId,
+            status: 'in_progress',
+            expectedUpdatedAt: assignment.updatedAt,
+          }),
+        ).rejects.toBeDefined();
+        await expect(
+          repo.updateClient(seniorCtx, { id: clientId, notes: 'head note', expectedUpdatedAt: client.updatedAt, idempotencyKey: key() }),
+        ).rejects.toMatchObject({ status: 403 });
+        await expect(
+          repo.createClientContact(seniorCtx, { clientId, name: 'Head Contact', phone: '9820011003', idempotencyKey: key() }),
+        ).rejects.toMatchObject({ status: 403 });
+        await expect(
+          repo.createWorkItem(seniorCtx, {
+            id: '90000000-0000-4000-a000-0000000d0299',
+            kind: 'delegated',
+            title: 'Head work',
+            assignmentId,
+            assigneeId: TRAINEE_ID,
+            status: 'todo',
+            createdById: SENIOR_ID,
+            dueAt: new Date(Date.now() + 86400000).toISOString(),
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          }),
+        ).rejects.toBeDefined();
+        await expect(
+          repo.createDepartment(seniorCtx, { name: uniqueName('Head Made'), idempotencyKey: key() }),
+        ).rejects.toMatchObject({ status: 403 });
+
+        // Nothing moved
+        const after = await repo.getAssignment(founderCtx, assignmentId);
+        expect(after).toMatchObject({ title: 'Department work', status: 'assigned' });
+        expect(after?.updatedAt).toBe(assignment.updatedAt);
+        expect((await repo.getClient(founderCtx, clientId))?.notes).toBeNull();
+        expect((await repo.getClient(founderCtx, clientId))?.contacts).toHaveLength(1);
+        await tx`RESET ROLE`;
+        const rawWork = await tx`SELECT count(*)::int AS c FROM public.work_items WHERE assignment_id = ${assignmentId}::uuid`;
+        expect(rawWork[0]).toMatchObject({ c: 0 });
+      });
+    });
+
+    it('IT-67: a head gets no full PAN or GSTIN, contacts, fees, documents or messages for the client', async () => {
+      await runIsolatedTest(async (repo, tx) => {
+        const { department, clientId } = await scenario(repo, '03');
+        await makeHead(repo, department.id);
+
+        const seen = (await repo.getClient(seniorCtx, clientId))!;
+        expect(seen.displayName).toBe('Department Client 03');
+        expect(seen).toMatchObject({ pan: null, gstin: null, panMasked: '******1234', gstinMasked: '27**********1Z5', canEdit: false, looksAfter: false, contacts: [] });
+        expect(JSON.stringify(seen)).not.toContain('ABCDE1234F');
+        expect(JSON.stringify(seen)).not.toContain('27ABCDE1234F1Z5');
+        // The owner of the relationship, in contrast, does see them
+        const owner = (await repo.getClient(staffCtx, clientId))!;
+        expect(owner).toMatchObject({ pan: 'ABCDE1234F', gstin: '27ABCDE1234F1Z5' });
+        expect(owner.contacts).toHaveLength(1);
+
+        expect(await repo.listClientDocuments(seniorCtx, clientId)).toEqual([]);
+        expect(await repo.listClientMessages(seniorCtx, clientId)).toEqual([]);
+        expect((await repo.listInvoices(seniorCtx)).filter((invoice) => invoice.clientId === clientId)).toEqual([]);
+        await expect(
+          repo.createClientDocument(seniorCtx, {
+            clientId,
+            title: 'Head upload',
+            category: 'other',
+            fileName: 'head.pdf',
+            mimeType: 'application/pdf',
+            sizeBytes: 100,
+            idempotencyKey: key(),
+          }),
+        ).rejects.toBeDefined();
+
+        // The raw identifier columns stay closed; the identifier function gives a head masked values only
+        await tx`SET LOCAL ROLE authenticated`;
+        await tx`SELECT set_config('request.jwt.claim.sub', ${SENIOR_ID}, true)`;
+        const identifiers = await tx`SELECT * FROM public.client_identifiers(${clientId}::uuid)`;
+        expect(identifiers).toEqual([{ pan_masked: '******1234', gstin_masked: '27**********1Z5', pan: null, gstin: null }]);
+        await expect(
+          tx.savepoint(async (sp) => {
+            await sp`SELECT pan FROM public.clients WHERE id = ${clientId}::uuid`;
+          }),
+        ).rejects.toMatchObject({ code: '42501' });
+        await tx`RESET ROLE`;
+      });
+    });
+
+    it('IT-68: the practice report of a head counts their department work, and stops when they stop being head', async () => {
+      await runIsolatedTest(async (repo) => {
+        const { department, service } = await scenario(repo, '04');
+        const period = resolveReportPeriod('month', kolkataToday(new Date()));
+        const serviceNames = async () =>
+          (await repo.getPracticeReport(seniorCtx, period)).workProgress.byService.map((row) => row.serviceName);
+
+        expect(await serviceNames()).not.toContain(service.name);
+        await makeHead(repo, department.id);
+        expect(await serviceNames()).toContain(service.name);
+        await repo.setDepartmentMembers(founderCtx, { id: department.id, members: [], idempotencyKey: key() });
+        expect(await serviceNames()).not.toContain(service.name);
       });
     });
   });

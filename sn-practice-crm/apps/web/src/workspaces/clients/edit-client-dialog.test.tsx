@@ -40,6 +40,7 @@ const CLIENT: ClientDto = {
   contacts: [],
   canEdit: true,
   canChangeOwnerOrStatus: true,
+  looksAfter: true,
   activeAssignmentsCount: 2,
   createdById: '00000000-0000-4000-a000-000000000001',
   createdAt: '2026-04-01T09:30:00.000Z',

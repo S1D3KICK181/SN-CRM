@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from 'react';
 import { Ban, Briefcase, X } from 'lucide-react';
-import type { ServiceDto } from '@sn/contracts';
+import type { DepartmentDto, ServiceDto } from '@sn/contracts';
 import { serviceSaveErrorMessage } from '../../api/service-catalog-types';
 import { nextSaveAttempt, type SaveAttempt } from '../billing/billing-form-model';
 
@@ -10,6 +10,8 @@ export interface ServiceFormInput {
   readonly description: string | null;
   readonly turnaroundDays: number | null;
   readonly isStatutory: boolean;
+  /** The department the service is filed under; null for none. */
+  readonly departmentId: string | null;
 }
 
 interface ServiceFormValues {
@@ -17,6 +19,8 @@ interface ServiceFormValues {
   description: string;
   turnaroundDays: string;
   isStatutory: boolean;
+  /** The chosen department id, or '' for no department. */
+  departmentId: string;
 }
 
 type ServiceFormErrors = Partial<Record<'name' | 'description' | 'turnaroundDays', string>>;
@@ -31,12 +35,13 @@ export const SERVICE_DESCRIPTION_ERROR = 'Use at most 500 characters.';
 export const SERVICE_TURNAROUND_ERROR = 'Enter whole days from 0 to 365, or leave it empty.';
 
 function initialValues(service: ServiceDto | null): ServiceFormValues {
-  if (!service) return { name: '', description: '', turnaroundDays: '', isStatutory: false };
+  if (!service) return { name: '', description: '', turnaroundDays: '', isStatutory: false, departmentId: '' };
   return {
     name: service.name,
     description: service.description ?? '',
     turnaroundDays: service.turnaroundDays === null ? '' : String(service.turnaroundDays),
     isStatutory: service.isStatutory,
+    departmentId: service.departmentId ?? '',
   };
 }
 
@@ -60,6 +65,7 @@ function toServiceFormInput(values: ServiceFormValues): ServiceFormInput {
     description: description === '' ? null : description,
     turnaroundDays: days === '' ? null : Number(days),
     isStatutory: values.isStatutory,
+    departmentId: values.departmentId === '' ? null : values.departmentId,
   };
 }
 
@@ -69,13 +75,24 @@ type ServiceDialogProps = {
   open: boolean;
   /** The service being edited; null adds a new one. */
   service: ServiceDto | null;
+  /** The departments a service can be filed under; only the active ones are offered. */
+  departments?: readonly DepartmentDto[];
   opener?: HTMLElement | null;
   onClose: () => void;
   /** Resolves when saved; rejects with a ServiceCatalogOperationError when not. */
   onSubmit: (input: ServiceFormInput, idempotencyKey: string) => Promise<void>;
 };
 
-export function ServiceDialog({ open, service, opener, onClose, onSubmit }: ServiceDialogProps) {
+const NO_DEPARTMENTS: readonly DepartmentDto[] = [];
+
+export function ServiceDialog({
+  open,
+  service,
+  departments = NO_DEPARTMENTS,
+  opener,
+  onClose,
+  onSubmit,
+}: ServiceDialogProps) {
   const [values, setValues] = useState<ServiceFormValues>(() => initialValues(service));
   const [errors, setErrors] = useState<ServiceFormErrors>({});
   const [formError, setFormError] = useState<string | null>(null);
@@ -138,8 +155,16 @@ export function ServiceDialog({ open, service, opener, onClose, onSubmit }: Serv
 
   const update = <K extends keyof ServiceFormValues>(key: K, value: ServiceFormValues[K]) => {
     setValues((current) => ({ ...current, [key]: value }));
-    if (key !== 'isStatutory') setErrors((current) => ({ ...current, [key]: undefined }));
+    if (key === 'name' || key === 'description' || key === 'turnaroundDays') {
+      setErrors((current) => ({ ...current, [key]: undefined }));
+    }
   };
+
+  // The active departments, plus the service's own department when it has since been deactivated
+  const ownDepartment = service?.departmentId
+    ? departments.find((department) => department.id === service.departmentId)
+    : undefined;
+  const offered = departments.filter((department) => department.isActive || department.id === ownDepartment?.id);
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
@@ -257,6 +282,22 @@ export function ServiceDialog({ open, service, opener, onClose, onSubmit }: Serv
               />
               <small id="service-turnaroundDays-hint">Used later to flag work that runs late.</small>
               {fieldError('turnaroundDays')}
+            </div>
+            <div className="field">
+              <label htmlFor="service-departmentId">Department</label>
+              <select
+                id="service-departmentId"
+                value={values.departmentId}
+                disabled={pending}
+                onChange={(event) => update('departmentId', event.target.value)}
+              >
+                <option value="">No department</option>
+                {offered.map((department) => (
+                  <option key={department.id} value={department.id}>
+                    {department.isActive ? department.name : `${department.name} (inactive)`}
+                  </option>
+                ))}
+              </select>
             </div>
             <div>
               {/* Not a .field: its input rules would stretch the checkbox to full width. */}

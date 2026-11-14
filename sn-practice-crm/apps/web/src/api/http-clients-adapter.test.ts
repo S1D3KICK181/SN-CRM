@@ -41,6 +41,7 @@ describe('HttpClientsAdapter', () => {
     contacts: [],
     canEdit: false,
     canChangeOwnerOrStatus: false,
+    looksAfter: true,
     createdById: '00000000-0000-4000-a000-000000000001',
     createdAt: '2026-11-01T04:00:00.000Z',
     updatedAt: '2026-11-01T04:00:00.000Z',
@@ -1027,6 +1028,7 @@ describe('HttpClientsAdapter', () => {
         contacts: [],
         canEdit: false,
         canChangeOwnerOrStatus: false,
+        looksAfter: true,
         createdById: '00000000-0000-4000-a000-000000000001',
         createdAt: '2026-11-06T12:00:00.000Z',
         updatedAt: '2026-11-06T12:00:00.000Z',
@@ -1352,6 +1354,7 @@ describe('HttpClientsAdapter', () => {
           contacts: [contact],
           canEdit: true,
           canChangeOwnerOrStatus: false,
+          looksAfter: true,
         }),
       });
       const client = await adapter.get('founder', sampleClientDto.id);
@@ -1366,6 +1369,7 @@ describe('HttpClientsAdapter', () => {
         incorporationDate: '2015-04-01',
         canEdit: true,
         canChangeOwnerOrStatus: false,
+        looksAfter: true,
       });
       expect(client.contacts).toEqual([contact]);
     });

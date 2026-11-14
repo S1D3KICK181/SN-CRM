@@ -40,6 +40,7 @@ function client(id: string, code: string, displayName: string, canEdit = true): 
     contacts: [],
     canEdit,
     canChangeOwnerOrStatus: false,
+    looksAfter: true,
     createdById: '20000000-0000-4000-a000-000000000001',
     createdAt: '2026-10-01T04:30:00.000Z',
     updatedAt: '2026-10-01T04:30:00.000Z',
@@ -94,6 +95,7 @@ const DEADLINE = message({
 function setup(overrides: Partial<CommunicationWorkspaceProps> = {}, composerOverrides: Partial<MessageComposer> = {}) {
   const composer: MessageComposer = {
     canMessage: true,
+    canMessageClient: () => true,
     open: vi.fn(),
     recentFor: () => [],
     showAll: vi.fn(),

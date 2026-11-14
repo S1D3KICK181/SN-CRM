@@ -367,6 +367,7 @@ describe('Client visibility and read operations (CL-02A parity)', () => {
       contacts: [],
       canEdit: false,
       canChangeOwnerOrStatus: false,
+      looksAfter: false, // A Trainee never looks after a client
       activeAssignmentsCount: 1, // Only AS-001001, which trainee is involved in
       createdById: DEMO_ACTOR_IDS.founder,
       createdAt: '2026-01-01T00:00:00.000Z',
@@ -2580,5 +2581,187 @@ describe('InMemoryCrmRepository reports (REP-01)', () => {
     expect(result.teamActivity).toEqual([]);
     expect(result.workProgress.summary).toEqual({ created: 0, completed: 0, submittedForReview: 0, overdueNow: 0, dueNext7Days: 0 });
     expect(result.followUps).toEqual({ messagesByPurpose: [], documentsByCategory: [], needsFollowUp: [] });
+  });
+});
+
+describe('InMemoryCrmRepository departments (DEPT-01)', () => {
+  const founderCtx: RepositoryContext = { actorId: DEMO_ACTOR_IDS.founder };
+  const seniorCtx: RepositoryContext = { actorId: DEMO_ACTOR_IDS.senior };
+  const staffCtx: RepositoryContext = { actorId: DEMO_ACTOR_IDS.staff };
+  const AUDIT_SERVICE = '50000000-0000-4000-a000-000000000002';
+  const AUDIT_ASSIGNMENT = '30000000-0000-4000-a000-000000000002';
+  const BLUEPEAK = '10000000-0000-4000-a000-000000000002';
+  const AUDIT_DEPARTMENT = '60000000-0000-4000-a000-000000000001';
+
+  /** The demo seed with Internal Audit filed under an Audit department that Ananya heads and Rohan belongs to. */
+  function build(options: { headIsActive?: boolean; auditIsActive?: boolean } = {}) {
+    const seed = createDemoSeed();
+    seed.services = (seed.services ?? []).map((service) =>
+      service.id === AUDIT_SERVICE ? { ...service, departmentId: AUDIT_DEPARTMENT } : service,
+    );
+    seed.departments = [
+      {
+        id: AUDIT_DEPARTMENT,
+        name: 'Audit',
+        isActive: options.auditIsActive ?? true,
+        members: [
+          { userId: DEMO_ACTOR_IDS.senior, isHead: true },
+          { userId: DEMO_ACTOR_IDS.staff, isHead: false },
+          { userId: DEMO_ACTOR_IDS.trainee, isHead: false },
+        ],
+      },
+    ];
+    if (options.headIsActive === false) {
+      seed.employees = seed.employees.map((e) => (e.id === DEMO_ACTOR_IDS.senior ? { ...e, active: false } : e));
+    }
+    return new InMemoryCrmRepository(seed);
+  }
+
+  it('reads the seeded departments with their members, heads and service ids, active first', async () => {
+    const departments = await build().listDepartments(founderCtx);
+    expect(departments).toHaveLength(1);
+    expect(departments[0]).toMatchObject({
+      id: AUDIT_DEPARTMENT,
+      name: 'Audit',
+      isActive: true,
+      serviceIds: [AUDIT_SERVICE],
+    });
+    expect(departments[0]?.members.map((m) => [m.name, m.role, m.isHead])).toEqual([
+      ['Ananya Rao', 'senior_staff', true],
+      ['Neha Kapoor', 'trainee', false],
+      ['Rohan Mehta', 'staff', false],
+    ]);
+    expect((await build().listServiceCatalog(founderCtx)).find((s) => s.id === AUDIT_SERVICE)).toMatchObject({
+      departmentId: AUDIT_DEPARTMENT,
+      departmentName: 'Audit',
+    });
+  });
+
+  it('lets the head read the clients of their department work, and nobody else gains a client', async () => {
+    const repository = build();
+    const seniorClients = (await repository.listClients(seniorCtx)).map((c) => c.code);
+    expect(seniorClients).toContain('CL-001002');
+    expect((await repository.getClient(seniorCtx, BLUEPEAK))?.displayName).toBe('BluePeak Tech');
+    expect((await repository.listClientReferences(seniorCtx)).map((c) => c.code)).toContain('CL-001002');
+    expect(await repository.getClientReference(seniorCtx, BLUEPEAK)).toMatchObject({ code: 'CL-001002' });
+
+    // A trainee member gains nothing new
+    const trainee = await repository.listClients({ actorId: DEMO_ACTOR_IDS.trainee });
+    expect(trainee.map((c) => c.code)).toEqual(['CL-001001']);
+  });
+
+  it('gives the head the client row only: no full PAN or GSTIN and no edit right', async () => {
+    const repository = build();
+    const client = (await repository.getClient(seniorCtx, BLUEPEAK))!;
+    expect(client.pan).toBeNull();
+    expect(client.gstin).toBeNull();
+    expect(client.canEdit).toBe(false);
+    expect(client.activeAssignmentsCount).toBe(1);
+    await expect(
+      repository.updateClient(seniorCtx, {
+        id: BLUEPEAK,
+        notes: 'head edit',
+        expectedUpdatedAt: client.updatedAt,
+        idempotencyKey: 'head-edit',
+      }),
+    ).rejects.toMatchObject({ status: 403 });
+    await expect(
+      repository.createClientContact(seniorCtx, {
+        clientId: BLUEPEAK,
+        name: 'Someone',
+        phone: '9820011002',
+        idempotencyKey: 'head-contact',
+      }),
+    ).rejects.toMatchObject({ status: 403 });
+    // Fees, documents and messages still follow "looks after the client"
+    expect((await repository.listInvoices(seniorCtx)).filter((i) => i.clientId === BLUEPEAK)).toEqual([]);
+    expect(await repository.listClientMessages(seniorCtx, BLUEPEAK)).toEqual([]);
+    expect(await repository.listClientDocuments(seniorCtx, BLUEPEAK)).toEqual([]);
+  });
+
+  it('counts the department work in the head report, and drops it when the department is retired', async () => {
+    const period = resolveReportPeriod('month', '2026-11-14');
+    const serviceNames = async (repository: InMemoryCrmRepository, ctx: RepositoryContext) =>
+      (await repository.getPracticeReport(ctx, period)).workProgress.byService.map((row) => row.serviceName);
+
+    expect(await serviceNames(build(), seniorCtx)).toContain('Internal Audit');
+    expect(await serviceNames(new InMemoryCrmRepository(createDemoSeed()), seniorCtx)).not.toContain('Internal Audit');
+    expect(await serviceNames(build({ auditIsActive: false }), seniorCtx)).not.toContain('Internal Audit');
+  });
+
+  it('gives nothing to a head of an inactive department, an inactive head or a member who is not a head', async () => {
+    const inactiveDepartment = build({ auditIsActive: false });
+    expect(await inactiveDepartment.getClient(seniorCtx, BLUEPEAK)).toBeNull();
+
+    const inactiveHead = build({ headIsActive: false });
+    expect(await inactiveHead.listClients(seniorCtx)).toEqual([]);
+
+    const member = build();
+    expect(await member.getClient({ actorId: DEMO_ACTOR_IDS.trainee }, BLUEPEAK)).toBeNull();
+  });
+
+  it('stops the head path when the head flag is removed or the service leaves the department', async () => {
+    const repository = build();
+    expect(await repository.getClient(seniorCtx, BLUEPEAK)).not.toBeNull();
+
+    await repository.setDepartmentMembers(founderCtx, {
+      id: AUDIT_DEPARTMENT,
+      members: [{ userId: DEMO_ACTOR_IDS.senior, isHead: false }],
+      idempotencyKey: 'demote',
+    });
+    expect(await repository.getClient(seniorCtx, BLUEPEAK)).toBeNull();
+
+    await repository.setDepartmentMembers(founderCtx, {
+      id: AUDIT_DEPARTMENT,
+      members: [{ userId: DEMO_ACTOR_IDS.senior, isHead: true }],
+      idempotencyKey: 'promote',
+    });
+    expect(await repository.getClient(seniorCtx, BLUEPEAK)).not.toBeNull();
+
+    const service = (await repository.listServiceCatalog(founderCtx)).find((s) => s.id === AUDIT_SERVICE)!;
+    await repository.updateService(founderCtx, {
+      id: AUDIT_SERVICE,
+      departmentId: null,
+      expectedUpdatedAt: service.updatedAt,
+      idempotencyKey: 'unfile',
+    });
+    expect(await repository.getClient(seniorCtx, BLUEPEAK)).toBeNull();
+    // The assignment itself is untouched in the store
+    expect((await repository.getAssignment(founderCtx, AUDIT_ASSIGNMENT))?.serviceId).toBe(AUDIT_SERVICE);
+  });
+
+  it('refuses members who are inactive or trainee heads and leaves the membership as it was', async () => {
+    const repository = build();
+    const staff = (await repository.getEmployee(founderCtx, DEMO_ACTOR_IDS.staff))!;
+    await repository.upsertDevActor({ ...staff, active: false });
+
+    await expect(
+      repository.setDepartmentMembers(founderCtx, {
+        id: AUDIT_DEPARTMENT,
+        members: [{ userId: DEMO_ACTOR_IDS.staff, isHead: false }],
+        idempotencyKey: 'inactive',
+      }),
+    ).rejects.toMatchObject({ status: 422, code: 'referenced_entity_not_found' });
+    await expect(
+      repository.setDepartmentMembers(founderCtx, {
+        id: AUDIT_DEPARTMENT,
+        members: [{ userId: DEMO_ACTOR_IDS.trainee, isHead: true }],
+        idempotencyKey: 'trainee-head',
+      }),
+    ).rejects.toMatchObject({ status: 422, code: 'trainee_cannot_head' });
+    // An inactive person disappears from the member list; the refused changes left the rest alone
+    const [department] = await repository.listDepartments(founderCtx);
+    expect(department?.members.map((m) => m.name)).toEqual(['Ananya Rao', 'Neha Kapoor']);
+  });
+
+  it('shows a staff head the clients of their department work too', async () => {
+    const seed = createDemoSeed();
+    seed.services = (seed.services ?? []).map((service) =>
+      service.id === '50000000-0000-4000-a000-000000000003' ? { ...service, departmentId: AUDIT_DEPARTMENT } : service,
+    );
+    seed.departments = [{ id: AUDIT_DEPARTMENT, name: 'TDS', members: [{ userId: DEMO_ACTOR_IDS.staff, isHead: true }] }];
+    const repository = new InMemoryCrmRepository(seed);
+    // AS-001003 belongs to Sharma Retail (Manager owns, Senior reviews); Staff has no other link to it
+    expect((await repository.listClients(staffCtx)).map((c) => c.code)).toContain('CL-001003');
   });
 });

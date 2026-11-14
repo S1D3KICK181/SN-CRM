@@ -1276,3 +1276,120 @@ test('migration 0018 (CLEAN-01) removes the is_demo label, its tamper guard and 
   assert.doesNotMatch(sql0018, /grant\s+select\s*\([^)]*\bpan\b/i, 'pan is never granted');
   assert.doesNotMatch(sql0018, /grant\s+select\s*\([^)]*\bgstin\b/i, 'gstin is never granted');
 });
+
+test('migration 0019 (DEPT-01) adds departments, members and the service department, and gives heads read access only', () => {
+  const migration0019Path = new URL('../../supabase/migrations/20261114120000_dept01_departments.sql', import.meta.url);
+  const sql0019 = readMigration(migration0019Path, 'Migration 0019');
+  assert.match(sql0019, /^begin;$/im, 'one transaction');
+  assert.match(sql0019, /^commit;$/im, 'one transaction');
+
+  // 1. Departments: name length, unique ignoring case and spaces, deactivated rather than deleted
+  const departments = sql0019.match(/create table public\.departments \(([\s\S]*?)\n\);/i)?.[1] ?? '';
+  assert.match(departments, /name text not null check \(char_length\(btrim\(name\)\) between 2 and 80\)/i);
+  assert.match(departments, /is_active boolean not null default true/i);
+  assert.match(departments, /created_by uuid not null references public\.profiles\(user_id\) on delete restrict/i);
+  assert.match(departments, /created_at timestamptz not null default now\(\)/i);
+  assert.match(departments, /updated_at timestamptz not null default now\(\)/i);
+  expectSql(sql0019, /create unique index departments_name_normalized_key\s+on public\.departments \(lower\(btrim\(name\)\)\);/i, 'unique name');
+
+  const departmentGuard = functionBlock(sql0019, 'guard_department_write');
+  assert.match(departmentGuard, /security definer/i);
+  assert.match(departmentGuard, /set search_path = public, pg_temp/i);
+  assert.match(departmentGuard, /if v_actor is not null and not public\.is_founder\(v_actor\) then/i);
+  assert.match(departmentGuard, /Only the Founder may manage departments\./i);
+  assert.match(departmentGuard, /Creator provenance is immutable\./i);
+  expectSql(sql0019, /create trigger guard_department_write\s+before insert or update on public\.departments/i, 'department guard');
+  expectSql(sql0019, /create trigger set_departments_updated_at before update on public\.departments\s+for each row execute function public\.set_updated_at\(\);/i, 'updated_at');
+  expectSql(sql0019, /create trigger audit_departments after insert or update or delete on public\.departments\s+for each row execute function public\.audit_row_change\(\);/i, 'audit');
+
+  // 2. Members: unique pair, no trainee head, Founder only, membership may be deleted
+  const members = sql0019.match(/create table public\.department_members \(([\s\S]*?)\n\);/i)?.[1] ?? '';
+  assert.match(members, /department_id uuid not null references public\.departments\(id\) on delete restrict/i);
+  assert.match(members, /user_id uuid not null references public\.profiles\(user_id\) on delete cascade/i);
+  assert.match(members, /is_head boolean not null default false/i);
+  assert.match(members, /constraint department_members_department_user_key unique \(department_id, user_id\)/i);
+  const memberGuard = functionBlock(sql0019, 'guard_department_member_write');
+  assert.match(memberGuard, /security definer/i);
+  assert.match(memberGuard, /set search_path = public, pg_temp/i);
+  assert.match(memberGuard, /if v_actor is not null and not public\.is_founder\(v_actor\) then/i);
+  assert.match(memberGuard, /if new\.is_head and public\.role_of\(new\.user_id\) = 'trainee' then/i);
+  assert.match(memberGuard, /Trainees can be members but not heads\./i);
+  expectSql(sql0019, /create trigger guard_department_member_write\s+before insert or update or delete on public\.department_members/i, 'member guard');
+  expectSql(sql0019, /create trigger audit_department_members after insert or update or delete on public\.department_members\s+for each row execute function public\.audit_row_change\(\);/i, 'member audit');
+
+  // 3. The department of a service: optional, never cascades
+  expectSql(sql0019, /alter table public\.service_catalog\s+add column department_id uuid references public\.departments\(id\) on delete restrict;/i, 'service department');
+
+  // 4. Table access: every active employee reads; only the Founder writes; departments are never deleted
+  expectSql(sql0019, /alter table public\.departments enable row level security;/i, 'departments RLS');
+  expectSql(sql0019, /alter table public\.department_members enable row level security;/i, 'members RLS');
+  expectSql(sql0019, /create policy departments_select on public\.departments\s+for select to authenticated\s+using \(public\.is_active_employee\(\)\);/i, 'departments select');
+  expectSql(sql0019, /create policy departments_insert on public\.departments\s+for insert to authenticated\s+with check \(public\.is_founder\(\) and created_by = auth\.uid\(\)\);/i, 'departments insert');
+  expectSql(sql0019, /create policy departments_update on public\.departments\s+for update to authenticated\s+using \(public\.is_founder\(\)\)\s+with check \(public\.is_founder\(\)\);/i, 'departments update');
+  assert.doesNotMatch(sql0019, /create policy \w+ on public\.departments\s+for (delete|all)/i, 'departments are never deleted');
+  expectSql(sql0019, /create policy department_members_select on public\.department_members\s+for select to authenticated\s+using \(public\.is_active_employee\(\)\);/i, 'members select');
+  expectSql(sql0019, /create policy department_members_insert on public\.department_members\s+for insert to authenticated\s+with check \(public\.is_founder\(\) and created_by = auth\.uid\(\)\);/i, 'members insert');
+  expectSql(sql0019, /create policy department_members_update on public\.department_members\s+for update to authenticated\s+using \(public\.is_founder\(\)\)\s+with check \(public\.is_founder\(\)\);/i, 'members update');
+  expectSql(sql0019, /create policy department_members_delete on public\.department_members\s+for delete to authenticated\s+using \(public\.is_founder\(\)\);/i, 'members delete');
+  expectSql(sql0019, /revoke all on table public\.departments from public, anon, authenticated;/i, 'departments revoke');
+  expectSql(sql0019, /grant select, insert, update on public\.departments to authenticated;/i, 'departments grants');
+  expectSql(sql0019, /grant select, insert, update, delete on public\.department_members to authenticated;/i, 'members grants');
+
+  // 5. The head path is a read-only helper: active department of the assignment's service, head flag, not a Trainee
+  const heads = functionBlock(sql0019, 'user_heads_department_of_assignment');
+  assert.match(heads, /returns boolean\s+language sql\s+stable\s+security definer/i);
+  assert.match(heads, /set search_path = public, pg_temp/i);
+  assert.match(heads, /join public\.departments d on d\.id = s\.department_id and d\.is_active/i);
+  assert.match(heads, /dm\.user_id = p_user_id and dm\.is_head/i);
+  assert.match(heads, /public\.role_of\(p_user_id\) in \('founder', 'manager', 'senior_staff', 'staff'\)/i);
+  const readAssignment = functionBlock(sql0019, 'user_can_read_assignment');
+  assert.match(readAssignment, /public\.user_assignment_involvement\(p_user_id, p_assignment_id\)\s+or public\.user_heads_department_of_assignment\(p_user_id, p_assignment_id\)/i);
+  const readClient = functionBlock(sql0019, 'user_can_read_client');
+  assert.match(readClient, /public\.user_client_visible\(p_user_id, p_client_id\)/i);
+  assert.match(readClient, /public\.user_heads_department_of_assignment\(p_user_id, a\.id\)/i);
+  for (const signature of [
+    'user_heads_department_of_assignment(uuid, uuid)',
+    'user_can_read_assignment(uuid, uuid)',
+    'can_read_assignment(uuid)',
+    'user_can_read_client(uuid, uuid)',
+    'can_read_client(uuid)',
+  ]) {
+    const escaped = signature.replace(/[()]/g, '\\$&');
+    assert.match(sql0019, new RegExp(`revoke all on function public\\.${escaped} from public, anon;`, 'i'));
+    assert.match(sql0019, new RegExp(`grant execute on function public\\.${escaped} to authenticated;`, 'i'));
+  }
+
+  // 6. Exactly three select policies change; no write policy, and none of the write or privacy helpers, is touched
+  const policies = [...sql0019.matchAll(/^(drop|create) policy (\w+) on public\.(\w+)\s*(for (\w+))?/gim)];
+  const changed = policies.filter((match) => match[1].toLowerCase() === 'drop').map((match) => `${match[3]}.${match[2]}`);
+  assert.deepEqual(changed.sort(), ['assignment_reviewers.assignment_reviewers_select', 'assignments.assignments_select', 'clients.clients_select']);
+  expectSql(sql0019, /create policy assignments_select on public\.assignments\s+for select to authenticated\s+using \(public\.can_read_assignment\(id\)\);/i, 'assignments select');
+  expectSql(sql0019, /create policy assignment_reviewers_select on public\.assignment_reviewers\s+for select to authenticated\s+using \(public\.can_read_assignment\(assignment_id\)\);/i, 'reviewers select');
+  expectSql(sql0019, /create policy clients_select on public\.clients\s+for select to authenticated\s+using \(public\.can_read_client\(id\)\);/i, 'clients select');
+  for (const untouched of [
+    'user_assignment_involvement', 'assignment_involvement', 'user_has_assignment_authority',
+    'user_client_visible', 'client_visible', 'user_looks_after_client', 'looks_after_client',
+    'user_fee_visible', 'user_can_edit_client', 'can_edit_client',
+  ]) {
+    assert.doesNotMatch(sql0019, new RegExp(`create (or replace )?function public\\.${untouched}\\(`, 'i'), `${untouched} is not redefined`);
+  }
+  assert.doesNotMatch(sql0019, /create policy \w+ on public\.(assignments|assignment_reviewers|clients|work_items)\s+for (insert|update|delete|all)/i, 'no write policy on work or clients');
+  // No column on clients is granted: the raw PAN and GSTIN stay closed
+  assert.doesNotMatch(sql0019, /public\.clients to authenticated/i, 'no new grants on clients');
+  assert.doesNotMatch(sql0019, /grant\s+select\s*\([^)]*\b(pan|gstin)\b/i, 'pan and gstin are never granted');
+});
+
+test('migration 0020 gives department heads masked PAN/GSTIN for clients they can read, and full values only to those who look after the client', () => {
+  const migration0020Path = new URL('../../supabase/migrations/20261114130000_dept01_masked_ids_for_heads.sql', import.meta.url);
+  const sql0020 = readMigration(migration0020Path, 'Migration 0020');
+  const identifiers = functionBlock(sql0020, 'client_identifiers');
+  assert.match(identifiers, /security definer/i);
+  assert.match(identifiers, /set search_path = public, pg_temp/i);
+  assert.match(identifiers, /public\.mask_pan\(c\.pan\),\s+public\.mask_gstin\(c\.gstin\),/i);
+  assert.match(identifiers, /case when public\.looks_after_client\(c\.id\) then nullif\(c\.pan, ''\) end,/i);
+  assert.match(identifiers, /case when public\.looks_after_client\(c\.id\) then nullif\(c\.gstin, ''\) end/i);
+  assert.match(identifiers, /and public\.can_read_client\(p_client_id\);/i);
+  assert.doesNotMatch(identifiers, /client_visible/i);
+  expectSql(sql0020, /revoke all on function public\.client_identifiers\(uuid\) from public, anon;\s+grant execute on function public\.client_identifiers\(uuid\) to authenticated;/i, 'identifier function grants');
+  assert.doesNotMatch(sql0020, /grant select/i, 'no column grants');
+});

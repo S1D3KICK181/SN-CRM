@@ -42,6 +42,7 @@ function createMockDto(overrides: Partial<ClientDto> = {}): ClientDto {
     contacts: [],
     canEdit: false,
     canChangeOwnerOrStatus: false,
+    looksAfter: true,
     createdById: 'u1111111-1111-4111-8111-111111111111',
     createdAt: '2026-04-01T09:30:00.000Z',
     updatedAt: '2026-04-15T14:20:00.000Z',
@@ -492,6 +493,7 @@ describe('ClientProfileDrawer messages (MSG-01)', () => {
   function renderWithComposer(composerOverrides: Partial<MessageComposer> = {}, dtoOverrides: Partial<ClientDto> = {}) {
     const composer: MessageComposer = {
       canMessage: true,
+      canMessageClient: () => true,
       open: vi.fn(),
       recentFor: vi.fn().mockReturnValue([]),
       showAll: vi.fn(),
@@ -545,6 +547,12 @@ describe('ClientProfileDrawer messages (MSG-01)', () => {
     expect(vi.mocked(composer.open).mock.calls[0]?.[0].client?.phone).toBeNull();
   });
 
+  it('has no button and no Messages section for a client the reader only reads (a department head)', () => {
+    renderWithComposer({ canMessageClient: () => false });
+    expect(screen.queryByRole('button', { name: 'Message on WhatsApp' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'See all messages' })).toBeNull();
+  });
+
   it('has no button and no Messages section for someone who may not message clients', () => {
     renderWithComposer({ canMessage: false });
     expect(screen.queryByRole('button', { name: 'Message on WhatsApp' })).toBeNull();
@@ -559,7 +567,7 @@ describe('ClientProfileDrawer messages (MSG-01)', () => {
   });
 
   it('shows no button while the client is still loading', () => {
-    const composer: MessageComposer = { canMessage: true, open: vi.fn(), recentFor: () => [], showAll: vi.fn() };
+    const composer: MessageComposer = { canMessage: true, canMessageClient: () => true, open: vi.fn(), recentFor: () => [], showAll: vi.fn() };
     render(
       <MessageComposerContextProvider value={composer}>
         <ClientProfileDrawer client={null} loading onClose={vi.fn()} />

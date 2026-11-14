@@ -342,6 +342,7 @@ export class DeterministicTestClientsAdapter implements ClientsPort {
           contacts: [],
           canEdit: true,
           canChangeOwnerOrStatus: true,
+          looksAfter: true,
           activeAssignmentsCount: 0,
           createdById: '00000000-0000-4000-a000-000000000001',
           createdAt: new Date().toISOString(),

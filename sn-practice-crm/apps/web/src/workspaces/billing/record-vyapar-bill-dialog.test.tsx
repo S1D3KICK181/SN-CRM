@@ -42,6 +42,7 @@ function client(id: string, code: string, displayName: string, status: ClientDto
     contacts: [],
     canEdit: false,
     canChangeOwnerOrStatus: false,
+    looksAfter: true,
     createdById: '00000000-0000-4000-a000-000000000001',
     createdAt: '2026-04-01T00:00:00Z',
     updatedAt: '2026-04-01T00:00:00Z',

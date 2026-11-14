@@ -78,6 +78,7 @@ export function InvoiceDetailDrawer({
   const messageComposer = useMessageComposer();
   const showPaymentReminder =
     messageComposer?.canMessage === true &&
+    messageComposer.canMessageClient(invoice.clientId) &&
     canRecordPayment(invoice) &&
     invoice.balancePaise > 0 &&
     isValidUuid(invoice.id) &&

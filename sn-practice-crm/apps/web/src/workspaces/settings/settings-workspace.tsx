@@ -5,6 +5,7 @@ import type { UseServiceCatalogResult } from '../../api/use-service-catalog';
 import { sanitizeServiceCatalogError, serviceSaveErrorMessage } from '../../api/service-catalog-types';
 import { Card } from '../../ui/workspace-primitives';
 import { nextSaveAttempt, type SaveAttempt } from '../billing/billing-form-model';
+import { DepartmentsSection, type DepartmentsSectionProps } from './departments-section';
 import { DeactivateServiceDialog, ServiceDialog, type ServiceFormInput } from './service-dialog';
 
 export type ServiceCatalogActions = Pick<UseServiceCatalogResult, 'createService' | 'updateService'>;
@@ -20,6 +21,8 @@ export interface SettingsWorkspaceProps {
   onToast: (message: string) => void;
   /** Called after any service change so the assignment and schedule pickers load the new list. */
   onServicesChanged: () => void;
+  /** The Departments section below the services; left out, only the services show. */
+  departments?: DepartmentsSectionProps;
 }
 
 type DialogState =
@@ -55,6 +58,7 @@ export function SettingsWorkspace({
   onRetry,
   onToast,
   onServicesChanged,
+  departments,
 }: SettingsWorkspaceProps) {
   const [dialog, setDialog] = useState<DialogState | null>(null);
   const [opener, setOpener] = useState<HTMLElement | null>(null);
@@ -197,6 +201,7 @@ export function SettingsWorkspace({
               <thead>
                 <tr>
                   <th>Service</th>
+                  <th>Department</th>
                   <th>Usual turnaround</th>
                   <th>Statutory due dates</th>
                   <th>In use</th>
@@ -216,6 +221,9 @@ export function SettingsWorkspace({
                           {service.description}
                         </small>
                       ) : null}
+                    </td>
+                    <td>
+                      <span style={{ fontSize: 12 }}>{service.departmentName ?? 'Not set'}</span>
                     </td>
                     <td>
                       <span style={{ fontSize: 12 }}>{turnaroundLabel(service.turnaroundDays)}</span>
@@ -283,6 +291,7 @@ export function SettingsWorkspace({
       <ServiceDialog
         open={dialog?.kind === 'add' || dialog?.kind === 'edit'}
         service={dialog?.kind === 'edit' ? dialog.service : null}
+        departments={departments?.departments}
         opener={opener}
         onClose={closeDialog}
         onSubmit={saveService}
@@ -294,6 +303,8 @@ export function SettingsWorkspace({
         onClose={closeDialog}
         onSubmit={(key) => (dialog?.kind === 'deactivate' ? deactivateService(dialog.service, key) : Promise.resolve())}
       />
+
+      {departments ? <DepartmentsSection {...departments} onToast={onToast} /> : null}
     </div>
   );
 }

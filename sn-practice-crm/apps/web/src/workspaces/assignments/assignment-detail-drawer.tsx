@@ -104,6 +104,7 @@ export function AssignmentDetailDrawer({
   const reminderClientId = assignment.clientId;
   const canSendReminder =
     messageComposer?.canMessage === true &&
+    reminderClientId !== undefined && messageComposer.canMessageClient(reminderClientId) &&
     !isTerminal &&
     isValidUuid(assignment.id) &&
     reminderClientId !== undefined &&

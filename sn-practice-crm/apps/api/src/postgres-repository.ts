@@ -11,6 +11,7 @@ import type {
   ClientStatus,
   CreateLedgerEntryInput,
   CreateRecurringScheduleInput,
+  DepartmentDto,
   EngagementDto,
   EngagementVersionDto,
   GenerateDueAssignmentsResult,
@@ -40,6 +41,7 @@ import type {
   CreateAssignmentRecord,
   CreateClientContactCommand,
   CreateClientRecord,
+  CreateDepartmentCommand,
   CreateDocumentCommand,
   CreateServiceCommand,
   CreateWorkItemRecord,
@@ -55,11 +57,13 @@ import type {
   RemoveDocumentCommand,
   RepositoryContext,
   ServiceReference,
+  SetDepartmentMembersCommand,
   UpdateAssignmentCommand,
   UpdateAssignmentReviewersCommand,
   UpdateAssignmentStatusCommand,
   UpdateClientCommand,
   UpdateClientContactCommand,
+  UpdateDepartmentCommand,
   UpdateServiceCommand,
   UpdateWorkItemStatusCommand,
   VoidFeeRecordCommand,
@@ -70,9 +74,11 @@ import {
   billHasPayments,
   billNotOpen,
   contactNotOfClient,
+  departmentNotFound,
   documentNotConfirmable,
   documentNotRemovable,
   documentStoragePath,
+  duplicateDepartment,
   duplicateService,
   duplicateVyaparBill,
   fileTooLarge,
@@ -82,7 +88,9 @@ import {
   notCreditAllocation,
   staleClient,
   staleContact,
+  staleDepartment,
   staleService,
+  traineeCannotHead,
   uploadMissing,
 } from './repository';
 
@@ -189,6 +197,7 @@ function mapClientRow(row: Record<string, unknown>, contacts: readonly ClientCon
     contacts,
     canEdit: row['can_edit'] === true,
     canChangeOwnerOrStatus: row['can_change_owner_or_status'] === true,
+    looksAfter: row['looks_after'] === true,
     activeAssignmentsCount: Number(row['active_assignments_count'] ?? 0),
     createdById: String(row['created_by']),
     createdAt: toIsoString(row['created_at']),
@@ -706,12 +715,15 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
         s.default_duration_days,
         s.is_statutory,
         s.is_active,
+        s.department_id,
+        dp.name AS department_name,
         s.created_at,
         s.updated_at,
         (SELECT count(*)::int FROM public.assignments a WHERE a.service_id = s.id) AS assignments_count,
         (SELECT count(*)::int FROM public.recurring_schedules rs WHERE rs.service_id = s.id) AS schedules_count,
         (SELECT count(*)::int FROM public.engagements e WHERE e.service_id = s.id) AS engagements_count
       FROM public.service_catalog s
+      LEFT JOIN public.departments dp ON dp.id = s.department_id
       ${whereClause}
       ORDER BY s.is_active DESC, lower(s.name) ASC, s.name ASC;
     `;
@@ -722,6 +734,8 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
       turnaroundDays: row['default_duration_days'] === null ? null : Number(row['default_duration_days']),
       isStatutory: Boolean(row['is_statutory']),
       isActive: Boolean(row['is_active']),
+      departmentId: nullableText(row['department_id']),
+      departmentName: nullableText(row['department_name']),
       usage: {
         assignments: Number(row['assignments_count']),
         recurringSchedules: Number(row['schedules_count']),
@@ -758,17 +772,21 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
       return await this.runner.withUserContext(ctx, (tx) =>
         this.runIdempotent<ServiceDto>(tx, ctx, idempotencyKey, 'createService', payload, async () => {
           if (await this.serviceNameTaken(tx, name, null)) throw duplicateService(name);
+          if (command.departmentId != null && !(await this.departmentIsActive(tx, command.departmentId))) {
+            throw departmentNotFound();
+          }
 
           const serviceId = crypto.randomUUID();
           await tx`
             INSERT INTO public.service_catalog (
-              id, name, description, default_duration_days, is_statutory, created_by
+              id, name, description, default_duration_days, is_statutory, department_id, created_by
             ) VALUES (
               ${serviceId}::uuid,
               ${name},
               ${command.description ?? null},
               ${command.turnaroundDays ?? null}::smallint,
               ${command.isStatutory === true},
+              ${command.departmentId ?? null}::uuid,
               ${ctx.actorId}::uuid
             );
           `;
@@ -795,7 +813,8 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
         this.runIdempotent<ServiceDto>(tx, ctx, idempotencyKey, 'updateService', payload, async () => {
           const currentRows = await tx`
             SELECT
-              date_trunc('milliseconds', updated_at) = date_trunc('milliseconds', ${command.expectedUpdatedAt}::timestamptz) AS fresh
+              date_trunc('milliseconds', updated_at) = date_trunc('milliseconds', ${command.expectedUpdatedAt}::timestamptz) AS fresh,
+              department_id
             FROM public.service_catalog
             WHERE id = ${command.id}::uuid
             FOR UPDATE;
@@ -806,10 +825,19 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
           if (command.name !== undefined && (await this.serviceNameTaken(tx, command.name, command.id))) {
             throw duplicateService(command.name);
           }
+          // Only a change of department is checked: a service keeps its department even after it is deactivated.
+          if (
+            command.departmentId != null &&
+            command.departmentId !== nullableText(current['department_id']) &&
+            !(await this.departmentIsActive(tx, command.departmentId))
+          ) {
+            throw departmentNotFound();
+          }
 
           await tx`
             UPDATE public.service_catalog
-            SET name = CASE WHEN ${command.name !== undefined}::boolean THEN ${command.name ?? ''}::text ELSE name END,
+            SET department_id = CASE WHEN ${command.departmentId !== undefined}::boolean THEN ${command.departmentId ?? null}::uuid ELSE department_id END,
+                name = CASE WHEN ${command.name !== undefined}::boolean THEN ${command.name ?? ''}::text ELSE name END,
                 description = CASE WHEN ${command.description !== undefined}::boolean THEN ${command.description ?? null}::text ELSE description END,
                 default_duration_days = CASE WHEN ${command.turnaroundDays !== undefined}::boolean THEN ${command.turnaroundDays ?? null}::smallint ELSE default_duration_days END,
                 is_statutory = CASE WHEN ${command.isStatutory !== undefined}::boolean THEN ${command.isStatutory ?? false}::boolean ELSE is_statutory END,
@@ -832,6 +860,215 @@ export class PostgresCrmRepository implements CrmRepository, DevActorDirectory {
       ) {
         throw duplicateService(command.name);
       }
+      sanitizeDatabaseError(error);
+    }
+  }
+
+  // --- Departments (DEPT-01) ---
+
+  private async departmentIsActive(tx: SqlClient, departmentId: string): Promise<boolean> {
+    const rows = await tx`
+      SELECT 1 FROM public.departments WHERE id = ${departmentId}::uuid AND is_active LIMIT 1;
+    `;
+    return rows.length > 0;
+  }
+
+  private async queryDepartmentDtos(tx: SqlClient, departmentId?: string): Promise<DepartmentDto[]> {
+    const whereClause = departmentId ? tx`WHERE d.id = ${departmentId}::uuid` : tx``;
+    const rows = await tx`
+      SELECT
+        d.id,
+        d.name,
+        d.is_active,
+        d.created_at,
+        d.updated_at,
+        coalesce(
+          (
+            SELECT jsonb_agg(
+              jsonb_build_object(
+                'userId', dm.user_id,
+                'name', p.full_name,
+                'role', public.role_of(dm.user_id),
+                'isHead', dm.is_head
+              )
+              ORDER BY lower(p.full_name), p.full_name, dm.user_id
+            )
+            FROM public.department_members dm
+            JOIN public.profiles p ON p.user_id = dm.user_id AND p.is_active
+            WHERE dm.department_id = d.id
+          ),
+          '[]'::jsonb
+        ) AS members,
+        coalesce(
+          (
+            SELECT jsonb_agg(s.id ORDER BY lower(s.name), s.name)
+            FROM public.service_catalog s
+            WHERE s.department_id = d.id
+          ),
+          '[]'::jsonb
+        ) AS service_ids
+      FROM public.departments d
+      ${whereClause}
+      ORDER BY d.is_active DESC, lower(d.name) ASC, d.name ASC;
+    `;
+    return rows.map((row) => ({
+      id: String(row['id']),
+      name: String(row['name']),
+      isActive: Boolean(row['is_active']),
+      members: asRecordArray(row['members']).map((member) => ({
+        userId: String(member['userId']),
+        name: String(member['name']),
+        role: String(member['role']) as CompanyRole,
+        isHead: Boolean(member['isHead']),
+      })),
+      serviceIds: Array.isArray(row['service_ids']) ? row['service_ids'].map((id) => String(id)) : [],
+      createdAt: toIsoString(row['created_at']),
+      updatedAt: toIsoString(row['updated_at']),
+    }));
+  }
+
+  async listDepartments(ctx: RepositoryContext): Promise<DepartmentDto[]> {
+    try {
+      return await this.runner.withUserContext(ctx, (tx) => this.queryDepartmentDtos(tx));
+    } catch (error) {
+      sanitizeDatabaseError(error);
+    }
+  }
+
+  private async departmentNameTaken(tx: SqlClient, name: string, exceptId: string | null): Promise<boolean> {
+    const rows = await tx`
+      SELECT 1
+      FROM public.departments
+      WHERE lower(btrim(name)) = lower(btrim(${name}))
+        AND (${exceptId}::uuid IS NULL OR id <> ${exceptId}::uuid)
+      LIMIT 1;
+    `;
+    return rows.length > 0;
+  }
+
+  async createDepartment(ctx: RepositoryContext, command: CreateDepartmentCommand): Promise<DepartmentDto> {
+    const { idempotencyKey, ...payload } = command;
+    const name = command.name.trim();
+    try {
+      return await this.runner.withUserContext(ctx, (tx) =>
+        this.runIdempotent<DepartmentDto>(tx, ctx, idempotencyKey, 'createDepartment', payload, async () => {
+          if (await this.departmentNameTaken(tx, name, null)) throw duplicateDepartment(name);
+
+          const departmentId = crypto.randomUUID();
+          await tx`
+            INSERT INTO public.departments (id, name, created_by)
+            VALUES (${departmentId}::uuid, ${name}, ${ctx.actorId}::uuid);
+          `;
+          const created = (await this.queryDepartmentDtos(tx, departmentId))[0];
+          if (!created) {
+            throw new ApiError(500, 'internal_error', 'Created department could not be retrieved.');
+          }
+          return { result: created };
+        }),
+      );
+    } catch (error) {
+      const pgErr = error as { code?: string; constraint_name?: string };
+      if (pgErr?.code === '23505' && pgErr.constraint_name?.startsWith('departments_name')) {
+        throw duplicateDepartment(name);
+      }
+      sanitizeDatabaseError(error);
+    }
+  }
+
+  async updateDepartment(ctx: RepositoryContext, command: UpdateDepartmentCommand): Promise<DepartmentDto> {
+    const { idempotencyKey, ...payload } = command;
+    try {
+      return await this.runner.withUserContext(ctx, (tx) =>
+        this.runIdempotent<DepartmentDto>(tx, ctx, idempotencyKey, 'updateDepartment', payload, async () => {
+          const currentRows = await tx`
+            SELECT
+              date_trunc('milliseconds', updated_at) = date_trunc('milliseconds', ${command.expectedUpdatedAt}::timestamptz) AS fresh
+            FROM public.departments
+            WHERE id = ${command.id}::uuid
+            FOR UPDATE;
+          `;
+          const current = currentRows[0];
+          if (!current) throw notFound('Department');
+          if (current['fresh'] !== true) throw staleDepartment();
+          if (command.name !== undefined && (await this.departmentNameTaken(tx, command.name, command.id))) {
+            throw duplicateDepartment(command.name);
+          }
+
+          await tx`
+            UPDATE public.departments
+            SET name = CASE WHEN ${command.name !== undefined}::boolean THEN ${command.name ?? ''}::text ELSE name END,
+                is_active = CASE WHEN ${command.isActive !== undefined}::boolean THEN ${command.isActive ?? true}::boolean ELSE is_active END
+            WHERE id = ${command.id}::uuid;
+          `;
+          const updated = (await this.queryDepartmentDtos(tx, command.id))[0];
+          if (!updated) {
+            throw new ApiError(500, 'internal_error', 'Updated department could not be retrieved.');
+          }
+          return { result: updated };
+        }),
+      );
+    } catch (error) {
+      const pgErr = error as { code?: string; constraint_name?: string };
+      if (
+        command.name !== undefined &&
+        pgErr?.code === '23505' &&
+        pgErr.constraint_name?.startsWith('departments_name')
+      ) {
+        throw duplicateDepartment(command.name);
+      }
+      sanitizeDatabaseError(error);
+    }
+  }
+
+  // The whole membership is replaced inside one transaction: members not listed are removed, listed ones are
+  // added or have their head flag set. The department row is locked so two replacements cannot interleave.
+  async setDepartmentMembers(ctx: RepositoryContext, command: SetDepartmentMembersCommand): Promise<DepartmentDto> {
+    const { idempotencyKey, ...payload } = command;
+    try {
+      return await this.runner.withUserContext(ctx, (tx) =>
+        this.runIdempotent<DepartmentDto>(tx, ctx, idempotencyKey, 'setDepartmentMembers', payload, async () => {
+          const lockRows = await tx`
+            SELECT id FROM public.departments WHERE id = ${command.id}::uuid FOR UPDATE;
+          `;
+          if (lockRows.length === 0) throw notFound('Department');
+
+          const userIds = command.members.map((member) => member.userId);
+          const employeeRows = await tx`
+            SELECT p.user_id, public.role_of(p.user_id) AS role
+            FROM public.profiles p
+            WHERE p.user_id = ANY(${userIds}::uuid[])
+              AND public.is_active_employee(p.user_id);
+          `;
+          const roleByUser = new Map(employeeRows.map((row) => [String(row['user_id']), String(row['role'])]));
+          if (userIds.some((userId) => !roleByUser.has(userId))) {
+            throw new ApiError(422, 'referenced_entity_not_found', 'The referenced entity does not exist.');
+          }
+          if (command.members.some((member) => member.isHead && roleByUser.get(member.userId) === 'trainee')) {
+            throw traineeCannotHead();
+          }
+
+          await tx`
+            DELETE FROM public.department_members
+            WHERE department_id = ${command.id}::uuid
+              AND user_id <> ALL(${userIds}::uuid[]);
+          `;
+          for (const member of command.members) {
+            await tx`
+              INSERT INTO public.department_members (department_id, user_id, is_head, created_by)
+              VALUES (${command.id}::uuid, ${member.userId}::uuid, ${member.isHead}, ${ctx.actorId}::uuid)
+              ON CONFLICT (department_id, user_id)
+              DO UPDATE SET is_head = EXCLUDED.is_head
+              WHERE public.department_members.is_head IS DISTINCT FROM EXCLUDED.is_head;
+            `;
+          }
+          const updated = (await this.queryDepartmentDtos(tx, command.id))[0];
+          if (!updated) {
+            throw new ApiError(500, 'internal_error', 'Updated department could not be retrieved.');
+          }
+          return { result: updated };
+        }),
+      );
+    } catch (error) {
       sanitizeDatabaseError(error);
     }
   }

@@ -40,6 +40,7 @@ function client(id: string, code: string, displayName: string): ClientDto {
     contacts: [],
     canEdit: true,
     canChangeOwnerOrStatus: false,
+    looksAfter: true,
     createdById: '20000000-0000-4000-a000-000000000001',
     createdAt: '2026-10-01T04:30:00.000Z',
     updatedAt: '2026-10-01T04:30:00.000Z',

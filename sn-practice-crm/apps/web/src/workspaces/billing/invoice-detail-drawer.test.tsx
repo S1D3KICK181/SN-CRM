@@ -303,7 +303,7 @@ describe('InvoiceDetailDrawer', () => {
 
 describe('InvoiceDetailDrawer payment reminder (MSG-01)', () => {
   function stubComposer(overrides: Partial<MessageComposer> = {}): MessageComposer {
-    return { canMessage: true, open: vi.fn(), recentFor: () => [], showAll: vi.fn(), ...overrides };
+    return { canMessage: true, canMessageClient: () => true, open: vi.fn(), recentFor: () => [], showAll: vi.fn(), ...overrides };
   }
 
   function renderWithComposer(invoice: InvoiceRecord, composer: MessageComposer | null) {

@@ -65,6 +65,13 @@ function readNullableString(rec: Record<string, unknown>, key: string, label: st
   return value;
 }
 
+function readNullableUuid(rec: Record<string, unknown>, key: string, label: string): string | null {
+  const value = field(rec, key, label);
+  if (value === null) return null;
+  if (!isValidUuid(value)) throw malformed(`Invalid ${label} ${key}: must be an RFC 4122 UUID or null.`);
+  return value;
+}
+
 function readBoolean(rec: Record<string, unknown>, key: string, label: string): boolean {
   const value = field(rec, key, label);
   if (typeof value !== 'boolean') throw malformed(`Invalid ${label} ${key}: must be a boolean.`);
@@ -108,6 +115,8 @@ export function parseServiceDto(raw: unknown): ServiceDto {
     turnaroundDays: readNullableDays(rec, 'turnaroundDays', 'service'),
     isStatutory: readBoolean(rec, 'isStatutory', 'service'),
     isActive: readBoolean(rec, 'isActive', 'service'),
+    departmentId: readNullableUuid(rec, 'departmentId', 'service'),
+    departmentName: readNullableString(rec, 'departmentName', 'service'),
     usage: {
       assignments: readCount(usage, 'assignments', 'service usage'),
       recurringSchedules: readCount(usage, 'recurringSchedules', 'service usage'),

@@ -996,6 +996,20 @@ describe("CrmApplication authority and workflow rules", () => {
         async updateService(ctx: RepositoryContext) {
           throw new Error(`Unexpected service repository call: updateService(${ctx.actorId})`);
         },
+        async listDepartments(ctx: RepositoryContext) {
+          // A Senior Staff or Staff reader also checks which departments they head (DEPT-01)
+          callLog.push({ method: "listDepartments", actorId: ctx.actorId });
+          return underlying.listDepartments(ctx);
+        },
+        async createDepartment(ctx: RepositoryContext) {
+          throw new Error(`Unexpected department repository call: createDepartment(${ctx.actorId})`);
+        },
+        async updateDepartment(ctx: RepositoryContext) {
+          throw new Error(`Unexpected department repository call: updateDepartment(${ctx.actorId})`);
+        },
+        async setDepartmentMembers(ctx: RepositoryContext) {
+          throw new Error(`Unexpected department repository call: setDepartmentMembers(${ctx.actorId})`);
+        },
         async updateClient(ctx: RepositoryContext) {
           throw new Error(`Unexpected client repository call: updateClient(${ctx.actorId})`);
         },
@@ -1071,6 +1085,14 @@ describe("CrmApplication authority and workflow rules", () => {
       expect(callLog).toEqual([
         { method: "listAssignments", actorId: senior.id },
         { method: "listWorkItems", actorId: senior.id },
+        { method: "listDepartments", actorId: senior.id },
+      ]);
+      // Leadership sees every assignment already, so it never asks about departments
+      callLog.length = 0;
+      await application.listAssignments(founder);
+      expect(callLog).toEqual([
+        { method: "listAssignments", actorId: founder.id },
+        { method: "listWorkItems", actorId: founder.id },
       ]);
 
       // 2. createAssignment passes manager.id to getEmployee (owner, reviewers), getClientReference, getServiceReferenceById, createAssignment
@@ -2623,6 +2645,420 @@ describe("SVC-01 service list management", () => {
     const picker = await application.listServices(trainee);
     expect(picker.map((service) => service.name)).not.toContain("Project Reports");
     expect(picker.map((service) => service.name)).toContain("GST Compliance");
+  });
+});
+
+describe("DEPT-01 departments", () => {
+  const INTERNAL_AUDIT = "50000000-0000-4000-a000-000000000002"; // used by assignment ...0002 (Staff owns, Manager reviews)
+  const AUDIT_ASSIGNMENT = "30000000-0000-4000-a000-000000000002";
+  const BLUEPEAK = "10000000-0000-4000-a000-000000000002"; // the client of that assignment; Staff owns the relationship
+  const GST_COMPLIANCE = "50000000-0000-4000-a000-000000000001";
+  const NON_FOUNDERS = [
+    ["manager", DEMO_ACTOR_IDS.manager],
+    ["senior_staff", DEMO_ACTOR_IDS.senior],
+    ["staff", DEMO_ACTOR_IDS.staff],
+    ["trainee", DEMO_ACTOR_IDS.trainee],
+  ] as const;
+
+  async function setup() {
+    const { application, repository } = createFixture();
+    return {
+      application,
+      repository,
+      founder: await application.requireActor(DEMO_ACTOR_IDS.founder),
+      manager: await application.requireActor(DEMO_ACTOR_IDS.manager),
+      senior: await application.requireActor(DEMO_ACTOR_IDS.senior),
+      staff: await application.requireActor(DEMO_ACTOR_IDS.staff),
+      trainee: await application.requireActor(DEMO_ACTOR_IDS.trainee),
+    };
+  }
+
+  type Fixture = Awaited<ReturnType<typeof setup>>;
+
+  /** Files a service under a department the way the Founder does in Settings. */
+  async function fileService(fixture: Fixture, serviceId: string, departmentId: string | null, key: string) {
+    const service = (await fixture.application.listServiceCatalog(fixture.founder)).find((s) => s.id === serviceId)!;
+    return fixture.application.updateService(
+      fixture.founder,
+      serviceId,
+      { departmentId, expectedUpdatedAt: service.updatedAt },
+      key,
+    );
+  }
+
+  it("lets the Founder create, rename and deactivate a department, trimming the name and the key", async () => {
+    const { application, repository, founder } = await setup();
+    const spy = vi.spyOn(repository, "createDepartment");
+
+    const created = await application.createDepartment(founder, { name: "  GST  " }, "  dept-create  ");
+    expect(spy).toHaveBeenCalledWith({ actorId: founder.id }, { name: "GST", idempotencyKey: "dept-create" });
+    expect(created).toMatchObject({ name: "GST", isActive: true, members: [], serviceIds: [] });
+
+    const renamed = await application.updateDepartment(
+      founder,
+      created.id,
+      { name: "  GST and Indirect Tax ", expectedUpdatedAt: created.updatedAt },
+      "dept-rename",
+    );
+    expect(renamed.name).toBe("GST and Indirect Tax");
+
+    const off = await application.updateDepartment(
+      founder,
+      created.id,
+      { isActive: false, expectedUpdatedAt: renamed.updatedAt },
+      "dept-off",
+    );
+    expect(off).toMatchObject({ name: "GST and Indirect Tax", isActive: false });
+  });
+
+  it("lists every department for every employee, active ones first", async () => {
+    const { application, founder, trainee } = await setup();
+    const retired = await application.createDepartment(founder, { name: "Aaa Retired" }, "d1");
+    await application.createDepartment(founder, { name: "Zzz Current" }, "d2");
+    await application.updateDepartment(founder, retired.id, { isActive: false, expectedUpdatedAt: retired.updatedAt }, "d3");
+
+    const listed = await application.listDepartments(trainee);
+    expect(listed.map((department) => department.name)).toEqual(["Zzz Current", "Aaa Retired"]);
+    expect(listed.map((department) => department.isActive)).toEqual([true, false]);
+  });
+
+  it.each(NON_FOUNDERS)("denies %s every department change before repository access", async (_role, actorId) => {
+    const { application, repository } = await setup();
+    const actor = await application.requireActor(actorId);
+    const createSpy = vi.spyOn(repository, "createDepartment");
+    const updateSpy = vi.spyOn(repository, "updateDepartment");
+    const membersSpy = vi.spyOn(repository, "setDepartmentMembers");
+
+    const denied = { status: 403, code: "role_not_permitted", message: "Only the Founder may manage departments." };
+    await expect(application.createDepartment(actor, { name: "Audit" }, "k1")).rejects.toMatchObject(denied);
+    await expect(
+      application.updateDepartment(actor, CANONICAL_SERVICE_1, { isActive: false, expectedUpdatedAt: "2026-10-30T12:00:00.000Z" }, "k2"),
+    ).rejects.toMatchObject(denied);
+    await expect(application.setDepartmentMembers(actor, CANONICAL_SERVICE_1, { members: [] }, "k3")).rejects.toMatchObject(denied);
+    expect(createSpy).not.toHaveBeenCalled();
+    expect(updateSpy).not.toHaveBeenCalled();
+    expect(membersSpy).not.toHaveBeenCalled();
+    // Reading stays open to every employee
+    await expect(application.listDepartments(actor)).resolves.toEqual([]);
+  });
+
+  it("refuses a duplicate name ignoring case and spaces, and a stale update", async () => {
+    const { application, founder } = await setup();
+    const audit = await application.createDepartment(founder, { name: "Audit" }, "d1");
+    const other = await application.createDepartment(founder, { name: "Accounts and Registrations" }, "d2");
+
+    await expect(application.createDepartment(founder, { name: "  AUDIT " }, "d3")).rejects.toMatchObject({
+      status: 409,
+      code: "duplicate_department",
+      message: "A department named AUDIT already exists.",
+    });
+    await expect(
+      application.updateDepartment(founder, other.id, { name: "audit", expectedUpdatedAt: other.updatedAt }, "d4"),
+    ).rejects.toMatchObject({ status: 409, code: "duplicate_department" });
+    // A department may change the case of its own name
+    await expect(
+      application.updateDepartment(founder, audit.id, { name: "AUDIT", expectedUpdatedAt: audit.updatedAt }, "d5"),
+    ).resolves.toMatchObject({ name: "AUDIT" });
+    await expect(
+      application.updateDepartment(founder, audit.id, { isActive: false, expectedUpdatedAt: audit.updatedAt }, "d6"),
+    ).rejects.toMatchObject({
+      status: 409,
+      code: "stale_department",
+      message: "This department was changed by someone else. Reload and try again.",
+    });
+    await expect(
+      application.updateDepartment(founder, "00000000-0000-4000-a000-999999999999", { isActive: false, expectedUpdatedAt: audit.updatedAt }, "d7"),
+    ).rejects.toMatchObject({ status: 404 });
+  });
+
+  it("replaces the whole membership, allows several heads and a person in several departments", async () => {
+    const { application, founder } = await setup();
+    const gst = await application.createDepartment(founder, { name: "GST" }, "d1");
+    const audit = await application.createDepartment(founder, { name: "Audit" }, "d2");
+
+    const first = await application.setDepartmentMembers(
+      founder,
+      gst.id,
+      {
+        members: [
+          { userId: DEMO_ACTOR_IDS.senior, isHead: true },
+          { userId: DEMO_ACTOR_IDS.staff, isHead: true },
+          { userId: DEMO_ACTOR_IDS.trainee, isHead: false },
+        ],
+      },
+      "m1",
+    );
+    expect(first.members.map((m) => [m.name, m.role, m.isHead])).toEqual([
+      ["Ananya Rao", "senior_staff", true],
+      ["Neha Kapoor", "trainee", false],
+      ["Rohan Mehta", "staff", true],
+    ]);
+    await application.setDepartmentMembers(founder, audit.id, { members: [{ userId: DEMO_ACTOR_IDS.staff, isHead: false }] }, "m2");
+
+    const replaced = await application.setDepartmentMembers(
+      founder,
+      gst.id,
+      { members: [{ userId: DEMO_ACTOR_IDS.staff, isHead: false }, { userId: DEMO_ACTOR_IDS.manager, isHead: true }] },
+      "m3",
+    );
+    expect(replaced.members.map((m) => [m.name, m.isHead])).toEqual([
+      ["Priya Desai", true],
+      ["Rohan Mehta", false],
+    ]);
+    const listed = await application.listDepartments(founder);
+    expect(listed.find((d) => d.id === audit.id)?.members.map((m) => m.name)).toEqual(["Rohan Mehta"]);
+
+    const emptied = await application.setDepartmentMembers(founder, gst.id, { members: [] }, "m4");
+    expect(emptied.members).toEqual([]);
+  });
+
+  it("refuses a trainee as head, an unknown person and an inactive person, and changes nothing", async () => {
+    const { application, repository, founder } = await setup();
+    const gst = await application.createDepartment(founder, { name: "GST" }, "d1");
+    await application.setDepartmentMembers(founder, gst.id, { members: [{ userId: DEMO_ACTOR_IDS.senior, isHead: true }] }, "m1");
+
+    await expect(
+      application.setDepartmentMembers(founder, gst.id, { members: [{ userId: DEMO_ACTOR_IDS.trainee, isHead: true }] }, "m2"),
+    ).rejects.toMatchObject({ status: 422, code: "trainee_cannot_head", message: "Trainees can be members but not heads." });
+    await expect(
+      application.setDepartmentMembers(founder, gst.id, { members: [{ userId: "00000000-0000-4000-a000-999999999999", isHead: false }] }, "m3"),
+    ).rejects.toMatchObject({ status: 422, code: "referenced_entity_not_found" });
+    const staff = await repository.getEmployee({ actorId: founder.id }, DEMO_ACTOR_IDS.staff);
+    await repository.upsertDevActor({ ...staff!, active: false });
+    await expect(
+      application.setDepartmentMembers(founder, gst.id, { members: [{ userId: DEMO_ACTOR_IDS.staff, isHead: false }] }, "m4"),
+    ).rejects.toMatchObject({ status: 422, code: "referenced_entity_not_found" });
+
+    const [unchanged] = await application.listDepartments(founder);
+    expect(unchanged?.members.map((m) => [m.name, m.isHead])).toEqual([["Ananya Rao", true]]);
+  });
+
+  it("files a service under an active department only, shows its name and keeps it when the department is retired", async () => {
+    const { application, founder } = await setup();
+    const audit = await application.createDepartment(founder, { name: "Audit" }, "d1");
+
+    const created = await application.createService(founder, { name: "Tax Audit", departmentId: audit.id }, "s1");
+    expect(created).toMatchObject({ departmentId: audit.id, departmentName: "Audit" });
+    expect((await application.createService(founder, { name: "Loose Service" }, "s2"))).toMatchObject({
+      departmentId: null,
+      departmentName: null,
+    });
+    expect((await application.listDepartments(founder))[0]?.serviceIds).toEqual([created.id]);
+
+    await expect(
+      application.createService(founder, { name: "Nowhere", departmentId: "00000000-0000-4000-a000-999999999999" }, "s3"),
+    ).rejects.toMatchObject({ status: 422, code: "department_not_found" });
+
+    const off = await application.updateDepartment(founder, audit.id, { isActive: false, expectedUpdatedAt: audit.updatedAt }, "d2");
+    await expect(
+      application.createService(founder, { name: "Late Audit", departmentId: off.id }, "s4"),
+    ).rejects.toMatchObject({ status: 422, code: "department_not_found" });
+    // Renaming a service that already sits in the retired department still works; moving into it does not
+    const renamed = await application.updateService(
+      founder,
+      created.id,
+      { name: "Tax Audit 2", departmentId: audit.id, expectedUpdatedAt: created.updatedAt },
+      "s5",
+    );
+    expect(renamed).toMatchObject({ name: "Tax Audit 2", departmentId: audit.id });
+    const gstCompliance = (await application.listServiceCatalog(founder)).find((s) => s.id === CANONICAL_SERVICE_1)!;
+    await expect(
+      application.updateService(founder, CANONICAL_SERVICE_1, { departmentId: off.id, expectedUpdatedAt: gstCompliance.updatedAt }, "s6"),
+    ).rejects.toMatchObject({ status: 422, code: "department_not_found" });
+
+    const cleared = await application.updateService(
+      founder,
+      created.id,
+      { departmentId: null, expectedUpdatedAt: renamed.updatedAt },
+      "s7",
+    );
+    expect(cleared).toMatchObject({ departmentId: null, departmentName: null });
+  });
+
+  describe("department heads read their department's work, and nothing else", () => {
+    async function headOfAudit(fixture: Fixture, headId: string = DEMO_ACTOR_IDS.senior) {
+      const audit = await fixture.application.createDepartment(fixture.founder, { name: "Audit" }, "d-audit");
+      await fileService(fixture, INTERNAL_AUDIT, audit.id, "s-audit");
+      await fixture.application.setDepartmentMembers(
+        fixture.founder,
+        audit.id,
+        { members: [{ userId: headId, isHead: true }] },
+        "m-audit",
+      );
+      return audit;
+    }
+
+    const idsOf = async (fixture: Fixture, actor: Fixture["senior"]) =>
+      (await fixture.application.listAssignments(actor)).map((a) => a.id);
+
+    it("shows a head the assignments of their department that they are not involved in, with the client name", async () => {
+      const fixture = await setup();
+      expect(await idsOf(fixture, fixture.senior)).not.toContain(AUDIT_ASSIGNMENT);
+      await expect(fixture.application.getClient(fixture.senior, BLUEPEAK)).rejects.toMatchObject({ status: 404 });
+
+      await headOfAudit(fixture);
+
+      const listed = await fixture.application.listAssignments(fixture.senior);
+      expect(listed.find((a) => a.id === AUDIT_ASSIGNMENT)).toMatchObject({ clientName: "BluePeak Tech", service: "Internal Audit" });
+      // Everything they saw before is still there
+      expect(listed.map((a) => a.id)).toEqual(expect.arrayContaining([
+        "30000000-0000-4000-a000-000000000001",
+        "30000000-0000-4000-a000-000000000004",
+        "30000000-0000-4000-a000-000000000003",
+        "30000000-0000-4000-a000-000000000005",
+      ]));
+      expect(listed).toHaveLength(5);
+      expect(await fixture.application.getClient(fixture.senior, BLUEPEAK)).toMatchObject({ displayName: "BluePeak Tech" });
+    });
+
+    it("works the same for a Staff head", async () => {
+      const fixture = await setup();
+      const before = await idsOf(fixture, fixture.staff);
+      const audit = await fixture.application.createDepartment(fixture.founder, { name: "GST" }, "d-gst");
+      await fileService(fixture, "50000000-0000-4000-a000-000000000003", audit.id, "s-tds");
+      await fixture.application.setDepartmentMembers(
+        fixture.founder,
+        audit.id,
+        { members: [{ userId: DEMO_ACTOR_IDS.staff, isHead: true }] },
+        "m-gst",
+      );
+      expect(await idsOf(fixture, fixture.staff)).toEqual(
+        expect.arrayContaining([...before, "30000000-0000-4000-a000-000000000003"]),
+      );
+    });
+
+    it("stops showing the work when the service moves to another department", async () => {
+      const fixture = await setup();
+      await headOfAudit(fixture);
+      expect(await idsOf(fixture, fixture.senior)).toContain(AUDIT_ASSIGNMENT);
+
+      const other = await fixture.application.createDepartment(fixture.founder, { name: "Accounts and Registrations" }, "d-acc");
+      await fileService(fixture, INTERNAL_AUDIT, other.id, "s-move");
+      expect(await idsOf(fixture, fixture.senior)).not.toContain(AUDIT_ASSIGNMENT);
+      await expect(fixture.application.getClient(fixture.senior, BLUEPEAK)).rejects.toMatchObject({ status: 404 });
+
+      await fileService(fixture, INTERNAL_AUDIT, null, "s-unfile");
+      expect(await idsOf(fixture, fixture.senior)).not.toContain(AUDIT_ASSIGNMENT);
+    });
+
+    it("stops showing the work when the person stops being head, or the department is deactivated", async () => {
+      const fixture = await setup();
+      const audit = await headOfAudit(fixture);
+
+      await fixture.application.setDepartmentMembers(
+        fixture.founder,
+        audit.id,
+        { members: [{ userId: DEMO_ACTOR_IDS.senior, isHead: false }] },
+        "m-demote",
+      );
+      expect(await idsOf(fixture, fixture.senior)).not.toContain(AUDIT_ASSIGNMENT);
+
+      await fixture.application.setDepartmentMembers(
+        fixture.founder,
+        audit.id,
+        { members: [{ userId: DEMO_ACTOR_IDS.senior, isHead: true }] },
+        "m-promote",
+      );
+      expect(await idsOf(fixture, fixture.senior)).toContain(AUDIT_ASSIGNMENT);
+
+      const current = (await fixture.application.listDepartments(fixture.founder))[0]!;
+      await fixture.application.updateDepartment(
+        fixture.founder,
+        audit.id,
+        { isActive: false, expectedUpdatedAt: current.updatedAt },
+        "d-off",
+      );
+      expect(await idsOf(fixture, fixture.senior)).not.toContain(AUDIT_ASSIGNMENT);
+      await expect(fixture.application.getClient(fixture.senior, BLUEPEAK)).rejects.toMatchObject({ status: 404 });
+    });
+
+    it("gives a plain member and a head of another department nothing", async () => {
+      const fixture = await setup();
+      const audit = await fixture.application.createDepartment(fixture.founder, { name: "Audit" }, "d-audit");
+      await fileService(fixture, INTERNAL_AUDIT, audit.id, "s-audit");
+      const gst = await fixture.application.createDepartment(fixture.founder, { name: "GST" }, "d-gst");
+      await fileService(fixture, GST_COMPLIANCE, gst.id, "s-gst");
+      await fixture.application.setDepartmentMembers(
+        fixture.founder,
+        audit.id,
+        { members: [{ userId: DEMO_ACTOR_IDS.senior, isHead: false }, { userId: DEMO_ACTOR_IDS.trainee, isHead: false }] },
+        "m-audit",
+      );
+      await fixture.application.setDepartmentMembers(
+        fixture.founder,
+        gst.id,
+        { members: [{ userId: DEMO_ACTOR_IDS.staff, isHead: true }] },
+        "m-gst",
+      );
+
+      expect(await idsOf(fixture, fixture.senior)).not.toContain(AUDIT_ASSIGNMENT);
+      expect(await idsOf(fixture, fixture.trainee)).not.toContain(AUDIT_ASSIGNMENT);
+      expect(await idsOf(fixture, fixture.staff)).not.toContain("30000000-0000-4000-a000-000000000003");
+      await expect(fixture.application.getClient(fixture.senior, BLUEPEAK)).rejects.toMatchObject({ status: 404 });
+    });
+
+    it("does not let a head change the assignment or add work to it", async () => {
+      const fixture = await setup();
+      await headOfAudit(fixture);
+      const assignment = (await fixture.application.listAssignments(fixture.senior)).find((a) => a.id === AUDIT_ASSIGNMENT)!;
+
+      await expect(
+        fixture.application.transitionAssignment(fixture.senior, AUDIT_ASSIGNMENT, "start", { expectedUpdatedAt: assignment.updatedAt }),
+      ).rejects.toMatchObject({ status: 403 });
+      await expect(
+        fixture.application.updateAssignment(fixture.senior, AUDIT_ASSIGNMENT, {
+          deliveryNotes: "Done",
+          expectedUpdatedAt: assignment.updatedAt,
+        }),
+      ).rejects.toMatchObject({ status: 403 });
+      await expect(
+        fixture.application.updateAssignment(fixture.senior, AUDIT_ASSIGNMENT, {
+          title: "Renamed by a head",
+          expectedUpdatedAt: assignment.updatedAt,
+        }),
+      ).rejects.toMatchObject({ status: 403, code: "role_not_permitted" });
+      await expect(
+        fixture.application.createWorkItem(fixture.senior, {
+          kind: "delegated",
+          title: "Extra work",
+          assignmentId: AUDIT_ASSIGNMENT,
+          assigneeId: DEMO_ACTOR_IDS.trainee,
+          dueAt: "2026-12-01T12:30:00.000Z",
+        }),
+      ).rejects.toMatchObject({ status: 403 });
+      const unchanged = (await fixture.application.listAssignments(fixture.founder)).find((a) => a.id === AUDIT_ASSIGNMENT);
+      expect(unchanged).toMatchObject({ title: assignment.title, status: assignment.status, deliveryNotes: assignment.deliveryNotes });
+    });
+
+    it("does not give a head the full PAN or GSTIN, fees, documents or messages of the client", async () => {
+      const fixture = await setup();
+      await headOfAudit(fixture);
+
+      const client = await fixture.application.getClient(fixture.senior, BLUEPEAK);
+      expect(client.pan).toBeNull();
+      expect(client.gstin).toBeNull();
+      expect(JSON.stringify(client)).not.toContain("AABCB2345B");
+      expect(JSON.stringify(client)).not.toContain("27AABCB2345B1Z4");
+      expect(client.canEdit).toBe(false);
+
+      // The bill of this client is not theirs to see
+      const staffInvoices = await fixture.application.listInvoices(fixture.staff);
+      const draft = staffInvoices.find((invoice) => invoice.clientId === BLUEPEAK);
+      expect(draft).toBeDefined();
+      const headInvoices = await fixture.application.listInvoices(fixture.senior);
+      expect(headInvoices.filter((invoice) => invoice.clientId === BLUEPEAK)).toEqual([]);
+      expect(await fixture.application.listClientMessages(fixture.senior, BLUEPEAK)).toEqual([]);
+      await expect(
+        fixture.application.createDocument(
+          fixture.senior,
+          { clientId: BLUEPEAK, title: "Notes", category: "other", fileName: "notes.pdf", mimeType: "application/pdf", sizeBytes: 100 },
+          "doc-1",
+        ),
+      ).rejects.toMatchObject({ status: 404 });
+      await expect(
+        fixture.application.updateClient(fixture.senior, BLUEPEAK, { notes: "head edit", expectedUpdatedAt: client.updatedAt }, "u1"),
+      ).rejects.toMatchObject({ status: 403 });
+    });
   });
 });
 

@@ -14,6 +14,8 @@ const SERVICE: ServiceDto = {
   turnaroundDays: 7,
   isStatutory: true,
   isActive: true,
+  departmentId: null,
+  departmentName: null,
   usage: { assignments: 4, recurringSchedules: 2, engagements: 0 },
   createdAt: '2026-10-01T04:30:00.000Z',
   updatedAt: '2026-11-08T04:30:00.000Z',
@@ -34,6 +36,37 @@ describe('ServiceDialog', () => {
   it('renders nothing when closed', () => {
     render(<ServiceDialog open={false} service={null} onClose={vi.fn()} onSubmit={vi.fn()} />);
     expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  it('offers No department and the active departments, and submits the chosen one or null', async () => {
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+    const department = (id: string, name: string, isActive: boolean) => ({
+      id,
+      name,
+      isActive,
+      members: [],
+      serviceIds: [],
+      createdAt: '2026-11-01T04:30:00.000Z',
+      updatedAt: '2026-11-01T04:30:00.000Z',
+    });
+    render(
+      <ServiceDialog
+        open
+        service={null}
+        departments={[
+          department('60000000-0000-4000-a000-000000000001', 'Audit', true),
+          department('60000000-0000-4000-a000-000000000002', 'GST', false),
+        ]}
+        onClose={vi.fn()}
+        onSubmit={onSubmit}
+      />,
+    );
+    const select = screen.getByLabelText('Department') as HTMLSelectElement;
+    expect([...select.options].map((option) => option.textContent)).toEqual(['No department', 'Audit']);
+    type('Name', 'Tax Audit');
+    fireEvent.click(saveButton());
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(onSubmit.mock.calls[0]?.[0]).toMatchObject({ name: 'Tax Audit', departmentId: null });
   });
 
   it('shows the add title, the fields, the hints and a plain checkbox outside the field wrapper', () => {
@@ -129,7 +162,7 @@ describe('ServiceDialog', () => {
 
     await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
     expect(onSubmit).toHaveBeenCalledWith(
-      { name: 'Trademark', description: null, turnaroundDays: null, isStatutory: true },
+      { name: 'Trademark', description: null, turnaroundDays: null, isStatutory: true, departmentId: null },
       expect.any(String),
     );
   });

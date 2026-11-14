@@ -9,6 +9,7 @@ import type {
   ClientMessageDto,
   CreateLedgerEntryInput,
   CreateRecurringScheduleInput,
+  DepartmentDto,
   EngagementDto,
   EngagementVersionDto,
   FeesByClientRowDto,
@@ -41,6 +42,7 @@ import type {
   CreateAssignmentRecord,
   CreateClientContactCommand,
   CreateClientRecord,
+  CreateDepartmentCommand,
   CreateDocumentCommand,
   CreateServiceCommand,
   CreateWorkItemRecord,
@@ -56,11 +58,13 @@ import type {
   RemoveDocumentCommand,
   RepositoryContext,
   ServiceReference,
+  SetDepartmentMembersCommand,
   UpdateAssignmentCommand,
   UpdateAssignmentReviewersCommand,
   UpdateAssignmentStatusCommand,
   UpdateClientCommand,
   UpdateClientContactCommand,
+  UpdateDepartmentCommand,
   UpdateServiceCommand,
   UpdateWorkItemStatusCommand,
   VoidFeeRecordCommand,
@@ -71,9 +75,11 @@ import {
   billHasPayments,
   billNotOpen,
   contactNotOfClient,
+  departmentNotFound,
   documentNotConfirmable,
   documentNotRemovable,
   documentStoragePath,
+  duplicateDepartment,
   duplicateService,
   duplicateVyaparBill,
   fileTooLarge,
@@ -84,7 +90,9 @@ import {
   notCreditAllocation,
   staleClient,
   staleContact,
+  staleDepartment,
   staleService,
+  traineeCannotHead,
   uploadMissing,
 } from './repository';
 
@@ -94,11 +102,31 @@ export interface ServiceSeedRecord extends ServiceReference {
   turnaroundDays?: number | null;
   isStatutory?: boolean;
   isActive?: boolean;
+  departmentId?: string | null;
   createdAt?: string;
   updatedAt?: string;
 }
 
-type ServiceRecord = Omit<ServiceDto, 'usage'>;
+type ServiceRecord = Omit<ServiceDto, 'usage' | 'departmentName'>;
+
+/** A department. Seeds may give just id and name; the rest default to an active department with no members. */
+export interface DepartmentSeedRecord {
+  id: string;
+  name: string;
+  isActive?: boolean;
+  members?: { userId: string; isHead?: boolean }[];
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+interface DepartmentRecord {
+  id: string;
+  name: string;
+  isActive: boolean;
+  members: { userId: string; isHead: boolean }[];
+  createdAt: string;
+  updatedAt: string;
+}
 
 export interface StoredOperationReceipt {
   readonly actorId: string;
@@ -146,6 +174,7 @@ export type ClientSeedRecord = Omit<
   | 'gstinMasked'
   | 'canEdit'
   | 'canChangeOwnerOrStatus'
+  | 'looksAfter'
   | 'contacts'
   | ClientDetailKey
 > &
@@ -200,6 +229,7 @@ export interface DemoSeed {
   employees: EmployeeRecord[];
   clients: ClientSeedRecord[];
   services?: ServiceSeedRecord[];
+  departments?: DepartmentSeedRecord[];
   assignments: AssignmentDto[];
   recurringSchedules: RecurringScheduleDto[];
   workItems: WorkItemDto[];
@@ -284,6 +314,7 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
   private readonly employees = new Map<string, EmployeeRecord>();
   private readonly clients = new Map<string, ClientSeedRecord>();
   private readonly services = new Map<string, ServiceRecord>();
+  private readonly departments = new Map<string, DepartmentRecord>();
   private readonly assignments = new Map<string, AssignmentDto>();
   private readonly schedules = new Map<string, RecurringScheduleDto>();
   private readonly workItems = new Map<string, WorkItemDto>();
@@ -341,6 +372,17 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
         turnaroundDays: value.turnaroundDays ?? null,
         isStatutory: value.isStatutory ?? false,
         isActive: value.isActive ?? true,
+        departmentId: value.departmentId ?? null,
+        createdAt: value.createdAt ?? seededAt,
+        updatedAt: value.updatedAt ?? seededAt,
+      }),
+    );
+    (seed.departments ?? []).forEach((value) =>
+      this.departments.set(value.id, {
+        id: value.id,
+        name: value.name,
+        isActive: value.isActive ?? true,
+        members: (value.members ?? []).map((member) => ({ userId: member.userId, isHead: member.isHead ?? false })),
         createdAt: value.createdAt ?? seededAt,
         updatedAt: value.updatedAt ?? seededAt,
       }),
@@ -435,6 +477,30 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
     return false;
   }
 
+  // Mirrors user_heads_department_of_assignment: a head-flagged member of the ACTIVE department of the
+  // assignment's service. Trainees never count. Read access only; nothing here grants a write right.
+  private headsDepartmentOfAssignment(actor: EmployeeRecord, assignment: AssignmentDto): boolean {
+    if (actor.role === 'trainee') return false;
+    const departmentId = this.services.get(assignment.serviceId)?.departmentId;
+    if (!departmentId) return false;
+    const department = this.departments.get(departmentId);
+    return department?.isActive === true && department.members.some((m) => m.userId === actor.id && m.isHead);
+  }
+
+  // Mirrors user_can_read_assignment, used wherever Postgres relies on the assignment select policy.
+  private canReadAssignment(actor: EmployeeRecord, assignment: AssignmentDto): boolean {
+    return this.hasAssignmentInvolvement(actor, assignment) || this.headsDepartmentOfAssignment(actor, assignment);
+  }
+
+  // Mirrors user_can_read_client, used wherever Postgres relies on the clients select policy.
+  private isClientReadable(actor: EmployeeRecord, client: ClientSeedRecord): boolean {
+    if (this.isClientVisible(actor, client)) return true;
+    for (const assignment of this.assignments.values()) {
+      if (assignment.clientId === client.id && this.headsDepartmentOfAssignment(actor, assignment)) return true;
+    }
+    return false;
+  }
+
   private isClientVisible(actor: EmployeeRecord, client: ClientSeedRecord): boolean {
     if (this.isManagement(actor)) {
       return true;
@@ -473,7 +539,7 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
         assignment.clientId === client.id &&
         assignment.status !== 'closed' &&
         assignment.status !== 'cancelled' &&
-        this.hasAssignmentInvolvement(actor, assignment)
+        this.canReadAssignment(actor, assignment)
       ) {
         activeAssignmentsCount += 1;
       }
@@ -509,6 +575,7 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
       contacts: [...(client.contacts ?? [])].sort(compareContacts),
       canEdit: this.canEditClient(actor, client),
       canChangeOwnerOrStatus: this.isManagement(actor),
+      looksAfter,
       activeAssignmentsCount,
       createdById: client.createdById,
       createdAt: client.createdAt,
@@ -516,16 +583,19 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
     };
   }
 
+  // 'visible' is client_visible (contacts, identifiers); 'readable' is the clients select policy, which also
+  // lets a department head read the client row of their department's work.
   private getVisibleClientRecord(
     ctx: RepositoryContext,
     clientId: string,
+    scope: 'visible' | 'readable' = 'visible',
   ): { actor: EmployeeRecord; client: ClientSeedRecord } | null {
     const actor = this.getActor(ctx);
     if (!actor) {
       return null;
     }
     const client = this.clients.get(clientId);
-    if (!client || !this.isClientVisible(actor, client)) {
+    if (!client || !(scope === 'readable' ? this.isClientReadable(actor, client) : this.isClientVisible(actor, client))) {
       return null;
     }
     return { actor, client };
@@ -533,6 +603,7 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
 
   private getVisibleClientRecords(
     ctx: RepositoryContext,
+    scope: 'visible' | 'readable' = 'visible',
   ): { actor: EmployeeRecord; clients: ClientSeedRecord[] } | null {
     const actor = this.getActor(ctx);
     if (!actor) {
@@ -540,7 +611,7 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
     }
     const clients: ClientSeedRecord[] = [];
     for (const client of this.clients.values()) {
-      if (this.isClientVisible(actor, client)) {
+      if (scope === 'readable' ? this.isClientReadable(actor, client) : this.isClientVisible(actor, client)) {
         clients.push(client);
       }
     }
@@ -551,7 +622,7 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
   // --- Clients (Read-Only) ---
 
   async getClient(ctx: RepositoryContext, clientId: string): Promise<ClientDto | null> {
-    const match = this.getVisibleClientRecord(ctx, clientId);
+    const match = this.getVisibleClientRecord(ctx, clientId, 'readable');
     if (!match) {
       return null;
     }
@@ -559,7 +630,7 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
   }
 
   async listClients(ctx: RepositoryContext): Promise<ClientDto[]> {
-    const result = this.getVisibleClientRecords(ctx);
+    const result = this.getVisibleClientRecords(ctx, 'readable');
     if (!result) {
       return [];
     }
@@ -655,7 +726,7 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
   async updateClient(ctx: RepositoryContext, command: UpdateClientCommand): Promise<ClientDto> {
     const { idempotencyKey, ...payload } = command;
     const { id } = this.runIdempotent<{ id: string }>(ctx, idempotencyKey, 'updateClient', payload, () => {
-      const match = this.getVisibleClientRecord(ctx, command.id);
+      const match = this.getVisibleClientRecord(ctx, command.id, 'readable');
       if (!match) throw notFound('Client');
       const { actor, client } = match;
       if (!this.canEditClient(actor, client)) throw this.forbiddenOperation();
@@ -723,7 +794,7 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
   async createClientContact(ctx: RepositoryContext, command: CreateClientContactCommand): Promise<ClientContactDto> {
     const { idempotencyKey, ...payload } = command;
     return this.runIdempotent<ClientContactDto>(ctx, idempotencyKey, 'createClientContact', payload, () => {
-      const match = this.getVisibleClientRecord(ctx, command.clientId);
+      const match = this.getVisibleClientRecord(ctx, command.clientId, 'readable');
       if (!match) throw notFound('Client');
       if (!this.canEditClient(match.actor, match.client)) throw this.forbiddenOperation();
       const contacts = match.client.contacts ?? [];
@@ -786,7 +857,7 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
   // --- Reference Lookups ---
 
   async getClientReference(ctx: RepositoryContext, clientId: string): Promise<ClientReference | null> {
-    const match = this.getVisibleClientRecord(ctx, clientId);
+    const match = this.getVisibleClientRecord(ctx, clientId, 'readable');
     if (!match) {
       return null;
     }
@@ -798,7 +869,7 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
   }
 
   async listClientReferences(ctx: RepositoryContext): Promise<ClientReference[]> {
-    const result = this.getVisibleClientRecords(ctx);
+    const result = this.getVisibleClientRecords(ctx, 'readable');
     if (!result) {
       return [];
     }
@@ -840,6 +911,7 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
   private toServiceDto(service: ServiceRecord): ServiceDto {
     return {
       ...service,
+      departmentName: service.departmentId ? (this.departments.get(service.departmentId)?.name ?? null) : null,
       usage: {
         assignments: [...this.assignments.values()].filter((a) => a.serviceId === service.id).length,
         recurringSchedules: [...this.schedules.values()].filter((s) => s.serviceId === service.id).length,
@@ -871,6 +943,8 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
     return this.runIdempotent<ServiceDto>(ctx, idempotencyKey, 'createService', payload, () => {
       const name = command.name.trim();
       if (this.serviceNameTaken(name, null)) throw duplicateService(name);
+      const departmentId = command.departmentId ?? null;
+      if (departmentId !== null && this.departments.get(departmentId)?.isActive !== true) throw departmentNotFound();
       const nowIso = this.now().toISOString();
       const record: ServiceRecord = {
         id: crypto.randomUUID(),
@@ -879,6 +953,7 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
         turnaroundDays: command.turnaroundDays ?? null,
         isStatutory: command.isStatutory === true,
         isActive: true,
+        departmentId,
         createdAt: nowIso,
         updatedAt: nowIso,
       };
@@ -896,6 +971,15 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
       if (command.name !== undefined && this.serviceNameTaken(command.name, command.id)) {
         throw duplicateService(command.name);
       }
+      // Only a change of department is checked: a service keeps its department even after it is deactivated.
+      if (
+        command.departmentId !== undefined &&
+        command.departmentId !== null &&
+        command.departmentId !== current.departmentId &&
+        this.departments.get(command.departmentId)?.isActive !== true
+      ) {
+        throw departmentNotFound();
+      }
       // Every change moves updatedAt forward, even within the same millisecond, so a stale token never matches
       const nowMs = Math.max(this.now().getTime(), Date.parse(current.updatedAt) + 1);
       const updated: ServiceRecord = {
@@ -905,10 +989,118 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
         ...(command.turnaroundDays !== undefined ? { turnaroundDays: command.turnaroundDays } : {}),
         ...(command.isStatutory !== undefined ? { isStatutory: command.isStatutory } : {}),
         ...(command.isActive !== undefined ? { isActive: command.isActive } : {}),
+        ...(command.departmentId !== undefined ? { departmentId: command.departmentId } : {}),
         updatedAt: new Date(nowMs).toISOString(),
       };
       this.services.set(updated.id, updated);
       return { result: this.toServiceDto(updated) };
+    });
+  }
+
+  // --- Departments (DEPT-01) ---
+
+  private toDepartmentDto(department: DepartmentRecord): DepartmentDto {
+    const members = department.members
+      .flatMap((member) => {
+        const employee = this.employees.get(member.userId);
+        return employee?.active
+          ? [{ userId: member.userId, name: employee.name, role: employee.role, isHead: member.isHead }]
+          : [];
+      })
+      .sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()) || a.name.localeCompare(b.name));
+    const serviceIds = [...this.services.values()]
+      .filter((service) => service.departmentId === department.id)
+      .sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()) || a.name.localeCompare(b.name))
+      .map((service) => service.id);
+    return {
+      id: department.id,
+      name: department.name,
+      isActive: department.isActive,
+      members,
+      serviceIds,
+      createdAt: department.createdAt,
+      updatedAt: department.updatedAt,
+    };
+  }
+
+  private departmentNameTaken(name: string, exceptId: string | null): boolean {
+    const normalized = name.trim().toLowerCase();
+    return [...this.departments.values()].some(
+      (department) => department.id !== exceptId && department.name.trim().toLowerCase() === normalized,
+    );
+  }
+
+  async listDepartments(_ctx: RepositoryContext): Promise<DepartmentDto[]> {
+    return [...this.departments.values()]
+      .map((department) => this.toDepartmentDto(department))
+      .sort(
+        (a, b) =>
+          Number(b.isActive) - Number(a.isActive) ||
+          a.name.toLowerCase().localeCompare(b.name.toLowerCase()) ||
+          a.name.localeCompare(b.name),
+      );
+  }
+
+  async createDepartment(ctx: RepositoryContext, command: CreateDepartmentCommand): Promise<DepartmentDto> {
+    const { idempotencyKey, ...payload } = command;
+    return this.runIdempotent<DepartmentDto>(ctx, idempotencyKey, 'createDepartment', payload, () => {
+      const name = command.name.trim();
+      if (this.departmentNameTaken(name, null)) throw duplicateDepartment(name);
+      const nowIso = this.now().toISOString();
+      const record: DepartmentRecord = {
+        id: crypto.randomUUID(),
+        name,
+        isActive: true,
+        members: [],
+        createdAt: nowIso,
+        updatedAt: nowIso,
+      };
+      this.departments.set(record.id, record);
+      return { result: this.toDepartmentDto(record) };
+    });
+  }
+
+  async updateDepartment(ctx: RepositoryContext, command: UpdateDepartmentCommand): Promise<DepartmentDto> {
+    const { idempotencyKey, ...payload } = command;
+    return this.runIdempotent<DepartmentDto>(ctx, idempotencyKey, 'updateDepartment', payload, () => {
+      const current = this.departments.get(command.id);
+      if (!current) throw notFound('Department');
+      if (Date.parse(current.updatedAt) !== Date.parse(command.expectedUpdatedAt)) throw staleDepartment();
+      if (command.name !== undefined && this.departmentNameTaken(command.name, command.id)) {
+        throw duplicateDepartment(command.name);
+      }
+      // Every change moves updatedAt forward, even within the same millisecond, so a stale token never matches
+      const nowMs = Math.max(this.now().getTime(), Date.parse(current.updatedAt) + 1);
+      const updated: DepartmentRecord = {
+        ...current,
+        ...(command.name !== undefined ? { name: command.name.trim() } : {}),
+        ...(command.isActive !== undefined ? { isActive: command.isActive } : {}),
+        updatedAt: new Date(nowMs).toISOString(),
+      };
+      this.departments.set(updated.id, updated);
+      return { result: this.toDepartmentDto(updated) };
+    });
+  }
+
+  async setDepartmentMembers(ctx: RepositoryContext, command: SetDepartmentMembersCommand): Promise<DepartmentDto> {
+    const { idempotencyKey, ...payload } = command;
+    return this.runIdempotent<DepartmentDto>(ctx, idempotencyKey, 'setDepartmentMembers', payload, () => {
+      const current = this.departments.get(command.id);
+      if (!current) throw notFound('Department');
+      const people = command.members.map((member) => ({ member, employee: this.employees.get(member.userId) }));
+      if (people.some(({ employee }) => !employee?.active)) {
+        throw new ApiError(422, 'referenced_entity_not_found', 'The referenced entity does not exist.');
+      }
+      if (people.some(({ member, employee }) => member.isHead && employee?.role === 'trainee')) {
+        throw traineeCannotHead();
+      }
+      // The whole membership is replaced in one step
+      const updated: DepartmentRecord = {
+        ...current,
+        members: command.members.map((member) => ({ userId: member.userId, isHead: member.isHead })),
+      };
+      this.departments.set(updated.id, updated);
+      return { result: this.toDepartmentDto(updated) };
     });
   }
 
@@ -1900,7 +2092,7 @@ export class InMemoryCrmRepository implements CrmRepository, DevActorDirectory {
     const ownerName = (id: string): string => this.employees.get(id)?.name ?? 'Unassigned';
 
     const assignments = actor
-      ? [...this.assignments.values()].filter((assignment) => this.hasAssignmentInvolvement(actor, assignment))
+      ? [...this.assignments.values()].filter((assignment) => this.canReadAssignment(actor, assignment))
       : [];
     const workItems = actor ? [...this.workItems.values()].filter((item) => this.canViewWorkItem(actor, item)) : [];
 

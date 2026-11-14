@@ -1,4 +1,5 @@
 import { describe, it, expect, expectTypeOf } from 'vitest';
+import type { CompanyRole } from '@sn/domain';
 import {
   ASSIGNMENT_STATUSES,
   WORK_ITEM_STATUSES,
@@ -64,6 +65,10 @@ import {
   type VoidFeeRecordInput,
   type ServiceDto,
   type CreateServiceInput,
+  type DepartmentDto,
+  type CreateDepartmentInput,
+  type UpdateDepartmentInput,
+  type SetDepartmentMembersInput,
   type UpdateServiceInput,
 } from './index';
 
@@ -543,6 +548,24 @@ describe('Service list contracts (SVC-01)', () => {
     expectTypeOf<UpdateServiceInput['name']>().toEqualTypeOf<string | undefined>();
     expectTypeOf<UpdateServiceInput['isActive']>().toEqualTypeOf<boolean | undefined>();
     expectTypeOf<UpdateServiceInput['expectedUpdatedAt']>().toEqualTypeOf<string>();
+  });
+});
+
+describe('Department contracts (DEPT-01)', () => {
+  it('keeps the department shapes aligned with the brief', () => {
+    expectTypeOf<DepartmentDto['isActive']>().toEqualTypeOf<boolean>();
+    expectTypeOf<DepartmentDto['members'][number]['isHead']>().toEqualTypeOf<boolean>();
+    expectTypeOf<DepartmentDto['members'][number]['role']>().toEqualTypeOf<CompanyRole>();
+    expectTypeOf<DepartmentDto['serviceIds']>().toEqualTypeOf<readonly string[]>();
+    expectTypeOf<CreateDepartmentInput['name']>().toEqualTypeOf<string>();
+    expectTypeOf<UpdateDepartmentInput['name']>().toEqualTypeOf<string | undefined>();
+    expectTypeOf<UpdateDepartmentInput['isActive']>().toEqualTypeOf<boolean | undefined>();
+    expectTypeOf<UpdateDepartmentInput['expectedUpdatedAt']>().toEqualTypeOf<string>();
+    expectTypeOf<SetDepartmentMembersInput['members'][number]['userId']>().toEqualTypeOf<string>();
+    expectTypeOf<ServiceDto['departmentId']>().toEqualTypeOf<string | null>();
+    expectTypeOf<ServiceDto['departmentName']>().toEqualTypeOf<string | null>();
+    expectTypeOf<CreateServiceInput['departmentId']>().toEqualTypeOf<string | null | undefined>();
+    expectTypeOf<UpdateServiceInput['departmentId']>().toEqualTypeOf<string | null | undefined>();
   });
 });
 

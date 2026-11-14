@@ -24,11 +24,12 @@ import {
   X,
 } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
-import type { ClientDto, ReportingLineDto, ServiceCatalogItemDto, SessionActor } from '@sn/contracts';
+import type { ClientDto, DepartmentDto, ReportingLineDto, ServiceCatalogItemDto, SessionActor } from '@sn/contracts';
 import { authorize, type CompanyRole } from '@sn/domain';
 import { useBilling } from './api/use-billing';
 import { useEngagements } from './api/use-engagements';
 import { useServiceCatalog } from './api/use-service-catalog';
+import { useDepartments } from './api/use-departments';
 import { useDocuments } from './api/use-documents';
 import { useClientMessages } from './api/use-messages';
 import { SessionClient } from './api/auth/session-client';
@@ -86,6 +87,14 @@ import {
   type FeesState,
   type MetricTile,
 } from './workspaces/dashboard/dashboard-metrics';
+import { DashboardViewSwitch, DepartmentDashboard } from './workspaces/dashboard/department-dashboard';
+import {
+  departmentViewOptions,
+  MY_DASHBOARD_VIEW,
+  readStoredDashboardView,
+  resolveDashboardView,
+  storeDashboardView,
+} from './workspaces/dashboard/department-view';
 import {
   CreateAssignmentDialog,
   type DialogClientOption,
@@ -265,6 +274,17 @@ function AuthenticatedApp({
     createService,
     updateService,
   } = useServiceCatalog(role, { enabled: activePage === 'Settings' });
+  // The departments drive the dashboard views and the Departments section of Settings.
+  const {
+    departments,
+    loading: departmentsLoading,
+    error: departmentsError,
+    hasLiveSnapshot: departmentsLoaded,
+    retry: retryDepartments,
+    createDepartment,
+    updateDepartment,
+    setDepartmentMembers,
+  } = useDepartments(role);
   const {
     documents: clientDocuments,
     loading: documentsLoading,
@@ -656,6 +676,7 @@ function AuthenticatedApp({
           role={role}
           actorId={actor.id}
           actorName={actor.name}
+          departments={departments}
           assignments={assignments}
           schedules={schedules}
           invoices={invoices}
@@ -701,7 +722,22 @@ function AuthenticatedApp({
             hasLiveSnapshot: serviceCatalogLoaded,
             error: serviceCatalogError ? serviceCatalogError.message : null,
             onRetry: retryServiceCatalog,
-            onServicesChanged: reloadServices,
+            onServicesChanged: () => {
+              reloadServices();
+              // A service moving between departments changes each department's service count
+              retryDepartments();
+            },
+            departments: {
+              departments,
+              actions: { createDepartment, updateDepartment, setDepartmentMembers },
+              employees: staffOptions,
+              loading: departmentsLoading,
+              hasLiveSnapshot: departmentsLoaded,
+              error: departmentsError ? departmentsError.message : null,
+              onRetry: retryDepartments,
+              // A renamed department shows its new name in the service list
+              onDepartmentsChanged: retryServiceCatalog,
+            },
           }}
           documentsModel={{
             documents: clientDocuments,
@@ -758,10 +794,11 @@ function AuthenticatedApp({
   );
 }
 
-function RoleDashboard({
+export function RoleDashboard({
   role,
   actorId,
   actorName = '',
+  departments = [],
   assignments,
   schedules,
   invoices,
@@ -786,6 +823,8 @@ function RoleDashboard({
   role: CompanyRole;
   actorId: string;
   actorName?: string;
+  /** Every department; the ones this person may open as a view are worked out here. */
+  departments?: readonly DepartmentDto[];
   assignments: AssignmentRow[];
   schedules: RecurringScheduleRecord[];
   invoices: InvoiceRecord[];
@@ -807,6 +846,15 @@ function RoleDashboard({
   onSubmitTaskForReview?: (task: DelegatedTaskRecord) => void;
   onNavigate?: (page: PageKey) => void;
 }) {
+  // People with department views get a switch; the last view they chose is remembered in this browser.
+  const [chosenView, setChosenView] = useState<string | null>(() => readStoredDashboardView(actorId));
+  const viewOptions = departmentViewOptions(role, actorId, departments);
+  const view = resolveDashboardView(chosenView, viewOptions);
+  const activeDepartment = viewOptions.find((department) => department.id === view);
+  const chooseView = (next: string) => {
+    setChosenView(next);
+    storeDashboardView(actorId, next);
+  };
   const copy = ROLE_COPY[role];
   const firstName = actorName.trim().split(/\s+/)[0] ?? '';
   // Founder keeps the overview title; everyone else is greeted by their own first name.
@@ -836,7 +884,21 @@ function RoleDashboard({
         primaryLabel={leadership ? 'New assignment' : 'New personal task'}
         onPrimary={() => onCompose(leadership ? 'assignment' : 'personal')}
       />
-      {role === 'founder' ? (
+      {viewOptions.length > 0 ? (
+        <DashboardViewSwitch departments={viewOptions} view={view} onChange={chooseView} />
+      ) : null}
+      {activeDepartment ? (
+        <DepartmentDashboard
+          department={activeDepartment}
+          assignments={assignments}
+          today={today}
+          canEdit={leadership}
+          onToast={onToast}
+          onSelectAssignment={onSelectAssignment}
+          onNavigate={onNavigate}
+        />
+      ) : null}
+      {view === MY_DASHBOARD_VIEW && role === 'founder' ? (
         <FounderDashboard
           tiles={tiles}
           today={today}
@@ -848,7 +910,7 @@ function RoleDashboard({
           onNavigate={onNavigate}
         />
       ) : null}
-      {role === 'manager' ? (
+      {view === MY_DASHBOARD_VIEW && role === 'manager' ? (
         <ManagerDashboard
           tiles={tiles}
           today={today}
@@ -860,7 +922,7 @@ function RoleDashboard({
           onNavigate={onNavigate}
         />
       ) : null}
-      {role === 'senior_staff' ? (
+      {view === MY_DASHBOARD_VIEW && role === 'senior_staff' ? (
         <SeniorDashboard
           tiles={tiles}
           today={today}
@@ -877,7 +939,7 @@ function RoleDashboard({
           onNavigate={onNavigate}
         />
       ) : null}
-      {role === 'staff' ? (
+      {view === MY_DASHBOARD_VIEW && role === 'staff' ? (
         <StaffDashboard
           tiles={tiles}
           today={today}
@@ -891,7 +953,7 @@ function RoleDashboard({
           onNavigate={onNavigate}
         />
       ) : null}
-      {role === 'trainee' ? (
+      {view === MY_DASHBOARD_VIEW && role === 'trainee' ? (
         <TraineeDashboard
           tiles={tiles}
           personalTasks={personalTasks}

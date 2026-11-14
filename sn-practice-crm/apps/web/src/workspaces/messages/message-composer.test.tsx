@@ -51,6 +51,7 @@ const ASTER: ClientDto = {
   ],
   canEdit: true,
   canChangeOwnerOrStatus: false,
+  looksAfter: true,
   createdById: '20000000-0000-4000-a000-000000000001',
   createdAt: '2026-10-01T04:30:00.000Z',
   updatedAt: '2026-10-01T04:30:00.000Z',
@@ -151,6 +152,13 @@ describe('MessageComposerProvider', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Start' }));
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(onToast).toHaveBeenCalledWith('The client could not be found.');
+  });
+
+  it('never opens for a client the reader can see but does not look after', () => {
+    const { onToast } = setup({ clients: [{ ...ASTER, looksAfter: false }] });
+    fireEvent.click(screen.getByRole('button', { name: 'Start' }));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(onToast).not.toHaveBeenCalled();
   });
 
   it('never opens for a Trainee and says they cannot message', () => {

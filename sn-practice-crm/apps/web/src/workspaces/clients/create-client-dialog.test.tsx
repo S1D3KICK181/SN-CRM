@@ -42,6 +42,7 @@ const SAMPLE_CREATED_CLIENT: ClientDto = {
   contacts: [],
   canEdit: false,
   canChangeOwnerOrStatus: false,
+  looksAfter: true,
   createdById: '00000000-0000-4000-a000-000000000001',
   createdAt: '2026-11-06T12:00:00.000Z',
   updatedAt: '2026-11-06T12:00:00.000Z',

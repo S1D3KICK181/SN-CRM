@@ -42,6 +42,7 @@ function createClientDto(overrides: Partial<ClientDto> = {}): ClientDto {
     contacts: [],
     canEdit: false,
     canChangeOwnerOrStatus: false,
+    looksAfter: true,
     createdById: 'u1111111-1111-4111-8111-111111111111',
     createdAt: '2026-04-01T09:30:00.000Z',
     updatedAt: '2026-04-15T14:20:00.000Z',
@@ -520,6 +521,7 @@ describe('ClientsWorkspace', () => {
         contacts: [],
         canEdit: false,
         canChangeOwnerOrStatus: false,
+        looksAfter: true,
         createdById: '00000000-0000-4000-a000-000000000001',
         createdAt: '2026-11-06T12:00:00.000Z',
         updatedAt: '2026-11-06T12:00:00.000Z',
@@ -856,6 +858,7 @@ describe('ClientsWorkspace', () => {
         id: CLIENT_ID,
         canEdit: true,
         canChangeOwnerOrStatus: true,
+        looksAfter: true,
         contacts: [CONTACT],
         ...overrides,
       });

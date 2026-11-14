@@ -9,7 +9,9 @@ import type {
   ClientEntityType,
   ClientMessageDto,
   CreateClientContactInput,
+  CreateDepartmentInput,
   CreateDocumentInput,
+  DepartmentDto,
   CreateEngagementDraftInput,
   CreateLedgerEntryInput,
   CreateRecurringScheduleInput,
@@ -34,8 +36,10 @@ import type {
   ReviseEngagementDraftInput,
   ServiceDto,
   SessionActor,
+  SetDepartmentMembersInput,
   UpdateClientContactInput,
   UpdateClientInput,
+  UpdateDepartmentInput,
   UpdateRecurringScheduleInput,
   UpdateServiceInput,
   WorkItemDto,
@@ -267,6 +271,35 @@ export function staleService(): ApiError {
   return new ApiError(409, 'stale_service', 'This service was changed by someone else. Reload and try again.');
 }
 
+/** A service may be filed only under an active department. */
+export function departmentNotFound(): ApiError {
+  return new ApiError(422, 'department_not_found', 'The department does not exist or is not active.');
+}
+
+// --- Department commands (DEPT-01) ---
+
+export type CreateDepartmentCommand = CreateDepartmentInput & { readonly idempotencyKey: string };
+export type UpdateDepartmentCommand = UpdateDepartmentInput & {
+  readonly id: string; // RFC 4122 UUID of the department
+  readonly idempotencyKey: string;
+};
+export type SetDepartmentMembersCommand = SetDepartmentMembersInput & {
+  readonly id: string; // RFC 4122 UUID of the department
+  readonly idempotencyKey: string;
+};
+
+export function duplicateDepartment(name: string): ApiError {
+  return new ApiError(409, 'duplicate_department', `A department named ${name} already exists.`);
+}
+
+export function staleDepartment(): ApiError {
+  return new ApiError(409, 'stale_department', 'This department was changed by someone else. Reload and try again.');
+}
+
+export function traineeCannotHead(): ApiError {
+  return new ApiError(422, 'trainee_cannot_head', 'Trainees can be members but not heads.');
+}
+
 /** Today's calendar date (YYYY-MM-DD) in Asia/Kolkata, matching the SQL read path. */
 export function kolkataToday(now: Date): string {
   return new Intl.DateTimeFormat('en-CA', {
@@ -417,6 +450,13 @@ export interface CrmRepository {
   listServiceCatalog(ctx: RepositoryContext): Promise<ServiceDto[]>;
   createService(ctx: RepositoryContext, command: CreateServiceCommand): Promise<ServiceDto>;
   updateService(ctx: RepositoryContext, command: UpdateServiceCommand): Promise<ServiceDto>;
+
+  // Departments (DEPT-01); every active employee reads them, writes are idempotent on (actor, key).
+  // Heads read their department's assignments in listAssignments; nothing else widens for them.
+  listDepartments(ctx: RepositoryContext): Promise<DepartmentDto[]>;
+  createDepartment(ctx: RepositoryContext, command: CreateDepartmentCommand): Promise<DepartmentDto>;
+  updateDepartment(ctx: RepositoryContext, command: UpdateDepartmentCommand): Promise<DepartmentDto>;
+  setDepartmentMembers(ctx: RepositoryContext, command: SetDepartmentMembersCommand): Promise<DepartmentDto>;
 
   // Identity & Reporting Lines
   getEmployee(ctx: RepositoryContext, id: string): Promise<EmployeeRecord | null>;

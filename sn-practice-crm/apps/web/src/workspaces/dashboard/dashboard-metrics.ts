@@ -365,8 +365,17 @@ export interface PersonLoad {
   widthPercent: number;
 }
 
-export function computeOpenWorkByPerson(assignments: readonly AssignmentRow[], limit = 6): PersonLoad[] {
+/**
+ * Open assignments each person owns, most first. `members` are people who always get a row, even with
+ * nothing open (a department's members); without them only owners of open work appear.
+ */
+export function computeOpenWorkByPerson(
+  assignments: readonly AssignmentRow[],
+  limit = 6,
+  members: readonly { id: string; name: string }[] = [],
+): PersonLoad[] {
   const counts = new Map<string, { name: string; open: number }>();
+  for (const member of members) counts.set(member.id, { name: member.name, open: 0 });
   for (const assignment of openAssignments(assignments)) {
     const key = assignment.ownerId ?? assignment.owner;
     const entry = counts.get(key) ?? { name: assignment.owner, open: 0 };
@@ -530,6 +539,47 @@ function dueTodayTile(dueToday: number, overdue: number, note: string): MetricTi
 function personalTiles(tasks: readonly PersonalTaskRecord[]): MetricTile {
   const done = tasks.filter((t) => t.done).length;
   return { label: 'Personal tasks', value: String(tasks.length - done), note: `${done} done`, tone: 'default' };
+}
+
+/** The four tiles of a department view, counted over that department's assignments only. */
+export function buildDepartmentTiles(assignments: readonly AssignmentRow[], today: string): MetricTile[] {
+  const open = openAssignments(assignments);
+  const overdue = countOverdue(assignments, today);
+  const review = countByStatus(assignments, 'Ready for review');
+  return [
+    {
+      label: 'Open assignments',
+      value: String(open.length),
+      note: inProgressNote(open.filter((a) => a.status === 'In progress').length),
+      tone: 'default',
+    },
+    dueTodayTile(
+      countDueToday(assignments, today),
+      overdue,
+      overdue > 0 ? `${overdue} overdue` : 'None overdue',
+    ),
+    {
+      label: 'Overdue',
+      value: String(overdue),
+      note: 'Past their due date',
+      tone: countTone(overdue, 'danger'),
+    },
+    {
+      label: 'Waiting for review',
+      value: String(review),
+      note: 'Founder or Manager action',
+      tone: countTone(review, 'warning'),
+    },
+  ];
+}
+
+/** Open assignments past their due date, the earliest due first. */
+export function overdueAssignments(assignments: readonly AssignmentRow[], today: string): AssignmentRow[] {
+  return openAssignments(assignments)
+    .map((assignment) => ({ assignment, due: assignmentDue(assignment) }))
+    .filter((entry) => entry.due !== '' && entry.due < today)
+    .sort((a, b) => a.due.localeCompare(b.due) || a.assignment.title.localeCompare(b.assignment.title))
+    .map((entry) => entry.assignment);
 }
 
 export function buildMetricTiles(input: MetricInput): MetricTile[] {

@@ -41,6 +41,7 @@ function createMockClientDto(overrides: Partial<ClientDto> = {}): ClientDto {
     contacts: [],
     canEdit: false,
     canChangeOwnerOrStatus: false,
+    looksAfter: true,
     createdById: 'u1111111-1111-4111-8111-111111111111',
     createdAt: '2026-04-01T09:30:00.000Z',
     updatedAt: '2026-04-15T14:20:00.000Z',
@@ -284,6 +285,7 @@ describe('clients-view-model', () => {
         createMockClientDto({
           canEdit: true,
           canChangeOwnerOrStatus: true,
+          looksAfter: true,
           contacts: [
             {
               id: 'd1111111-1111-4111-8111-111111111111',

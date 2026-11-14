@@ -614,7 +614,9 @@ export function ClientProfileDrawer({
   const drawerRef = useRef<HTMLElement>(null);
   // Only people who may message clients get the button and the Messages section.
   const messageComposer = useMessageComposer();
-  const composer = messageComposer?.canMessage ? messageComposer : null;
+  // A department head who can only read this client gets neither (the server would refuse the message).
+  const composer =
+    messageComposer?.canMessage && client && messageComposer.canMessageClient(client.id) ? messageComposer : null;
 
   useEffect(() => {
     drawerRef.current?.focus();

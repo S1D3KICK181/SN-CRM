@@ -41,6 +41,7 @@ function client(id: string, code: string, displayName: string, overrides: Partia
     contacts: [],
     canEdit: true,
     canChangeOwnerOrStatus: false,
+    looksAfter: true,
     createdById: '20000000-0000-4000-a000-000000000001',
     createdAt: '2026-10-01T04:30:00.000Z',
     updatedAt: '2026-10-01T04:30:00.000Z',
@@ -342,11 +343,13 @@ describe('UploadDocumentDialog', () => {
 });
 
 describe('uploadClientOptions', () => {
-  it('prefers the clients the reader can edit or sees in full, and falls back to the whole list', () => {
-    const own = client('10000000-0000-4000-a000-000000000003', 'CL-000003', 'Own', { canEdit: true });
-    const other = client('10000000-0000-4000-a000-000000000004', 'CL-000004', 'Other', { canEdit: false });
-    const seen = client('10000000-0000-4000-a000-000000000005', 'CL-000005', 'Seen', { canEdit: false, pan: 'ABCDE1234F' });
-    expect(uploadClientOptions([own, other, seen])).toEqual([own, seen]);
+  it('offers the clients the reader looks after, and falls back to the whole list', () => {
+    const own = client('10000000-0000-4000-a000-000000000003', 'CL-000003', 'Own', { canEdit: true, looksAfter: true });
+    const other = client('10000000-0000-4000-a000-000000000004', 'CL-000004', 'Other', { canEdit: false, looksAfter: false });
+    const seen = client('10000000-0000-4000-a000-000000000005', 'CL-000005', 'Seen', { canEdit: false, looksAfter: true });
+    // A department head can read this client, even edit-free, but does not look after it: no uploads.
+    const headOnly = client('10000000-0000-4000-a000-000000000006', 'CL-000006', 'Read only', { canEdit: false, looksAfter: false });
+    expect(uploadClientOptions([own, other, seen, headOnly])).toEqual([own, seen]);
     expect(uploadClientOptions([other])).toEqual([other]);
     expect(uploadClientOptions([])).toEqual([]);
   });

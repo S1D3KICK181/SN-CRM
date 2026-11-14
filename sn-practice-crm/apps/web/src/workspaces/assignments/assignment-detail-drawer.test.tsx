@@ -340,7 +340,7 @@ describe('AssignmentDetailDrawer send reminder (MSG-01)', () => {
   }
 
   function stubComposer(overrides: Partial<MessageComposer> = {}): MessageComposer {
-    return { canMessage: true, open: vi.fn(), recentFor: () => [], showAll: vi.fn(), ...overrides };
+    return { canMessage: true, canMessageClient: () => true, open: vi.fn(), recentFor: () => [], showAll: vi.fn(), ...overrides };
   }
 
   it('opens a deadline reminder with the assignment linked', () => {

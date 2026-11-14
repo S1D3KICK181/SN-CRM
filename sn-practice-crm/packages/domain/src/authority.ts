@@ -44,7 +44,7 @@ export type AuthorityRequest =
     }
   | { action: 'client.update'; actor: Actor; isRelationshipOwner: boolean }
   | { action: 'client.change_owner_or_status'; actor: Actor }
-  | { action: 'finance.manage' | 'reports.view' | 'reports.view_practice' | 'team.manage_access' | 'service.manage' | 'document.remove' | 'message.send'; actor: Actor }
+  | { action: 'finance.manage' | 'reports.view' | 'reports.view_practice' | 'team.manage_access' | 'service.manage' | 'department.manage' | 'document.remove' | 'message.send'; actor: Actor }
   | { action: 'team.manage_reporting'; actor: Actor; subject: EmployeeRef; proposedManager: EmployeeRef | null }
   | {
       action:
@@ -231,6 +231,11 @@ export function authorize(request: AuthorityRequest): AuthorityDecision {
       return actor.role === 'founder'
         ? ALLOWED
         : deny('role_not_permitted', 'Only the Founder may manage the service list.');
+
+    case 'department.manage':
+      return actor.role === 'founder'
+        ? ALLOWED
+        : deny('role_not_permitted', 'Only the Founder may manage departments.');
 
     case 'team.manage_reporting': {
       if (actor.role !== 'founder' && actor.role !== 'manager') {

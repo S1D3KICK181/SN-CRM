@@ -65,7 +65,8 @@ function titleFromFileName(fileName: string): string {
 
 /** Clients the user looks after; when none of them can be told apart, every client from the live list. */
 export function uploadClientOptions(clients: readonly ClientDto[]): readonly ClientDto[] {
-  const looked = clients.filter((client) => client.canEdit || client.pan !== null);
+  // Only clients the reader looks after accept uploads; a department head's read-only clients are left out.
+  const looked = clients.filter((client) => client.looksAfter);
   return looked.length > 0 ? looked : clients;
 }
 

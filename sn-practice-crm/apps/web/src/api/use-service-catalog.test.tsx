@@ -14,6 +14,8 @@ const gst: ServiceDto = {
   turnaroundDays: 7,
   isStatutory: true,
   isActive: true,
+  departmentId: null,
+  departmentName: null,
   usage: { assignments: 4, recurringSchedules: 2, engagements: 0 },
   createdAt: '2026-10-01T04:30:00.000Z',
   updatedAt: '2026-11-08T04:30:00.000Z',

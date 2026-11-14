@@ -8,6 +8,7 @@ import type {
   RecurringScheduleRecord,
 } from '../../data';
 import {
+  buildDepartmentTiles,
   buildMetricTiles,
   computeBilledAndCollected,
   computeComingUp,
@@ -21,6 +22,7 @@ import {
   financialYearOf,
   myAssignments,
   openAssignments,
+  overdueAssignments,
   taskDueIso,
   type MetricInput,
 } from './dashboard-metrics';
@@ -293,6 +295,68 @@ describe('computeOpenWorkByPerson', () => {
   it('keeps the six busiest owners', () => {
     const rows = Array.from({ length: 8 }, (_, i) => assignment({ id: `a${i}`, owner: `P${i}`, ownerId: `p${i}` }));
     expect(computeOpenWorkByPerson(rows)).toHaveLength(6);
+  });
+
+  it('gives each listed member a row even with nothing open, and counts their open work under the same row', () => {
+    const rows = [
+      assignment({ id: '1', owner: 'Priya', ownerId: 'p' }),
+      assignment({ id: '2', owner: 'Outsider', ownerId: 'o' }),
+      assignment({ id: '3', owner: 'Priya', ownerId: 'p', status: 'Closed' }),
+    ];
+    const members = [
+      { id: 'p', name: 'Priya' },
+      { id: 'r', name: 'Rohan' },
+    ];
+    expect(computeOpenWorkByPerson(rows, 6, members)).toEqual([
+      { key: 'o', name: 'Outsider', open: 1, widthPercent: 100 },
+      { key: 'p', name: 'Priya', open: 1, widthPercent: 100 },
+      { key: 'r', name: 'Rohan', open: 0, widthPercent: 0 },
+    ]);
+    expect(computeOpenWorkByPerson([], 6, members).map((p) => [p.name, p.open])).toEqual([
+      ['Priya', 0],
+      ['Rohan', 0],
+    ]);
+  });
+});
+
+describe('buildDepartmentTiles', () => {
+  it('counts open, due today, overdue and waiting for review over the given assignments only', () => {
+    const rows = [
+      assignment({ id: '1', due: '13/11/2026' }),
+      assignment({ id: '2', due: '10/11/2026', status: 'Ready for review' }),
+      assignment({ id: '3', due: '01/11/2026' }),
+      assignment({ id: '4', due: '01/11/2026', status: 'Approved' }),
+      assignment({ id: '5', due: '20/11/2026', status: 'Ready for review' }),
+    ];
+    expect(buildDepartmentTiles(rows, TODAY)).toEqual([
+      { label: 'Open assignments', value: '4', note: '2 in progress', tone: 'default' },
+      { label: 'Due today', value: '1', note: '2 overdue', tone: 'danger' },
+      { label: 'Overdue', value: '2', note: 'Past their due date', tone: 'danger' },
+      { label: 'Waiting for review', value: '2', note: 'Founder or Manager action', tone: 'warning' },
+    ]);
+  });
+
+  it('stays calm when nothing needs action', () => {
+    expect(buildDepartmentTiles([assignment({ due: '20/11/2026' })], TODAY)).toEqual([
+      { label: 'Open assignments', value: '1', note: '1 in progress', tone: 'default' },
+      { label: 'Due today', value: '0', note: 'None overdue', tone: 'default' },
+      { label: 'Overdue', value: '0', note: 'Past their due date', tone: 'default' },
+      { label: 'Waiting for review', value: '0', note: 'Founder or Manager action', tone: 'default' },
+    ]);
+    expect(buildDepartmentTiles([], TODAY).map((tile) => tile.value)).toEqual(['0', '0', '0', '0']);
+  });
+});
+
+describe('overdueAssignments', () => {
+  it('lists open work past its due date, earliest first, and leaves closed and undated work out', () => {
+    const rows = [
+      assignment({ id: 'late', due: '10/11/2026', title: 'B' }),
+      assignment({ id: 'later', due: '01/11/2026', title: 'A' }),
+      assignment({ id: 'today', due: '13/11/2026' }),
+      assignment({ id: 'done', due: '01/11/2026', status: 'Approved' }),
+      assignment({ id: 'undated', due: '' }),
+    ];
+    expect(overdueAssignments(rows, TODAY).map((a) => a.id)).toEqual(['later', 'late']);
   });
 });
 

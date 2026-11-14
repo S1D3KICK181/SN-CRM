@@ -23,6 +23,11 @@ export interface MessageComposeRequest {
 export interface MessageComposer {
   /** False for a Trainee, who may not message clients. */
   readonly canMessage: boolean;
+  /**
+   * True only for a client the reader looks after (the server's rule for messages). A department head who can
+   * merely read a client gets false, so entry points for that client stay hidden.
+   */
+  readonly canMessageClient: (clientId: string) => boolean;
   readonly open: (request: MessageComposeRequest, opener?: HTMLElement | null) => void;
   /** The newest messages for one client, newest first. */
   readonly recentFor: (clientId: string, limit?: number) => readonly ClientMessageDto[];
@@ -79,10 +84,17 @@ export function MessageComposerProvider({
   const [active, setActive] = useState<{ setup: MessageComposeSetup; opener: HTMLElement | null } | null>(null);
   const canMessage = role !== 'trainee';
 
+  const canMessageClient = useCallback(
+    (clientId: string) => canMessage && clients.some((client) => client.id === clientId && client.looksAfter),
+    [canMessage, clients],
+  );
+
   const open = useCallback(
     (request: MessageComposeRequest, opener?: HTMLElement | null) => {
       if (!canMessage) return;
       const directoryClient = clients.find((client) => client.id === request.clientId);
+      // A client the reader can see but does not look after (a department head's read-only client).
+      if (directoryClient && !directoryClient.looksAfter) return;
       const client = request.client ?? (directoryClient ? clientInfoFrom(directoryClient) : null);
       if (!client) {
         onToast('The client could not be found.');
@@ -93,7 +105,7 @@ export function MessageComposerProvider({
         opener: opener ?? null,
       });
     },
-    [canMessage, clients, onToast],
+    [canMessageClient, clients, onToast],
   );
 
   const recentFor = useCallback(
@@ -102,8 +114,8 @@ export function MessageComposerProvider({
   );
 
   const composer = useMemo<MessageComposer>(
-    () => ({ canMessage, open, recentFor, showAll: onShowAll }),
-    [canMessage, open, recentFor, onShowAll],
+    () => ({ canMessage, canMessageClient, open, recentFor, showAll: onShowAll }),
+    [canMessage, canMessageClient, open, recentFor, onShowAll],
   );
 
   return (
